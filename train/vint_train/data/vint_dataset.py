@@ -279,6 +279,8 @@ class ViNT_Dataset(Dataset):
         else:
             with open(os.path.join(self.data_folder, trajectory_name, "traj_data.pkl"), "rb") as f:
                 traj_data = pickle.load(f)
+            traj_data["position"] = np.array(traj_data["position"], dtype=np.float64)
+            traj_data["yaw"] = np.array(traj_data["yaw"], dtype=np.float64).squeeze()
             self.trajectory_cache[trajectory_name] = traj_data
             return traj_data
 
