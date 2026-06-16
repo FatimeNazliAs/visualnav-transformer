@@ -134,15 +134,16 @@ RUN pip install --no-cache-dir -e /app/visualnav-transformer/train/
 
 # ------------------------------------------------------------------------------
 # LAYER 8 — Extra pip packages
-# wandb and huggingface_hub are NOT pinned — the original pins were outdated
-# and caused conflicts with modern torch/protobuf.
-# cffi and lmdb==1.4.1 are required for vint_dataset.py LMDB cache building.
-# lmdb 2.x has a broken cffi backend on Python 3.8 + CUDA base image.
+# huggingface_hub is pinned to 0.23.0 — the old diffusers version in the conda
+# env imports `cached_download` which was removed in huggingface_hub >= 0.24.
+# wandb is unpinned — any modern version works fine.
+# cffi and lmdb==1.4.1 required for vint_dataset.py LMDB cache building.
 # --no-cache-dir keeps the layer smaller (no pip download cache kept).
 # ------------------------------------------------------------------------------
+
 RUN pip install --no-cache-dir \
-        wandb \
-        huggingface_hub \
+        "wandb>=0.22.3"  \
+        huggingface_hub==0.23.0 \
         cffi \
         lmdb==1.4.1
 
