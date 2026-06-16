@@ -1,6 +1,6 @@
 project_name: nomad
 run_name: nomad
-
+wandb_entity: fnazlias
 # training setup
 use_wandb: True # set to false if you don't want to log to wandb
 train: True
