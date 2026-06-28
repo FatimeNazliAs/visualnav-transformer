@@ -16,9 +16,10 @@ import torch
 RAW_DATA_DIR = Path("/data/raw/go_stanford/go_stanford")
 
 # ── Sample selection  — change these two lines to try a different sample ──────
-TRAJ_NAME = "no10vc_10_0"
-FRAME_IDX = 30
+TRAJ_NAME = "no2vc_21_0"
+FRAME_IDX = 4
 
+#[(no10vc_10_0,30),(no1vcF_17_1,50),(no2vc_21_0,1),(no2vcF_85_2,5]
 # ── Device ────────────────────────────────────────────────────────────────────
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -28,6 +29,8 @@ NUM_ACTIONS   = 8
 IMAGE_SIZE    = (96, 96)
 ENCODING_SIZE = 256              # encoding_size in yaml
 DOWN_DIMS     = [64, 128, 256]   # down_dims in yaml
+ACTION_DIM    = 2                # learn_angle=False -> (linear_vel, angular_vel) only
+K_DENOISING   = 10               # num_diffusion_iters in yaml
 
 # ── ImageNet normalisation (must match training pre-processing) ───────────────
 IMG_MEAN = [0.485, 0.456, 0.406]

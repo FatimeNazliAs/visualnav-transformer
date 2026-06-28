@@ -29,6 +29,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "train"))
 from debug_visuals.config import TRAJ_NAME, FRAME_IDX, OUTPUTS_DIR
 from debug_visuals import visualize_stage1
 from debug_visuals import visualize_stage2
+from debug_visuals import visualize_stage4
+from debug_visuals import visualize_stage5
 
 SEP = "─" * 60
 
@@ -62,6 +64,14 @@ def main() -> None:
     )
     visualize_stage2.plot_token_barchart(
         obs_tokens, goal_token, save_path=run_dir / "stage2_obs_tokens.png"
+    )
+
+    print(f"\n── Stage 4: Transformer + goal masking ─────────────────")
+    result4 = visualize_stage4.run_stage4(model, obs_tokens, goal_token, save_dir=run_dir)
+
+    print(f"\n── Stage 5: Diffusion denoising ─────────────────────────")
+    visualize_stage5.run_stage5(
+        model, result4["ct_nav"], sample["obs_raw"][-1], save_dir=run_dir
     )
 
     print(f"\n{SEP}")

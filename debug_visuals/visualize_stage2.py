@@ -247,8 +247,8 @@ def main() -> None:
     print(f"  goal_token : {goal_token.shape}")
 
     print("\n[4/4] Saving bar chart …")
-    save_path = OUTPUTS_DIR / f"stage2_{TRAJ_NAME}_f{FRAME_IDX}_obs_tokens.png"
-    plot_token_barchart(obs_tokens, goal_token, save_path)
+    run_dir = OUTPUTS_DIR / f"{TRAJ_NAME}_f{FRAME_IDX}"
+    plot_token_barchart(obs_tokens, goal_token, save_path=run_dir / "stage2_obs_tokens.png")
 
     print(f"\n{SEP}")
     print("  Done.")
