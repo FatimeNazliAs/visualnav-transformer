@@ -5,16 +5,13 @@ Stage 4 visualisation — "What does the Transformer + goal masking do?"
 Runs the 4-layer self-attention encoder (model.vision_encoder.sa_encoder)
 twice on the same 5 input tokens (obs[0..3] + goal): once in navigation
 mode (goal token active) and once in exploration mode (goal token masked
-via src_key_padding_mask). Tells one story across 4 PNGs:
+via src_key_padding_mask). run_stage4() saves 2 presentation PNGs:
 
-  1. stage4_attention_compare.png    — Layer 4, all 4 heads, nav vs
-     exploration side by side: where attention collapses under masking.
-  2. stage4_attention_head2_zoom.png — Head 2 alone, large and annotated:
-     the single clearest example of the goal pathway being severed.
-  3. stage4_ct_comparison.png        — the measurable effect on ct, the
-     vector actually handed to the diffusion model.
-  4. stage4_transformer_effect.png   — each token before vs after the
-     4 Transformer layers, navigation mode: what attention actually added.
+  1. stage4_attention.png       — Layer 4 attention: the 4-head overview
+     (nav vs exploration) plus a Head 2 zoom, in one figure. Shows where
+     attention collapses under masking and how the goal pathway is severed.
+  2. stage4_ct_comparison.png   — the measurable effect on ct (the vector
+     actually handed to the diffusion model), as stacked heatmap strips.
 
 Both forward passes use the same checkpoint, same input frames, same
 goal image — only the mask differs. That's intentional, not a bug: it's
@@ -32,27 +29,25 @@ debug_visuals/config.py.
 
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 
 import matplotlib
 matplotlib.use("Agg")   # headless — no display needed inside the container
 import matplotlib.pyplot as plt
+import matplotlib.gridspec as gridspec
 import numpy as np
 import torch
 
-# ── Make the repo root importable when running as `python -m debug_visuals…` ──
-_REPO_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(_REPO_ROOT))
-sys.path.insert(0, str(_REPO_ROOT / "train"))
-
+# Repo root / train are put on sys.path by debug_visuals/__init__.py.
 from debug_visuals.config import (
     TRAJ_NAME,
     FRAME_IDX,
     ENCODING_SIZE,
     DEVICE,
-    OUTPUTS_DIR,
+    RUN_DIR,
 )
+from debug_visuals.model import load_model
+from debug_visuals.viz_utils import save_fig
 from debug_visuals import visualize_stage1
 from debug_visuals import visualize_stage2
 
@@ -189,7 +184,7 @@ def pool_ct(output_tokens: torch.Tensor, mask_goal: bool) -> torch.Tensor:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Plot 1 — Layer 4 attention: navigation vs exploration, all 4 heads
+# Attention subplot helper (shared by the combined attention figure below)
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _draw_attention_subplot(ax, mat: np.ndarray, head_label: str) -> None:
@@ -207,114 +202,16 @@ def _draw_attention_subplot(ax, mat: np.ndarray, head_label: str) -> None:
     ax.figure.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
 
 
-def plot_attention_compare(attn_nav: dict, attn_explore: dict, save_path: Path) -> None:
-    """Legacy full-grid attention compare — kept for standalone use."""
-    nav_attn = attn_nav[LAYER_IDX_FOR_PLOT][0].numpy()
-    explore_attn = attn_explore[LAYER_IDX_FOR_PLOT][0].numpy()
-
-    fig, axes = plt.subplots(2, 4, figsize=(24, 12))
-
-    for head_idx in range(4):
-        _draw_attention_subplot(axes[0, head_idx], nav_attn[head_idx], f"Head {head_idx + 1}")
-    for head_idx in range(4):
-        _draw_attention_subplot(axes[1, head_idx], explore_attn[head_idx], f"Head {head_idx + 1}")
-
-    fig.text(0.06, 0.70, "Navigation →", rotation=90, fontsize=14,
-              fontweight="bold", ha="center", va="center")
-    fig.text(0.06, 0.28, "Exploration →", rotation=90, fontsize=14,
-              fontweight="bold", ha="center", va="center")
-
-    head2_nav_col = nav_attn[HEAD_IDX_FOR_ZOOM][:, 4]
-    head2_explore_col = explore_attn[HEAD_IDX_FOR_ZOOM][:, 4]
-    fig.text(
-        0.5, 0.015,
-        f"Head 2 Goal column: Navigation={head2_nav_col.min():.2f}–{head2_nav_col.max():.2f} "
-        f"(bright yellow) vs Exploration={head2_explore_col.max():.2f} (black). "
-        "Same head, one boolean, completely different behavior.",
-        ha="center", fontsize=11, color="#c0392b", fontweight="bold",
-    )
-
-    fig.suptitle("Layer 4 Attention Weights: Navigation vs Exploration", fontsize=18, y=0.985)
-    fig.text(0.5, 0.945, _subtitle(), ha="center", fontsize=12, style="italic", color="#555555")
-
-    plt.tight_layout(rect=[0.04, 0.06, 1, 0.92])
-    save_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(save_path, dpi=150, bbox_inches="tight")
-    plt.close(fig)
-    print(f"  Saved : {save_path}")
-
-
 # ══════════════════════════════════════════════════════════════════════════════
-# Plot 2 — Head 2 zoom: the goal-direction specialist
-# ══════════════════════════════════════════════════════════════════════════════
-
-def plot_head2_zoom(attn_nav: dict, attn_explore: dict, save_path: Path) -> None:
-    nav_mat = attn_nav[LAYER_IDX_FOR_PLOT][0, HEAD_IDX_FOR_ZOOM].numpy()
-    explore_mat = attn_explore[LAYER_IDX_FOR_PLOT][0, HEAD_IDX_FOR_ZOOM].numpy()
-
-    fig, axes = plt.subplots(1, 2, figsize=(18, 8))
-
-    for ax, mat, label in [(axes[0], nav_mat, "Navigation"), (axes[1], explore_mat, "Exploration")]:
-        im = ax.imshow(mat, cmap="viridis", vmin=0, vmax=1)
-        ax.set_xticks(range(5))
-        ax.set_xticklabels(TOKEN_LABELS, fontsize=12)
-        ax.set_yticks(range(5))
-        ax.set_yticklabels(TOKEN_LABELS, fontsize=12)
-        ax.set_xlabel("Token being attended TO", fontsize=11)
-        ax.set_ylabel("Token doing the attending", fontsize=11)
-        for r in range(5):
-            for c in range(5):
-                val = mat[r, c]
-                ax.text(c, r, f"{val:.2f}", ha="center", va="center",
-                        fontsize=14, color="white" if val < 0.5 else "black")
-        ax.set_title(label, fontsize=14, fontweight="bold")
-        fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
-
-    f0_goal_nav = nav_mat[0, 4]
-    goal_goal_nav = nav_mat[4, 4]
-    f0_goal_explore = explore_mat[0, 4]
-
-    fig.text(
-        0.27, 0.11,
-        f"F0 pays {f0_goal_nav * 100:.0f}% attention to Goal: oldest frame is almost\n"
-        "entirely focused on goal direction",
-        ha="center", fontsize=10,
-    )
-    fig.text(
-        0.27, 0.03,
-        f"Goal token attends {goal_goal_nav * 100:.0f}% to itself: self-referential,\n"
-        "it already carries goal information",
-        ha="center", fontsize=10,
-    )
-    fig.text(
-        0.73, 0.07,
-        f"Goal column zeroed (value={f0_goal_explore:.2f}): no token can receive goal\n"
-        "information — pathway completely severed",
-        ha="center", fontsize=10,
-    )
-
-    fig.suptitle("Head 2, Layer 4: The Goal-Direction Specialist Head", fontsize=16, y=1.02)
-    fig.text(0.5, 0.97, _subtitle(), ha="center", fontsize=12, style="italic", color="#555555")
-
-    plt.tight_layout(rect=[0, 0.18, 1, 0.93])
-    save_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(save_path, dpi=150, bbox_inches="tight")
-    plt.close(fig)
-    print(f"  Saved : {save_path}")
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# Plot 3 — ct: navigation vs exploration
+# Plot 1 — Transformer attention: navigation vs exploration (stage4_attention.png)
 # ══════════════════════════════════════════════════════════════════════════════
 
 def plot_attention_combined(attn_nav: dict, attn_explore: dict, save_path: Path) -> None:
     """
-    Combined attention figure: 2×4 grid (overview) on the left, Head 2
-    zoom on the right. Merges the old attention_compare + head2_zoom
-    into a single presentation-ready image.
+    Combined attention figure: 2×4 grid (all 4 heads, nav vs exploration) on
+    the left, a Head 2 zoom on the right — the whole goal-masking story in a
+    single presentation-ready image.
     """
-    import matplotlib.gridspec as gridspec
-
     nav_attn = attn_nav[LAYER_IDX_FOR_PLOT][0].numpy()
     explore_attn = attn_explore[LAYER_IDX_FOR_PLOT][0].numpy()
 
@@ -373,74 +270,19 @@ def plot_attention_combined(attn_nav: dict, attn_explore: dict, save_path: Path)
     )
     fig.text(0.5, 0.955, _subtitle(), ha="center", fontsize=12, style="italic", color="#555555")
 
-    save_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(save_path, dpi=150, bbox_inches="tight")
-    plt.close(fig)
-    print(f"  Saved : {save_path}")
+    save_fig(fig, save_path)
 
 
-def plot_ct_comparison(ct_nav: torch.Tensor, ct_explore: torch.Tensor,
-                        mean_abs_diff: float, save_path: Path) -> None:
-    nav     = ct_nav[0].detach().cpu().numpy()
-    explore = ct_explore[0].detach().cpu().numpy()
-    diff    = (ct_nav - ct_explore).abs()[0].detach().cpu().numpy()
-
-    top10_idx = np.argsort(diff)[-10:]
-    bar_colors = np.full(256, "#e74c3c", dtype=object)
-    bar_colors[top10_idx] = "#e67e22"
-
-    fig, axes = plt.subplots(1, 3, figsize=(20, 6))
-
-    axes[0].bar(range(256), nav, color="#3498db", linewidth=0)
-    axes[0].set_title("ct — Navigation mode", fontsize=12)
-    axes[0].text(0.5, -0.18, "Goal token active → ct pulled toward goal direction",
-                 transform=axes[0].transAxes, ha="center", fontsize=9, style="italic")
-
-    axes[1].bar(range(256), explore, color="#2ecc71", linewidth=0)
-    axes[1].set_title("ct — Exploration mode", fontsize=12)
-    axes[1].text(0.5, -0.18, "Goal token masked → ct reflects environment only",
-                 transform=axes[1].transAxes, ha="center", fontsize=9, style="italic")
-
-    axes[2].bar(range(256), diff, color=list(bar_colors), linewidth=0)
-    axes[2].set_title("Change caused by masking", fontsize=12)
-    axes[2].text(
-        0.97, 0.95, f"mean|Δ| = {mean_abs_diff:.4f}",
-        transform=axes[2].transAxes, ha="right", va="top",
-        fontsize=12, fontweight="bold",
-        bbox=dict(boxstyle="round", facecolor="white", alpha=0.85),
-    )
-    axes[2].text(
-        0.97, 0.83,
-        f"Each of 256 dimensions shifted by {mean_abs_diff:.2f} on average.\n"
-        "The diffusion model receives substantially different\n"
-        "input → different robot actions.",
-        transform=axes[2].transAxes, ha="right", va="top", fontsize=8.5,
-    )
-
-    for ax in axes:
-        ax.set_xlabel("dim", fontsize=10)
-    axes[0].set_ylabel("value", fontsize=10)
-
-    fig.suptitle("Effect of Goal Masking on ct (input to diffusion model)", fontsize=15, y=1.08)
-    fig.text(0.5, 1.0, _subtitle(" | mean|Δ| proves masking is effective"),
-              ha="center", fontsize=11, style="italic", color="#555555")
-
-    plt.tight_layout(rect=[0, 0.08, 1, 0.92])
-    save_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(save_path, dpi=150, bbox_inches="tight")
-    plt.close(fig)
-    print(f"  Saved : {save_path}")
-
+# ══════════════════════════════════════════════════════════════════════════════
+# Plot 2 — Effect of goal masking on ct (stage4_ct_comparison.png)
+# ══════════════════════════════════════════════════════════════════════════════
 
 def plot_ct_heatmap(ct_nav: torch.Tensor, ct_explore: torch.Tensor,
                     mean_abs_diff: float, save_path: Path) -> None:
     """
-    Presentation-ready ct comparison using heatmaps instead of bar charts.
-    Three stacked heatmap strips (nav, explore, difference) with scalar
-    summary metrics.
+    Presentation-ready ct comparison as heatmaps: three stacked strips
+    (nav, explore, difference) with scalar summary metrics.
     """
-    import matplotlib.gridspec as gridspec
-
     nav = ct_nav[0].detach().cpu().numpy()
     explore = ct_explore[0].detach().cpu().numpy()
     diff = np.abs(nav - explore)
@@ -487,61 +329,7 @@ def plot_ct_heatmap(ct_nav: torch.Tensor, ct_explore: torch.Tensor,
     fig.text(0.5, 0.97, _subtitle(" — ct is the input to the diffusion model"),
              ha="center", fontsize=11, style="italic", color="#555555")
 
-    save_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(save_path, dpi=150, bbox_inches="tight")
-    plt.close(fig)
-    print(f"  Saved : {save_path}")
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# Plot 4 — Before vs after the Transformer, per token
-# ══════════════════════════════════════════════════════════════════════════════
-
-def plot_transformer_effect(obs_tokens_np: np.ndarray, goal_token_np: np.ndarray,
-                             output_nav: torch.Tensor, save_path: Path) -> None:
-    before = np.concatenate([obs_tokens_np, goal_token_np[None, :]], axis=0)   # (5, 256)
-    after  = output_nav[0].detach().cpu().numpy()                              # (5, 256)
-    diff   = after - before
-
-    fig, axes = plt.subplots(5, 3, figsize=(18, 20))
-
-    for i, name in enumerate(TOKEN_LABELS):
-        ax_before, ax_after, ax_diff = axes[i]
-
-        ax_before.bar(range(256), before[i], color="#3498db", linewidth=0)
-        ax_before.set_ylabel(name, fontsize=13, fontweight="bold", rotation=0, labelpad=28, va="center")
-        if i == 0:
-            ax_before.set_title("Before Transformer", fontsize=12)
-
-        ax_after.bar(range(256), after[i], color="#a9dfbf", linewidth=0)
-        if i == 0:
-            ax_after.set_title("After Transformer (nav)", fontsize=12)
-
-        d = diff[i]
-        bar_colors = np.where(d >= 0, "#e74c3c", "#3498db")
-        ax_diff.bar(range(256), d, color=list(bar_colors), linewidth=0)
-        if i == 0:
-            ax_diff.set_title("What the Transformer added", fontsize=12)
-        ax_diff.text(
-            0.97, 0.92, f"mean|Δ| = {np.abs(d).mean():.3f}",
-            transform=ax_diff.transAxes, ha="right", va="top", fontsize=8,
-            bbox=dict(boxstyle="round", facecolor="white", alpha=0.8),
-        )
-
-        for ax in (ax_before, ax_after, ax_diff):
-            ax.tick_params(labelsize=7)
-        if i == 4:
-            for ax in (ax_before, ax_after, ax_diff):
-                ax.set_xlabel("dim", fontsize=9)
-
-    fig.suptitle("What 4 Transformer Layers Added to Each Token", fontsize=17, y=0.995)
-    fig.text(0.5, 0.975, _subtitle(), ha="center", fontsize=12, style="italic", color="#555555")
-
-    plt.tight_layout(rect=[0, 0, 1, 0.96])
-    save_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(save_path, dpi=150, bbox_inches="tight")
-    plt.close(fig)
-    print(f"  Saved : {save_path}")
+    save_fig(fig, save_path)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -552,7 +340,8 @@ def run_stage4(model, obs_tokens_np: np.ndarray, goal_token_np: np.ndarray, save
     """
     Builds tokens_in from the already-encoded obs/goal tokens, runs the
     navigation + exploration Transformer passes, pools ct for both, saves
-    the 4 PNGs into save_dir, and returns the key tensors/values.
+    the 2 PNGs (stage4_attention.png, stage4_ct_comparison.png) into
+    save_dir, and returns the key tensors/values.
     """
     _print_model_structure(model)
 
@@ -614,7 +403,7 @@ def main() -> None:
     print(SEP)
 
     print("\n[1/4] Loading model …")
-    model = visualize_stage2.load_model()
+    model = load_model()
 
     print("\n[2/4] Loading frames from disk …")
     sample = visualize_stage1.load_sample_frames()
@@ -625,13 +414,11 @@ def main() -> None:
     print(f"  obs_tokens  : {obs_tokens_np.shape}")
     print(f"  goal_token  : {goal_token_np.shape}")
 
-    run_dir = OUTPUTS_DIR / f"{TRAJ_NAME}_f{FRAME_IDX}"
-    print(f"\n[4/4] Running Transformer passes and saving 2 PNG files to {run_dir} …")
-    run_stage4(model, obs_tokens_np, goal_token_np, save_dir=run_dir)
+    print(f"\n[4/4] Running Transformer passes and saving 2 PNG files to {RUN_DIR} …")
+    run_stage4(model, obs_tokens_np, goal_token_np, save_dir=RUN_DIR)
 
     print(f"\n{SEP}")
-    print(f"Stage 4 complete. 2 files in {OUTPUTS_DIR}/")
-    print(f"(actual path: {run_dir})")
+    print(f"Stage 4 complete. 2 files in {RUN_DIR}")
     print(SEP)
 
 

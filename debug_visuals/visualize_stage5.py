@@ -43,7 +43,6 @@ debug_visuals/config.py.
 
 from __future__ import annotations
 
-import sys
 import traceback
 from pathlib import Path
 
@@ -55,21 +54,17 @@ import numpy as np
 import torch
 from diffusers import DDPMScheduler
 
-# ── Make the repo root importable when running as `python debug_visuals/…` ────
-_REPO_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(_REPO_ROOT))
-sys.path.insert(0, str(_REPO_ROOT / "train"))
-
+# Repo root / train are put on sys.path by debug_visuals/__init__.py.
 from debug_visuals.config import (
-    TRAJ_NAME,
-    FRAME_IDX,
     ENCODING_SIZE,
     NUM_ACTIONS,
     ACTION_DIM,
     K_DENOISING,
     DEVICE,
-    OUTPUTS_DIR,
+    RUN_DIR,
 )
+from debug_visuals.model import load_model
+from debug_visuals.viz_utils import save_fig
 from debug_visuals import visualize_stage1
 from debug_visuals import visualize_stage2
 from debug_visuals import visualize_stage4
@@ -220,10 +215,7 @@ def plot_denoising_strip(steps: list, save_path: Path) -> None:
     fig.text(0.5, 0.94, "Each panel shows the predicted path at one denoising step (K=10 → 0)",
              ha="center", fontsize=10, style="italic", color="#555555")
     plt.tight_layout(rect=[0, 0, 1, 0.90])
-    save_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(save_path, dpi=150, bbox_inches="tight")
-    plt.close(fig)
-    print(f"  Saved : {save_path}")
+    save_fig(fig, save_path)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -355,10 +347,7 @@ def plot_final_trajectory(a_0: torch.Tensor, obs_raw_last: np.ndarray, save_path
     fig.text(0.5, 0.94, "Left: path overlaid on camera view  |  Center: top-down 2D path  |  Right: velocity commands",
              ha="center", fontsize=10, style="italic", color="#555555")
     plt.tight_layout(rect=[0, 0, 1, 0.90])
-    save_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(save_path, dpi=150, bbox_inches="tight")
-    plt.close(fig)
-    print(f"  Saved : {save_path}")
+    save_fig(fig, save_path)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -411,10 +400,7 @@ def plot_multimodal_runs(model, ct: torch.Tensor, save_path: Path) -> dict:
     )
 
     plt.tight_layout()
-    save_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(save_path, dpi=150, bbox_inches="tight")
-    plt.close(fig)
-    print(f"  Saved : {save_path}")
+    save_fig(fig, save_path)
 
     return {"paths": paths, "mean": (mean_x, mean_y)}
 
@@ -456,7 +442,7 @@ def main() -> None:
     print(SEP)
 
     print("\n[1/4] Loading model …")
-    model = visualize_stage2.load_model()
+    model = load_model()
 
     print("\n[2/4] Loading frames from disk and computing ct (navigation mode) …")
     sample = visualize_stage1.load_sample_frames()
@@ -476,13 +462,11 @@ def main() -> None:
 
     obs_raw_last = sample["obs_raw"][-1]   # current frame, raw uint8 RGB (no normalisation)
 
-    run_dir = OUTPUTS_DIR / f"{TRAJ_NAME}_f{FRAME_IDX}"
     print(f"\n[3/4] Running Stage 5 (denoising trace + 3 PNGs) …")
-    run_stage5(model, ct, obs_raw_last, save_dir=run_dir)
+    run_stage5(model, ct, obs_raw_last, save_dir=RUN_DIR)
 
     print(f"\n{SEP}")
-    print(f"Stage 5 complete. 3 files in {OUTPUTS_DIR}/")
-    print(f"(actual path: {run_dir})")
+    print(f"Stage 5 complete. 3 files in {RUN_DIR}")
     print(SEP)
 
 

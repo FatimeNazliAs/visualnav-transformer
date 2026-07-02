@@ -40,7 +40,7 @@ SAMPLES = {
 }
 
 # ── Sample selection  — change this one line to try a different sample ────────
-SAMPLE = "right_turn"
+SAMPLE = "gentle_left"
 TRAJ_NAME, FRAME_IDX, _SAMPLE_DESC = SAMPLES[SAMPLE]
 
 # To use a sample not in the table, just override the two lines directly, e.g.:
@@ -76,3 +76,10 @@ CHECKPOINT = _CKPT_DIR / "latest.pth"    # <-- swap the "#" to use these instead
 # ── Output directory ──────────────────────────────────────────────────────────
 _CKPT_TAG   = "ema" if CHECKPOINT.stem.lower().startswith("ema") else "latest"
 OUTPUTS_DIR = Path(__file__).resolve().parent / f"outputs_{_CKPT_TAG}"
+
+# ── Derived values (single source of truth for the whole pipeline) ────────────
+# The per-sample output folder and the frame indices the pipeline loads.
+# Centralised here so run_pipeline and every stage agree without recomputing.
+RUN_DIR  = OUTPUTS_DIR / f"{TRAJ_NAME}_f{FRAME_IDX}"
+OBS_IDXS = list(range(FRAME_IDX - CONTEXT_SIZE, FRAME_IDX + 1))   # [t-3 … t]
+GOAL_IDX = FRAME_IDX + NUM_ACTIONS                                # t + NUM_ACTIONS

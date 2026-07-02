@@ -13,7 +13,6 @@ and decides where the output PNGs get saved. Run:
 Exposes:
   load_sample_frames()                    — loads obs context + goal frame
   plot_frame_strip(sample, save_path)     — frame strip PNG
-  plot_pixel_distributions(sample, save_path) — raw vs normalised histograms
 
 To visualise a different sample, edit TRAJ_NAME and FRAME_IDX in
 debug_visuals/config.py.
@@ -21,22 +20,15 @@ debug_visuals/config.py.
 
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 
 import matplotlib
 matplotlib.use("Agg")   # headless — no display needed inside the container
 import matplotlib.pyplot as plt
-import matplotlib.gridspec as gridspec
 import numpy as np
 from PIL import Image
-import torchvision.transforms as T
 
-# ── Make the repo root importable when running as `python -m debug_visuals…` ──
-_REPO_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(_REPO_ROOT))
-sys.path.insert(0, str(_REPO_ROOT / "train"))
-
+# Repo root / train are put on sys.path by debug_visuals/__init__.py.
 from debug_visuals.config import (
     RAW_DATA_DIR,
     TRAJ_NAME,
@@ -46,11 +38,13 @@ from debug_visuals.config import (
     IMAGE_SIZE,
     IMG_MEAN,
     IMG_STD,
+    OBS_IDXS,
+    GOAL_IDX,
 )
+from debug_visuals.viz_utils import save_fig
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 N_OBS_FRAMES = CONTEXT_SIZE + 1   # 3 past + 1 current = 4
-CHANNEL_COLOURS = {"R": "#e74c3c", "G": "#2ecc71", "B": "#3498db"}
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -85,8 +79,9 @@ def load_sample_frames() -> dict:
 
     # obs  = [t - CONTEXT_SIZE, …, t]   (past context + current frame)
     # goal = t + NUM_ACTIONS             (NUM_ACTIONS steps into the future)
-    obs_idxs = list(range(FRAME_IDX - CONTEXT_SIZE, FRAME_IDX + 1))
-    goal_idx = FRAME_IDX + NUM_ACTIONS
+    # Both index lists are derived once, in config, so every stage agrees.
+    obs_idxs = OBS_IDXS
+    goal_idx = GOAL_IDX
 
     obs_raw  = [_load_frame_rgb(traj_dir, i) for i in obs_idxs]
     goal_raw = _load_frame_rgb(traj_dir, goal_idx)
@@ -203,217 +198,4 @@ def plot_frame_strip(sample: dict, save_path: Path) -> None:
         fontsize=10, fontweight="bold", y=1.08,
     )
 
-    save_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(save_path, bbox_inches="tight", dpi=150)
-    plt.close(fig)
-    print(f"  Saved : {save_path}")
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# Plot 2 — Pixel distributions (raw vs normalised)
-# ══════════════════════════════════════════════════════════════════════════════
-
-def plot_pixel_distributions(sample: dict, save_path: Path) -> None:
-    """
-    Save per-channel pixel histograms for raw and normalised frames.
-
-    Layout:  2 rows × (N_OBS_FRAMES + 1) columns
-        Row 0 — RAW        : uint8,   x-axis [0, 255]
-        Row 1 — NORMALISED : float32, x-axis ~ [-2.5, 2.5]
-
-    The dashed vertical line in row 1 marks x=0 (the ideal post-normalisation
-    centre). If normalisation was accidentally skipped, the row-1 distributions
-    would be shifted far to the right — this plot catches that silent bug.
-    """
-    obs_raw   = sample["obs_raw"]
-    goal_raw  = sample["goal_raw"]
-    obs_idxs  = sample["obs_idxs"]
-    goal_idx  = sample["goal_idx"]
-
-    all_frames     = obs_raw + [goal_raw]
-    all_frame_idxs = obs_idxs + [goal_idx]
-    is_goal        = [False] * N_OBS_FRAMES + [True]
-
-    n_cols = len(all_frames)
-    n_rows = 2
-    n_bins = 60
-
-    fig, axes = plt.subplots(
-        n_rows, n_cols,
-        figsize=(3.0 * n_cols, 4.5),
-        gridspec_kw={"hspace": 0.55, "wspace": 0.35},
-    )
-
-    for col, (frame_raw, fidx, goal_flag) in enumerate(
-        zip(all_frames, all_frame_idxs, is_goal)
-    ):
-        frame_norm = normalise_frame(frame_raw)
-        col_label  = f"frame {fidx}\n(GOAL)" if goal_flag else f"frame {fidx}"
-
-        for ch_idx, (ch_name, ch_colour) in enumerate(CHANNEL_COLOURS.items()):
-
-            # Row 0 — raw
-            ax_raw = axes[0, col]
-            ax_raw.hist(
-                frame_raw[..., ch_idx].ravel(),
-                bins=n_bins, range=(0, 255),
-                color=ch_colour, alpha=0.55,
-                histtype="stepfilled", label=ch_name,
-            )
-            ax_raw.set_xlim(0, 255)
-            ax_raw.set_xlabel("pixel value (uint8)", fontsize=7)
-            ax_raw.set_ylabel("count", fontsize=7)
-            ax_raw.tick_params(labelsize=6)
-
-            # Row 1 — normalised
-            ax_nrm = axes[1, col]
-            ax_nrm.hist(
-                frame_norm[..., ch_idx].ravel(),
-                bins=n_bins,
-                color=ch_colour, alpha=0.55,
-                histtype="stepfilled", label=ch_name,
-            )
-            ax_nrm.set_xlabel("normalised value (float32)", fontsize=7)
-            ax_nrm.set_ylabel("count", fontsize=7)
-            ax_nrm.tick_params(labelsize=6)
-            ax_nrm.axvline(0, color="#2c3e50", linewidth=0.8,
-                           linestyle="--", alpha=0.7)
-
-        # Column title and goal border
-        axes[0, col].set_title(col_label, fontsize=8,
-                                color="#8e44ad" if goal_flag else "#2c3e50")
-        if goal_flag:
-            for row in range(n_rows):
-                for spine in axes[row, col].spines.values():
-                    spine.set_edgecolor("#8e44ad")
-                    spine.set_linewidth(1.5)
-
-        # Legend only on the leftmost column
-        if col == 0:
-            axes[0, 0].legend(fontsize=6, loc="upper right")
-            axes[1, 0].legend(fontsize=6, loc="upper right")
-
-    # Row labels
-    axes[0, 0].annotate(
-        "RAW\n(uint8)",
-        xy=(-0.45, 0.5), xycoords="axes fraction",
-        fontsize=9, ha="center", va="center",
-        fontweight="bold", color="#c0392b", rotation=90,
-    )
-    axes[1, 0].annotate(
-        "NORMALISED\n(float32)",
-        xy=(-0.45, 0.5), xycoords="axes fraction",
-        fontsize=9, ha="center", va="center",
-        fontweight="bold", color="#27ae60", rotation=90,
-    )
-
-    fig.suptitle(
-        f"Pixel distributions — {TRAJ_NAME}  t={FRAME_IDX}\n"
-        f"ImageNet normalisation: mean={IMG_MEAN}  std={IMG_STD}",
-        fontsize=9,
-    )
-
-    save_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(save_path, bbox_inches="tight", dpi=150)
-    plt.close(fig)
-    print(f"  Saved : {save_path}")
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# Plot 3 — Raw vs normalised image comparison
-# ══════════════════════════════════════════════════════════════════════════════
-
-def plot_normalised_comparison(sample: dict, save_path: Path) -> None:
-    """
-    Save a 2×5 grid comparing each frame's raw image against its
-    normalised counterpart, rendered with a diverging colourmap.
-
-    Layout:  obs[0..3] then goal, same order as the frame strip.
-        Row 0 — raw image          (ax.imshow(frame_uint8))
-        Row 1 — normalised image   (RdBu_r, anchored to [-2.5, 2.5])
-
-    Pixels at the channel mean show up as white/neutral; pixels far from
-    the mean push toward red or blue, making normalisation skew visible
-    at a glance (e.g. a uniformly blue row 1 would flag a channel-order bug).
-    """
-    obs_raw   = sample["obs_raw"]
-    goal_raw  = sample["goal_raw"]
-    obs_idxs  = sample["obs_idxs"]
-    goal_idx  = sample["goal_idx"]
-
-    all_frames     = obs_raw + [goal_raw]
-    all_frame_idxs = obs_idxs + [goal_idx]
-    is_goal        = [False] * N_OBS_FRAMES + [True]
-
-    n_cols = len(all_frames)
-
-    fig, axes = plt.subplots(
-        2, n_cols,
-        figsize=(3.0 * n_cols, 6.0),
-        gridspec_kw={"hspace": 0.4, "wspace": 0.15},
-    )
-
-    for col, (frame_raw, fidx, goal_flag) in enumerate(
-        zip(all_frames, all_frame_idxs, is_goal)
-    ):
-        frame_norm_clipped = np.clip(normalise_frame(frame_raw), -2.5, 2.5)
-
-        ax_raw = axes[0, col]
-        ax_raw.imshow(frame_raw)
-        ax_raw.axis("off")
-
-        ax_norm = axes[1, col]
-        ax_norm.imshow(frame_norm_clipped, cmap="RdBu_r", vmin=-2.5, vmax=2.5)
-        ax_norm.axis("off")
-
-        if goal_flag:
-            title = f"GOAL\nframe {fidx}\n(t + {NUM_ACTIONS})"
-            title_colour = "#8e44ad"
-        else:
-            title = f"obs[{col}]\nframe {fidx}"
-            if fidx == FRAME_IDX:
-                title += "\n← current (t)"
-            title_colour = "#2c3e50"
-
-        axes[0, col].set_title(
-            title, fontsize=9, pad=4, color=title_colour,
-            fontweight="bold" if goal_flag else "normal",
-        )
-
-        border_colour = None
-        if goal_flag:
-            border_colour = "#8e44ad"
-        elif fidx == FRAME_IDX:
-            border_colour = "#f39c12"
-
-        if border_colour is not None:
-            for row in range(2):
-                for spine in axes[row, col].spines.values():
-                    spine.set_edgecolor(border_colour)
-                    spine.set_linewidth(3)
-                    spine.set_visible(True)
-
-    # Row labels
-    axes[0, 0].annotate(
-        "RAW",
-        xy=(-0.35, 0.5), xycoords="axes fraction",
-        fontsize=11, ha="center", va="center",
-        fontweight="bold", color="#c0392b", rotation=90,
-    )
-    axes[1, 0].annotate(
-        "NORMALISED",
-        xy=(-0.35, 0.5), xycoords="axes fraction",
-        fontsize=11, ha="center", va="center",
-        fontweight="bold", color="#27ae60", rotation=90,
-    )
-
-    fig.suptitle(
-        f"Raw vs normalised — {TRAJ_NAME} t={FRAME_IDX}",
-        fontsize=10,
-    )
-
-    save_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(save_path, bbox_inches="tight", dpi=150)
-    plt.close(fig)
-    print(f"  Saved : {save_path}")
-
+    save_fig(fig, save_path)

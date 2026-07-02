@@ -20,10 +20,10 @@ from pathlib import Path
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-import matplotlib.patches as mpatches
 from matplotlib.patches import FancyBboxPatch, FancyArrowPatch
 
-from debug_visuals.config import OUTPUTS_DIR, TRAJ_NAME, FRAME_IDX
+from debug_visuals.config import RUN_DIR
+from debug_visuals.viz_utils import save_fig
 
 SEP = "─" * 60
 
@@ -164,10 +164,7 @@ def plot_architecture(save_path: Path) -> None:
     # ── Title ────────────────────────────────────────────────────────────
     fig.suptitle("NoMaD Architecture Overview", fontsize=18, fontweight="bold", y=0.98)
 
-    save_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(save_path, dpi=150, bbox_inches="tight", facecolor="white")
-    plt.close(fig)
-    print(f"  Saved : {save_path}")
+    save_fig(fig, save_path, facecolor="white")
 
 
 def main() -> None:
@@ -175,8 +172,7 @@ def main() -> None:
     print("  NoMaD — Stage 0 Visualisation (architecture diagram)")
     print(SEP)
 
-    run_dir = OUTPUTS_DIR / f"{TRAJ_NAME}_f{FRAME_IDX}"
-    plot_architecture(save_path=run_dir / "stage0_architecture.png")
+    plot_architecture(save_path=RUN_DIR / "stage0_architecture.png")
 
     print(f"\n{SEP}")
     print("  Done.")

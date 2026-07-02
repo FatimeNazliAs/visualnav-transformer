@@ -19,88 +19,30 @@ debug_visuals/config.py.
 
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 
 import matplotlib
 matplotlib.use("Agg")   # headless — no display needed inside the container
 import matplotlib.pyplot as plt
+import matplotlib.gridspec as gridspec
 import numpy as np
 import torch
 
-# ── Make the repo root importable when running as `python -m debug_visuals…` ──
-_REPO_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(_REPO_ROOT))
-sys.path.insert(0, str(_REPO_ROOT / "train"))
-
-from vint_train.models.nomad.nomad import NoMaD, DenseNetwork
-from vint_train.models.nomad.nomad_vint import NoMaD_ViNT, replace_bn_with_gn
-from diffusion_policy.model.diffusion.conditional_unet1d import ConditionalUnet1D
-
+# Repo root / train are put on sys.path by debug_visuals/__init__.py.
 from debug_visuals.config import (
-    CHECKPOINT,
     TRAJ_NAME,
     FRAME_IDX,
-    CONTEXT_SIZE,
-    NUM_ACTIONS,
     ENCODING_SIZE,
-    DOWN_DIMS,
     DEVICE,
-    OUTPUTS_DIR,
+    RUN_DIR,
+    OBS_IDXS,
+    GOAL_IDX,
 )
+from debug_visuals.model import load_model
+from debug_visuals.viz_utils import save_fig
 from debug_visuals import visualize_stage1
 
 SEP = "─" * 60
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# Model loading — copied from debug/run_pipeline.py, unchanged
-# ══════════════════════════════════════════════════════════════════════════════
-
-def load_model():
-    print(f"  Loading checkpoint: {CHECKPOINT}")
-    ckpt = torch.load(CHECKPOINT, map_location=DEVICE)
-
-    # Checkpoint may store state_dict directly or nested under a key
-    if isinstance(ckpt, dict) and "model" in ckpt:
-        state = ckpt["model"]
-    else:
-        state = ckpt
-
-    vision_encoder = NoMaD_ViNT(
-        obs_encoding_size=ENCODING_SIZE,
-        context_size=CONTEXT_SIZE,
-        mha_num_attention_heads=4,
-        mha_num_attention_layers=4,
-        mha_ff_dim_factor=4,
-    )
-    vision_encoder = replace_bn_with_gn(vision_encoder)
-
-    noise_pred_net = ConditionalUnet1D(
-        input_dim=2,
-        global_cond_dim=ENCODING_SIZE,
-        down_dims=DOWN_DIMS,
-        cond_predict_scale=False,
-    )
-    dist_pred_net = DenseNetwork(embedding_dim=ENCODING_SIZE)
-
-    model = NoMaD(
-        vision_encoder=vision_encoder,
-        noise_pred_net=noise_pred_net,
-        dist_pred_net=dist_pred_net,
-
-    )
-    missing, unexpected = model.load_state_dict(state, strict=False)
-    if missing:
-        print(f"  WARNING — missing keys  : {missing[:3]} ...")
-    if unexpected:
-        print(f"  WARNING — unexpected keys: {unexpected[:3]} ...")
-
-    model = model.to(DEVICE).eval()
-    n_params = sum(p.numel() for p in model.parameters()) / 1e6
-    print(f"  Parameters : {n_params:.1f}M")
-    print(f"  Device     : {DEVICE}")
-    return model
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -183,8 +125,8 @@ def plot_token_barchart(obs_tokens: np.ndarray, goal_token: np.ndarray, save_pat
     Legacy bar-chart view — kept for standalone debugging but no longer
     called by run_pipeline.py. Use plot_token_heatmap() instead.
     """
-    obs_idxs = list(range(FRAME_IDX - CONTEXT_SIZE, FRAME_IDX + 1))
-    goal_idx = FRAME_IDX + NUM_ACTIONS
+    obs_idxs = OBS_IDXS
+    goal_idx = GOAL_IDX
 
     n_panels = len(obs_tokens) + 1   # 4 obs + 1 goal
 
@@ -217,10 +159,7 @@ def plot_token_barchart(obs_tokens: np.ndarray, goal_token: np.ndarray, save_pat
         fontsize=11,
     )
 
-    save_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(save_path, dpi=150, bbox_inches="tight")
-    plt.close(fig)
-    print(f"  Saved : {save_path}")
+    save_fig(fig, save_path)
 
 
 def plot_token_heatmap(obs_tokens: np.ndarray, goal_token: np.ndarray,
@@ -232,10 +171,8 @@ def plot_token_heatmap(obs_tokens: np.ndarray, goal_token: np.ndarray,
     the original frame, right column shows its 256-dim embedding as a
     single-row heatmap.
     """
-    import matplotlib.gridspec as gridspec
-
-    obs_idxs = list(range(FRAME_IDX - CONTEXT_SIZE, FRAME_IDX + 1))
-    goal_idx = FRAME_IDX + NUM_ACTIONS
+    obs_idxs = OBS_IDXS
+    goal_idx = GOAL_IDX
 
     all_tokens = list(obs_tokens) + [goal_token]
     all_frames = obs_raw_list + [goal_raw]
@@ -289,10 +226,7 @@ def plot_token_heatmap(obs_tokens: np.ndarray, goal_token: np.ndarray,
         fontsize=12, y=1.0,
     )
 
-    save_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(save_path, dpi=150, bbox_inches="tight")
-    plt.close(fig)
-    print(f"  Saved : {save_path}")
+    save_fig(fig, save_path)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -317,8 +251,7 @@ def main() -> None:
     print(f"  goal_token : {goal_token.shape}")
 
     print("\n[4/4] Saving bar chart …")
-    run_dir = OUTPUTS_DIR / f"{TRAJ_NAME}_f{FRAME_IDX}"
-    plot_token_barchart(obs_tokens, goal_token, save_path=run_dir / "stage2_obs_tokens.png")
+    plot_token_barchart(obs_tokens, goal_token, save_path=RUN_DIR / "stage2_obs_tokens.png")
 
     print(f"\n{SEP}")
     print("  Done.")

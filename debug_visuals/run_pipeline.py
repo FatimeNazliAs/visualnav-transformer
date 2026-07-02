@@ -23,13 +23,9 @@ To visualise a different sample, edit TRAJ_NAME and FRAME_IDX in
 debug_visuals/config.py.
 """
 
-import sys
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "train"))
-
-from debug_visuals.config import TRAJ_NAME, FRAME_IDX, OUTPUTS_DIR
+# Repo root / train are put on sys.path by debug_visuals/__init__.py.
+from debug_visuals.config import TRAJ_NAME, FRAME_IDX, RUN_DIR
+from debug_visuals.model import load_model
 from debug_visuals import visualize_stage0
 from debug_visuals import visualize_stage1
 from debug_visuals import visualize_stage2
@@ -40,7 +36,7 @@ SEP = "─" * 60
 
 
 def main() -> None:
-    run_dir = OUTPUTS_DIR / f"{TRAJ_NAME}_f{FRAME_IDX}"
+    run_dir = RUN_DIR
 
     print(f"\n{SEP}")
     print("  NoMaD — debug_visuals pipeline (presentation)")
@@ -58,7 +54,7 @@ def main() -> None:
     )
 
     print(f"\n── Stage 2: Encoder tokens ψ / φ ───────────────────────")
-    model = visualize_stage2.load_model()
+    model = load_model()
     obs_tokens = visualize_stage2.extract_obs_tokens(model, sample["obs_raw"])
     goal_token = visualize_stage2.extract_goal_token(
         model, sample["obs_raw"], sample["goal_raw"]
