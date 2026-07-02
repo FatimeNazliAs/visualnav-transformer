@@ -152,5 +152,7 @@ dmypy.json
 train/logs
 debug/reports/
 debug_visuals/outputs/
+debug_visuals/outputs_ema/
+debug_visuals/outputs_latest/
 
 .claude/

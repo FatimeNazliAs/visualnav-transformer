@@ -630,7 +630,7 @@ def main() -> None:
     run_stage4(model, obs_tokens_np, goal_token_np, save_dir=run_dir)
 
     print(f"\n{SEP}")
-    print("Stage 4 complete. 2 files in debug_visuals/outputs/")
+    print(f"Stage 4 complete. 2 files in {OUTPUTS_DIR}/")
     print(f"(actual path: {run_dir})")
     print(SEP)
 

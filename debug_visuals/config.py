@@ -2,7 +2,8 @@
 """
 Shared configuration for all debug_visuals scripts.
 
-To visualise a different sample, edit the two lines below.
+To visualise a different sample, change SAMPLE below to one of the keys in
+SAMPLES (or add your own entry). TRAJ_NAME / FRAME_IDX are derived from it.
 
 TRAJ_NAME must be a folder inside RAW_DATA_DIR.
 FRAME_IDX is the "current" frame t.
@@ -13,13 +14,37 @@ from pathlib import Path
 import torch
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
+# In-container mount of the host data dir (/mnt/shared_disk/nazli/nomad_data).
 RAW_DATA_DIR = Path("/data/raw/go_stanford/go_stanford")
 
-# ── Sample selection  — change these two lines to try a different sample ──────
-TRAJ_NAME = "no1vcF_17_1"
-FRAME_IDX = 50
+# ── Sample library ────────────────────────────────────────────────────────────
+# Curated go_stanford samples, each verified to sit in the valid frame range and
+# to show clear, interpretable motion — good for explaining the pipeline.
+# Grouped by the behaviour the future (red) path shows.
+#   key : (TRAJ_NAME, FRAME_IDX, description)
+SAMPLES = {
+    # straight ahead
+    "hallway_straight":  ("no9vc_46_0",  189, "clean corridor, robot drives straight ahead"),
+    "person_straight":   ("no6vc_125_2", 126, "hallway with a person ahead, straight motion"),
+    "lobby_straight":    ("no10vc_6_0",   55, "straight into a lit lobby / entrance"),
+    # gentle curves
+    "gentle_left":       ("no12vc_17_0",  15, "gentle left curve through a red-carpet lobby"),
+    "gentle_right":      ("no10vc_22_0", 142, "gentle right curve down a hallway"),
+    # sharp turns
+    "left_turn":         ("no31vc_25_0",  11, "sharp left turn in a corridor"),
+    "left_turn_person":  ("no9vc_54_0",   19, "left turn in a store aisle, person ahead"),
+    "right_turn":        ("no3vc_62_0",    6, "right turn near a stairwell"),
+    "right_turn_doors":  ("no11vc_9_1",   54, "right turn toward glass doors"),
+    # original
+    "original":          ("no10vc_10_0",  30, "the original sample"),
+}
 
-#[(no10vc_10_0,30),(no1vcF_17_1,50),(no2vc_21_0,1),(no2vcF_85_2,5),(no2vcF_90_0,8)]
+# ── Sample selection  — change this one line to try a different sample ────────
+SAMPLE = "right_turn"
+TRAJ_NAME, FRAME_IDX, _SAMPLE_DESC = SAMPLES[SAMPLE]
+
+# To use a sample not in the table, just override the two lines directly, e.g.:
+#   TRAJ_NAME, FRAME_IDX = "no2vc_21_0", 1
 
 # ── Device ────────────────────────────────────────────────────────────────────
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
@@ -37,5 +62,17 @@ K_DENOISING   = 10               # num_diffusion_iters in yaml
 IMG_MEAN = [0.485, 0.456, 0.406]
 IMG_STD  = [0.229, 0.224, 0.225]
 
+# ── Checkpoint  — switch EMA vs. latest by commenting / uncommenting ──────────
+# Both weight files live in the same run folder. To switch, move the "#" so that
+# exactly one CHECKPOINT line is active:
+#     ema_*.pth   → PNGs go to debug_visuals/outputs_ema/
+#     latest.pth  → PNGs go to debug_visuals/outputs_latest/
+# The output folder is tagged by the file name (below), so the two never
+# overwrite each other and you can compare EMA vs. latest side by side.
+_CKPT_DIR  = Path("/outputs/nomad/nomad_2026_06_13_18_04_23")
+# CHECKPOINT = _CKPT_DIR / "ema_99.pth"      # <-- active: EMA weights
+CHECKPOINT = _CKPT_DIR / "latest.pth"    # <-- swap the "#" to use these instead
+
 # ── Output directory ──────────────────────────────────────────────────────────
-OUTPUTS_DIR = Path(__file__).resolve().parent / "outputs"
+_CKPT_TAG   = "ema" if CHECKPOINT.stem.lower().startswith("ema") else "latest"
+OUTPUTS_DIR = Path(__file__).resolve().parent / f"outputs_{_CKPT_TAG}"

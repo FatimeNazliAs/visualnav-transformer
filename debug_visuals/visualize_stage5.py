@@ -21,7 +21,7 @@ like debug/stage5_diffusion.py). That already gives us a^k at every step
 without needing a forward hook to "intercept" anything hidden — there's
 nothing hidden to intercept.
 
-Saves 3 PNGs to debug_visuals/outputs/<traj>_f<idx>/, prefixed stage5_:
+Saves 3 PNGs to debug_visuals/outputs_<ckpt>/<traj>_f<idx>/, prefixed stage5_:
 
   1. stage5_1_denoising_strip.png   — 11 small 2D paths, noise -> clean
   2. stage5_2_final_trajectory.png  — real kinematic path overlaid on the
@@ -185,21 +185,6 @@ def _grey_to_blue(frac: float) -> tuple:
     return tuple(grey + (blue - grey) * frac)
 
 
-def _cumsum_path(a_tensor: torch.Tensor):
-    """
-    Turns an (1, NUM_ACTIONS, 2) action tensor into a 2D path by treating
-    linear_vel as a forward step and angular_vel as a lateral step, each
-    accumulated over time. This is a simplified visual proxy for the robot's
-    path, not a real unicycle/kinematic integration — good enough to see
-    "is this a coherent curve or random noise," which is the point here.
-    """
-    actions = a_tensor[0].detach().cpu().numpy()   # (NUM_ACTIONS, 2)
-    lin, ang = actions[:, 0], actions[:, 1]
-    x = np.concatenate([[0.0], np.cumsum(lin)])    # prepend origin as waypoint 0
-    y = np.concatenate([[0.0], np.cumsum(ang)])
-    return x, y
-
-
 # ══════════════════════════════════════════════════════════════════════════════
 # Plot 1 — Denoising strip: 11 small paths, noise -> clean
 # ══════════════════════════════════════════════════════════════════════════════
@@ -211,10 +196,16 @@ def plot_denoising_strip(steps: list, save_path: Path) -> None:
     for i, (k_label, a_k) in enumerate(steps):
         frac = i / (n - 1)   # 0 at the first (noisiest) panel, 1 at the last (cleanest)
         color = _grey_to_blue(frac)
-        x, y = _cumsum_path(a_k)
+        # Same path construction and orientation as stage5_2's top-down panel:
+        # real unicycle kinematics, plotted with y (lateral) horizontal and
+        # x (forward) vertical so "forward = up" reads consistently across both
+        # figures. (Earlier this used a cheap cumsum proxy plotted forward-
+        # horizontal, which made the clean path read left->right here but
+        # bottom->top in stage5_2 — confusing for the same trajectory.)
+        x, y, _ = _kinematic_path(a_k)
 
         ax = axes[i]
-        ax.plot(x, y, color=color, linewidth=1.8, marker="o", markersize=2.5)
+        ax.plot(y, x, color=color, linewidth=1.8, marker="o", markersize=2.5)
         if k_label == K_DENOISING:
             title = f"k={k_label} (noise)"
         elif k_label == 0:
@@ -244,8 +235,9 @@ def _kinematic_path(a_tensor: torch.Tensor):
     Proper unicycle kinematic integration (not cumulative sums): heading
     theta accumulates angular_vel, and each step's forward motion is
     rotated by the CURRENT heading before being added to x/y. This is what
-    actually makes the path curve, unlike _cumsum_path's straight-line
-    accumulation in the (linear_vel, angular_vel) plane.
+    actually makes the path curve. Both stage5_1 (denoising strip) and
+    stage5_2 (final trajectory) use this same function so the two figures
+    read consistently.
 
     x = forward axis, y = lateral axis, theta = heading (radians).
     Returns (x, y, theta), each of length NUM_ACTIONS+1 (waypoint 0 = origin).
@@ -489,7 +481,7 @@ def main() -> None:
     run_stage5(model, ct, obs_raw_last, save_dir=run_dir)
 
     print(f"\n{SEP}")
-    print("Stage 5 complete. 3 files in debug_visuals/outputs/")
+    print(f"Stage 5 complete. 3 files in {OUTPUTS_DIR}/")
     print(f"(actual path: {run_dir})")
     print(SEP)
 
