@@ -180,10 +180,8 @@ def extract_goal_token(model, obs_raw_list, goal_raw) -> np.ndarray:
 
 def plot_token_barchart(obs_tokens: np.ndarray, goal_token: np.ndarray, save_path: Path) -> None:
     """
-    Small multiples: one bar-chart subplot per token (4 obs + 1 goal),
-    side by side, sharing a y-axis so magnitudes stay comparable.
-    Overlaying all 5 in one axes made the chart unreadable — each
-    token's shape is much easier to read in its own panel.
+    Legacy bar-chart view — kept for standalone debugging but no longer
+    called by run_pipeline.py. Use plot_token_heatmap() instead.
     """
     obs_idxs = list(range(FRAME_IDX - CONTEXT_SIZE, FRAME_IDX + 1))
     goal_idx = FRAME_IDX + NUM_ACTIONS
@@ -217,6 +215,78 @@ def plot_token_barchart(obs_tokens: np.ndarray, goal_token: np.ndarray, save_pat
     fig.suptitle(
         f"Encoder output tokens — {TRAJ_NAME} t={FRAME_IDX}",
         fontsize=11,
+    )
+
+    save_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(save_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print(f"  Saved : {save_path}")
+
+
+def plot_token_heatmap(obs_tokens: np.ndarray, goal_token: np.ndarray,
+                       obs_raw_list: list, goal_raw: np.ndarray,
+                       save_path: Path) -> None:
+    """
+    Frame thumbnails → heatmap strips: shows the image-to-vector
+    transformation at a glance. Each row is one token; left column shows
+    the original frame, right column shows its 256-dim embedding as a
+    single-row heatmap.
+    """
+    import matplotlib.gridspec as gridspec
+
+    obs_idxs = list(range(FRAME_IDX - CONTEXT_SIZE, FRAME_IDX + 1))
+    goal_idx = FRAME_IDX + NUM_ACTIONS
+
+    all_tokens = list(obs_tokens) + [goal_token]
+    all_frames = obs_raw_list + [goal_raw]
+    all_labels = [f"obs[{i}] (frame {obs_idxs[i]})" for i in range(len(obs_idxs))]
+    all_labels.append(f"GOAL (frame {goal_idx})")
+    is_goal = [False] * len(obs_tokens) + [True]
+
+    n_rows = len(all_tokens)
+    vmin = min(t.min() for t in all_tokens)
+    vmax = max(t.max() for t in all_tokens)
+    vabs = max(abs(vmin), abs(vmax))
+
+    fig = plt.figure(figsize=(14, 1.8 * n_rows + 1.5))
+    gs = gridspec.GridSpec(n_rows, 2, width_ratios=[1, 6], wspace=0.15, hspace=0.4)
+
+    for row_idx in range(n_rows):
+        token = all_tokens[row_idx]
+        frame = all_frames[row_idx]
+        label = all_labels[row_idx]
+        goal_flag = is_goal[row_idx]
+
+        ax_img = fig.add_subplot(gs[row_idx, 0])
+        ax_img.imshow(frame)
+        ax_img.axis("off")
+        label_color = "#8e44ad" if goal_flag else "#2c3e50"
+        ax_img.set_title(label, fontsize=9, color=label_color,
+                         fontweight="bold" if goal_flag else "normal", pad=2)
+
+        ax_heat = fig.add_subplot(gs[row_idx, 1])
+        im = ax_heat.imshow(
+            token.reshape(1, -1), aspect="auto", cmap="RdBu_r",
+            vmin=-vabs, vmax=vabs,
+        )
+        ax_heat.set_yticks([])
+        ax_heat.set_xlabel("embedding dimension" if row_idx == n_rows - 1 else "", fontsize=8)
+        ax_heat.tick_params(labelsize=7)
+
+        arrow_color = "#8e44ad" if goal_flag else "#3498db"
+        ax_img.annotate(
+            "", xy=(1.15, 0.5), xycoords="axes fraction",
+            xytext=(1.02, 0.5), textcoords="axes fraction",
+            arrowprops=dict(arrowstyle="->", color=arrow_color, lw=2),
+        )
+
+    cbar_ax = fig.add_axes([0.92, 0.15, 0.015, 0.7])
+    fig.colorbar(im, cax=cbar_ax, label="activation value")
+
+    fig.suptitle(
+        f"Visual Encoders: Images → 256-dim Token Embeddings\n"
+        f"Trajectory: {TRAJ_NAME}  frame t={FRAME_IDX}",
+        fontsize=12, y=1.0,
     )
 
     save_path.parent.mkdir(parents=True, exist_ok=True)

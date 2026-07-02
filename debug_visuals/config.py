@@ -16,10 +16,11 @@ import torch
 RAW_DATA_DIR = Path("/data/raw/go_stanford/go_stanford")
 
 # ── Sample selection  — change these two lines to try a different sample ──────
-TRAJ_NAME = "no2vc_21_0"
-FRAME_IDX = 4
+TRAJ_NAME = "no1vcF_17_1"
+FRAME_IDX = 50
 
-#[(no10vc_10_0,30),(no1vcF_17_1,50),(no2vc_21_0,1),(no2vcF_85_2,5]
+#[(no10vc_10_0,30),(no1vcF_17_1,50),(no2vc_21_0,1),(no2vcF_85_2,5),(no2vcF_90_0,8)]
+
 # ── Device ────────────────────────────────────────────────────────────────────
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 

@@ -225,8 +225,10 @@ def plot_denoising_strip(steps: list, save_path: Path) -> None:
         ax.tick_params(labelsize=6)
         ax.set_aspect("equal", adjustable="datalim")
 
-    fig.suptitle("Denoising Trajectory: Noise → Clean Action Sequence", fontsize=14)
-    plt.tight_layout(rect=[0, 0, 1, 0.93])
+    fig.suptitle("Diffusion Denoising: Random Noise → Coherent Robot Trajectory", fontsize=14, fontweight="bold")
+    fig.text(0.5, 0.94, "Each panel shows the predicted path at one denoising step (K=10 → 0)",
+             ha="center", fontsize=10, style="italic", color="#555555")
+    plt.tight_layout(rect=[0, 0, 1, 0.90])
     save_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(save_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
@@ -357,8 +359,10 @@ def plot_final_trajectory(a_0: torch.Tensor, obs_raw_last: np.ndarray, save_path
     ax_vel.set_ylabel("value")
     ax_vel.legend(fontsize=8)
 
-    fig.suptitle("Final Denoised Action Sequence (a⁰)", fontsize=14)
-    plt.tight_layout(rect=[0, 0, 1, 0.93])
+    fig.suptitle("Final Denoised Action Sequence (a⁰) — Robot Motion Commands", fontsize=14, fontweight="bold")
+    fig.text(0.5, 0.94, "Left: path overlaid on camera view  |  Center: top-down 2D path  |  Right: velocity commands",
+             ha="center", fontsize=10, style="italic", color="#555555")
+    plt.tight_layout(rect=[0, 0, 1, 0.90])
     save_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(save_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
@@ -399,16 +403,17 @@ def plot_multimodal_runs(model, ct: torch.Tensor, save_path: Path) -> dict:
     ax.plot(mean_x, mean_y, color="black", linewidth=3.0, linestyle="--",
             label="mean trajectory", zorder=5)
 
-    ax.set_title("10 Inference Runs from Same ct — Multimodal Behavior", fontsize=13)
+    ax.set_title("Same Input, Different Random Seeds → Multiple Valid Paths", fontsize=13, fontweight="bold")
     ax.set_xlabel("x position (forward=positive, backward=negative)")
     ax.set_ylabel("y position (left=positive, right=negative)")
     ax.legend(fontsize=7, loc="best", ncol=2)
     ax.text(
         0.98, 0.02,
-        "Same observation, same goal, same model.\n"
-        "Different starting noise → different trajectories.\n"
-        "Spread shows multimodal behavior.\n"
-        "Negative x = robot plans to go backward.",
+        "Same observation, same goal, same model weights.\n"
+        "Only the initial random noise differs → each run\n"
+        "produces a different plausible trajectory.\n"
+        "This multimodality is the key advantage of\n"
+        "diffusion policies over direct regression.",
         transform=ax.transAxes, fontsize=8.5, va="bottom", ha="right",
         bbox=dict(boxstyle="round", facecolor="white", alpha=0.85),
     )

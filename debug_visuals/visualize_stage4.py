@@ -208,7 +208,8 @@ def _draw_attention_subplot(ax, mat: np.ndarray, head_label: str) -> None:
 
 
 def plot_attention_compare(attn_nav: dict, attn_explore: dict, save_path: Path) -> None:
-    nav_attn = attn_nav[LAYER_IDX_FOR_PLOT][0].numpy()       # (4 heads, 5, 5)
+    """Legacy full-grid attention compare — kept for standalone use."""
+    nav_attn = attn_nav[LAYER_IDX_FOR_PLOT][0].numpy()
     explore_attn = attn_explore[LAYER_IDX_FOR_PLOT][0].numpy()
 
     fig, axes = plt.subplots(2, 4, figsize=(24, 12))
@@ -223,7 +224,7 @@ def plot_attention_compare(attn_nav: dict, attn_explore: dict, save_path: Path) 
     fig.text(0.06, 0.28, "Exploration →", rotation=90, fontsize=14,
               fontweight="bold", ha="center", va="center")
 
-    head2_nav_col = nav_attn[HEAD_IDX_FOR_ZOOM][:, 4]       # all queries -> Goal key
+    head2_nav_col = nav_attn[HEAD_IDX_FOR_ZOOM][:, 4]
     head2_explore_col = explore_attn[HEAD_IDX_FOR_ZOOM][:, 4]
     fig.text(
         0.5, 0.015,
@@ -306,6 +307,78 @@ def plot_head2_zoom(attn_nav: dict, attn_explore: dict, save_path: Path) -> None
 # Plot 3 — ct: navigation vs exploration
 # ══════════════════════════════════════════════════════════════════════════════
 
+def plot_attention_combined(attn_nav: dict, attn_explore: dict, save_path: Path) -> None:
+    """
+    Combined attention figure: 2×4 grid (overview) on the left, Head 2
+    zoom on the right. Merges the old attention_compare + head2_zoom
+    into a single presentation-ready image.
+    """
+    import matplotlib.gridspec as gridspec
+
+    nav_attn = attn_nav[LAYER_IDX_FOR_PLOT][0].numpy()
+    explore_attn = attn_explore[LAYER_IDX_FOR_PLOT][0].numpy()
+
+    fig = plt.figure(figsize=(30, 12))
+    gs = gridspec.GridSpec(2, 6, wspace=0.4, hspace=0.35)
+
+    # Left: 2×4 grid (4 heads × nav/explore)
+    for head_idx in range(4):
+        ax_nav = fig.add_subplot(gs[0, head_idx])
+        _draw_attention_subplot(ax_nav, nav_attn[head_idx], f"Head {head_idx + 1}")
+        ax_exp = fig.add_subplot(gs[1, head_idx])
+        _draw_attention_subplot(ax_exp, explore_attn[head_idx], f"Head {head_idx + 1}")
+
+    fig.text(0.02, 0.72, "Navigation\n(goal visible)", rotation=90, fontsize=13,
+             fontweight="bold", ha="center", va="center", color="#2471a3")
+    fig.text(0.02, 0.28, "Exploration\n(goal masked)", rotation=90, fontsize=13,
+             fontweight="bold", ha="center", va="center", color="#c0392b")
+
+    # Right: Head 2 zoom (nav on top, explore on bottom)
+    nav_mat = nav_attn[HEAD_IDX_FOR_ZOOM]
+    explore_mat = explore_attn[HEAD_IDX_FOR_ZOOM]
+
+    for row, (mat, label, color) in enumerate([
+        (nav_mat, "Navigation", "#2471a3"),
+        (explore_mat, "Exploration", "#c0392b"),
+    ]):
+        ax = fig.add_subplot(gs[row, 4:6])
+        im = ax.imshow(mat, cmap="viridis", vmin=0, vmax=1)
+        ax.set_xticks(range(5))
+        ax.set_xticklabels(TOKEN_LABELS, fontsize=11)
+        ax.set_yticks(range(5))
+        ax.set_yticklabels(TOKEN_LABELS, fontsize=11)
+        ax.set_xlabel("Token being attended TO", fontsize=10)
+        ax.set_ylabel("Token doing the attending", fontsize=10)
+        for r in range(5):
+            for c in range(5):
+                val = mat[r, c]
+                ax.text(c, r, f"{val:.2f}", ha="center", va="center",
+                        fontsize=13, color="white" if val < 0.5 else "black")
+        ax.set_title(f"Head 2 — {label}", fontsize=13, fontweight="bold", color=color)
+        fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+
+    f0_goal_nav = nav_mat[0, 4]
+    f0_goal_explore = explore_mat[0, 4]
+    fig.text(
+        0.5, 0.02,
+        f"Head 2 is the goal-direction specialist: F0→Goal = {f0_goal_nav*100:.0f}% in navigation, "
+        f"{f0_goal_explore*100:.0f}% in exploration.  "
+        "One boolean completely severs the goal information pathway.",
+        ha="center", fontsize=12, color="#c0392b", fontweight="bold",
+    )
+
+    fig.suptitle(
+        "Transformer Attention — Navigation vs Exploration (Layer 4)",
+        fontsize=18, y=0.99,
+    )
+    fig.text(0.5, 0.955, _subtitle(), ha="center", fontsize=12, style="italic", color="#555555")
+
+    save_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(save_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print(f"  Saved : {save_path}")
+
+
 def plot_ct_comparison(ct_nav: torch.Tensor, ct_explore: torch.Tensor,
                         mean_abs_diff: float, save_path: Path) -> None:
     nav     = ct_nav[0].detach().cpu().numpy()
@@ -353,6 +426,67 @@ def plot_ct_comparison(ct_nav: torch.Tensor, ct_explore: torch.Tensor,
               ha="center", fontsize=11, style="italic", color="#555555")
 
     plt.tight_layout(rect=[0, 0.08, 1, 0.92])
+    save_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(save_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print(f"  Saved : {save_path}")
+
+
+def plot_ct_heatmap(ct_nav: torch.Tensor, ct_explore: torch.Tensor,
+                    mean_abs_diff: float, save_path: Path) -> None:
+    """
+    Presentation-ready ct comparison using heatmaps instead of bar charts.
+    Three stacked heatmap strips (nav, explore, difference) with scalar
+    summary metrics.
+    """
+    import matplotlib.gridspec as gridspec
+
+    nav = ct_nav[0].detach().cpu().numpy()
+    explore = ct_explore[0].detach().cpu().numpy()
+    diff = np.abs(nav - explore)
+
+    cosine_sim = np.dot(nav, explore) / (np.linalg.norm(nav) * np.linalg.norm(explore) + 1e-8)
+    l2_dist = np.linalg.norm(nav - explore)
+
+    vabs = max(abs(nav).max(), abs(explore).max())
+
+    fig = plt.figure(figsize=(14, 6))
+    gs = gridspec.GridSpec(3, 2, width_ratios=[20, 1], wspace=0.05, hspace=0.6)
+
+    data_list = [
+        (nav, "ct — Navigation mode (goal visible)", "RdBu_r", -vabs, vabs),
+        (explore, "ct — Exploration mode (goal masked)", "RdBu_r", -vabs, vabs),
+        (diff, "Absolute difference |nav − explore|", "Reds", 0, diff.max()),
+    ]
+
+    for row_idx, (data, title, cmap, vmin, vmax) in enumerate(data_list):
+        ax = fig.add_subplot(gs[row_idx, 0])
+        im = ax.imshow(data.reshape(1, -1), aspect="auto", cmap=cmap, vmin=vmin, vmax=vmax)
+        ax.set_yticks([])
+        ax.set_title(title, fontsize=10, loc="left", fontweight="bold")
+        if row_idx == 2:
+            ax.set_xlabel("embedding dimension (256-D)", fontsize=9)
+        else:
+            ax.set_xticks([])
+        ax.tick_params(labelsize=7)
+
+        cax = fig.add_subplot(gs[row_idx, 1])
+        fig.colorbar(im, cax=cax)
+
+    fig.text(
+        0.98, 0.02,
+        f"Cosine similarity: {cosine_sim:.4f}    L2 distance: {l2_dist:.2f}    mean|Δ|: {mean_abs_diff:.4f}",
+        ha="right", va="bottom", fontsize=10, fontweight="bold",
+        bbox=dict(boxstyle="round", facecolor="white", edgecolor="#555555", alpha=0.9),
+    )
+
+    fig.suptitle(
+        "Effect of Goal Masking on Context Vector ct",
+        fontsize=14, fontweight="bold", y=1.02,
+    )
+    fig.text(0.5, 0.97, _subtitle(" — ct is the input to the diffusion model"),
+             ha="center", fontsize=11, style="italic", color="#555555")
+
     save_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(save_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
@@ -455,10 +589,8 @@ def run_stage4(model, obs_tokens_np: np.ndarray, goal_token_np: np.ndarray, save
     mean_abs_diff = (ct_nav - ct_explore).abs().mean().item()
     print(f"  Mean |ct_nav - ct_explore| = {mean_abs_diff:.4f}")
 
-    plot_attention_compare(attn_nav, attn_explore, save_dir / "stage4_1_attention_compare.png")
-    plot_head2_zoom(attn_nav, attn_explore, save_dir / "stage4_2_attention_head2_zoom.png")
-    plot_ct_comparison(ct_nav, ct_explore, mean_abs_diff, save_dir / "stage4_3_ct_comparison.png")
-    plot_transformer_effect(obs_tokens_np, goal_token_np, output_nav, save_dir / "stage4_4_transformer_effect.png")
+    plot_attention_combined(attn_nav, attn_explore, save_dir / "stage4_attention.png")
+    plot_ct_heatmap(ct_nav, ct_explore, mean_abs_diff, save_dir / "stage4_ct_comparison.png")
 
     return {
         "tokens_in": tokens_in,
@@ -494,11 +626,11 @@ def main() -> None:
     print(f"  goal_token  : {goal_token_np.shape}")
 
     run_dir = OUTPUTS_DIR / f"{TRAJ_NAME}_f{FRAME_IDX}"
-    print(f"\n[4/4] Running Transformer passes and saving 4 PNG files to {run_dir} …")
+    print(f"\n[4/4] Running Transformer passes and saving 2 PNG files to {run_dir} …")
     run_stage4(model, obs_tokens_np, goal_token_np, save_dir=run_dir)
 
     print(f"\n{SEP}")
-    print("Stage 4 complete. 4 files in debug_visuals/outputs/")
+    print("Stage 4 complete. 2 files in debug_visuals/outputs/")
     print(f"(actual path: {run_dir})")
     print(SEP)
 

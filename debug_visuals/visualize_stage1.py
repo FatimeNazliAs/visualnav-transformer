@@ -196,10 +196,11 @@ def plot_frame_strip(sample: dict, save_path: Path) -> None:
     )
 
     fig.suptitle(
-        f"NoMaD Input — trajectory: {traj_name}   frame t={FRAME_IDX}\n"
-        f"Encoder ψ receives obs[0..{N_OBS_FRAMES-1}]  ·  "
-        f"Encoder φ receives goal (maskable)",
-        fontsize=10, y=1.01,
+        f"Model Input — What the Robot Sees\n"
+        f"Trajectory: {traj_name}   frame t={FRAME_IDX}\n"
+        f"Observation context (past + current) → Encoder ψ    |    "
+        f"Goal (where to go) → Encoder φ (maskable)",
+        fontsize=10, fontweight="bold", y=1.08,
     )
 
     save_path.parent.mkdir(parents=True, exist_ok=True)
