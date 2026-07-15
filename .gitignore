@@ -155,4 +155,7 @@ debug_visuals/outputs/
 debug_visuals/outputs_ema/
 debug_visuals/outputs_latest/
 
+docs/nomad-handoff-presentation-visuals.md
+
 .claude/
+CLAUDE.md
