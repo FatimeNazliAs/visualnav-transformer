@@ -1,0 +1,675 @@
+<meta charset="utf-8">
+<title>How NoMaD Drives</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Serif:wght@500;600&display=swap">
+<style>
+/* ══════════════════════════════════════════════════════════════════════════
+   Shared deeper_visuals page styles — a verbatim copy of
+   deeper_visuals/common/template/style.css.
+
+   P0 is the one phase build_page.py never touches: it has no model run and no
+   facts.json, so it is hand-written and shipped by `update.sh --static`. That
+   means nothing injects the shared sheet at build time and it has to be
+   inlined here. If common/template/style.css changes, re-paste it below.
+   ══════════════════════════════════════════════════════════════════════════ */
+/* deeper_visuals/common/template/style.css
+   Shared look for every advisor page (P0–P5).
+
+   The one design constraint that drives everything here: the hero is always a
+   matplotlib PNG saved on a white ground. So the figure gets its own light
+   "plate" in BOTH themes — a mounted lab print — rather than a transparent
+   figure that would blow out on a dark background. */
+
+/* ── Tokens: light is the base set, every colour defined here ─────────────── */
+:root {
+  --ground:      #f7f8fa;   /* faintly cool page ground */
+  --surface:     #ffffff;
+  --ink:         #16202b;   /* blue-biased near-black */
+  --ink-soft:    #35434f;
+  --muted:       #5c6b7a;
+  --rule:        #dde3e9;
+  --accent:      #b45309;   /* burnt amber — the figures' "current frame" hue */
+  --accent-soft: #fdf3e7;
+  --goal:        #7d3c98;   /* the figures' "goal" purple */
+  --plate:       #fcfcfd;   /* the figure mount — light in both themes */
+  --plate-rule:  #d8dee5;
+  --shadow:      0 1px 2px rgba(22, 32, 43, .06), 0 8px 24px rgba(22, 32, 43, .05);
+}
+
+/* System-dark (no data-theme stamped) — an explicit light choice still wins. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --ground:      #0f1720;
+    --surface:     #17212c;
+    --ink:         #e4eaf0;
+    --ink-soft:    #c2cdd8;
+    --muted:       #93a3b3;
+    --rule:        #2a3743;
+    --accent:      #f0a03c;
+    --accent-soft: #2a2116;
+    --goal:        #c48ad9;
+    --plate:       #f4f5f7;
+    --plate-rule:  #39485a;
+    --shadow:      0 1px 2px rgba(0, 0, 0, .4), 0 8px 24px rgba(0, 0, 0, .3);
+  }
+}
+
+/* Explicit dark choice — wins over a light OS. */
+:root[data-theme="dark"] {
+  --ground:      #0f1720;
+  --surface:     #17212c;
+  --ink:         #e4eaf0;
+  --ink-soft:    #c2cdd8;
+  --muted:       #93a3b3;
+  --rule:        #2a3743;
+  --accent:      #f0a03c;
+  --accent-soft: #2a2116;
+  --goal:        #c48ad9;
+  --plate:       #f4f5f7;
+  --plate-rule:  #39485a;
+  --shadow:      0 1px 2px rgba(0, 0, 0, .4), 0 8px 24px rgba(0, 0, 0, .3);
+}
+
+/* ── Base ─────────────────────────────────────────────────────────────────── */
+body {
+  margin: 0;
+  background: var(--ground);          /* explicit — a transparent body would
+                                         borrow the host's theme */
+  color: var(--ink);
+  font-family: "IBM Plex Sans", ui-sans-serif, system-ui, -apple-system, sans-serif;
+  font-size: 17px;
+  line-height: 1.65;
+  -webkit-font-smoothing: antialiased;
+}
+
+.page {
+  max-width: 62rem;
+  margin: 0 auto;
+  padding: clamp(2rem, 5vw, 4.5rem) clamp(1.15rem, 4vw, 2.5rem) 3.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 2.25rem;                        /* layout owns the spacing, not margins */
+}
+
+/* ── Masthead ─────────────────────────────────────────────────────────────── */
+.masthead { display: flex; flex-direction: column; gap: .85rem; }
+
+.eyebrow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: .6rem .85rem;
+  font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: .74rem;
+  letter-spacing: .13em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.eyebrow .phase {
+  color: var(--accent);
+  font-weight: 500;
+  padding: .18rem .5rem;
+  background: var(--accent-soft);
+  border-radius: 3px;
+}
+
+.eyebrow .sep { color: var(--rule); }
+
+h1 {
+  font-family: "IBM Plex Serif", ui-serif, Georgia, serif;
+  font-weight: 600;
+  font-size: clamp(1.9rem, 4.4vw, 2.75rem);
+  line-height: 1.15;
+  letter-spacing: -.015em;
+  text-wrap: balance;
+  margin: 0;
+}
+
+.lead {
+  max-width: 44rem;                    /* ~65 characters of running text */
+  font-size: 1.12rem;
+  color: var(--ink-soft);
+  margin: 0;
+}
+
+/* ── Figure plate — the mounted print ─────────────────────────────────────── */
+.figure { display: flex; flex-direction: column; gap: .7rem; margin: 0; }
+
+.plate {
+  background: var(--plate);
+  border: 1px solid var(--plate-rule);
+  border-radius: 6px;
+  box-shadow: var(--shadow);
+  padding: clamp(.65rem, 2vw, 1.15rem);
+  overflow-x: auto;                    /* wide strips scroll here, not the body */
+}
+
+.plate img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: 0 auto;
+}
+
+figcaption {
+  font-size: .9rem;
+  color: var(--muted);
+  max-width: 44rem;
+}
+
+figcaption b { color: var(--ink-soft); font-weight: 600; }
+
+/* ── Numbers callout ──────────────────────────────────────────────────────── */
+.stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(8.5rem, 1fr));
+  gap: 1px;                            /* the gap itself draws the rules */
+  background: var(--rule);
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  overflow: hidden;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.stats li {
+  background: var(--surface);
+  padding: .85rem 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: .18rem;
+}
+
+.stats .value {
+  font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-variant-numeric: tabular-nums;
+  font-size: 1.3rem;
+  font-weight: 500;
+  color: var(--ink);
+  line-height: 1.2;
+}
+
+.stats .label {
+  font-size: .76rem;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+/* ── Closing note + provenance ────────────────────────────────────────────── */
+.paper-note {
+  max-width: 44rem;
+  margin: 0;
+  padding-left: .95rem;
+  border-left: 2px solid var(--goal);
+  color: var(--ink-soft);
+  font-size: .98rem;
+}
+
+.provenance {
+  border-top: 1px solid var(--rule);
+  padding-top: 1rem;
+  font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: .74rem;
+  line-height: 1.9;
+  color: var(--muted);
+  display: flex;
+  flex-wrap: wrap;
+  gap: .3rem 1.35rem;
+}
+
+.provenance b { color: var(--ink-soft); font-weight: 500; }
+
+/* ── Accessibility ────────────────────────────────────────────────────────── */
+a { color: var(--accent); }
+a:focus-visible,
+.plate:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+
+@media (prefers-reduced-motion: reduce) {
+  * { animation-duration: .01ms !important; transition-duration: .01ms !important; }
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   P0-only additions
+
+   P0 carries three things the generated phases do not: the mode pair, the
+   hand-drawn architecture diagram, and the P1–P5 index. Everything below
+   builds on the tokens above rather than introducing a second palette.
+   ══════════════════════════════════════════════════════════════════════════ */
+
+/* ── Extra tokens ─────────────────────────────────────────────────────────
+   Defined in all three theme states, same as the shared set. The diagram is
+   drawn, not photographed, so unlike a matplotlib PNG it can and must flip
+   with the theme — which is why it never sits on .plate (that stays light in
+   both themes on purpose, to mount white-ground figures). */
+:root {
+  --box:       #f4f7f9;   /* diagram box fill, lifted off the plate */
+  --box-rule:  #ccd6df;
+  --goal-soft: #f7f0fb;   /* the goal path, tinted with the figures' purple */
+  --goal-rule: #cdb0dc;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --box:       #20303f;
+    --box-rule:  #3d4f61;
+    --goal-soft: #2b2036;
+    --goal-rule: #5c4470;
+  }
+}
+
+:root[data-theme="dark"] {
+  --box:       #20303f;
+  --box-rule:  #3d4f61;
+  --goal-soft: #2b2036;
+  --goal-rule: #5c4470;
+}
+
+/* ── Sections ─────────────────────────────────────────────────────────────
+   The page is a flex column with a gap, so sections own no outer margins. */
+section { display: flex; flex-direction: column; gap: .9rem; }
+
+h2 {
+  font-family: "IBM Plex Serif", ui-serif, Georgia, serif;
+  font-weight: 600;
+  font-size: 1.3rem;
+  line-height: 1.25;
+  letter-spacing: -.01em;
+  text-wrap: balance;
+  margin: 0;
+}
+
+/* ── Hairline-separated cells ─────────────────────────────────────────────
+   The shared .stats callout draws its dividers with a 1px grid gap over a
+   rule-coloured ground rather than with per-cell borders — no double edges to
+   collapse. The mode pair and the phase index want exactly that, so the
+   construction lives here once and all three read as one family. */
+.cells {
+  display: grid;
+  gap: 1px;
+  background: var(--rule);
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.cells > * { background: var(--surface); }
+
+/* ── The mode pair: two behaviours, or in and out ─────────────────────────
+   Colour is doing real work: the goal purple marks the run where the goal
+   token is kept, plain grey the run where it is hidden. Each modifier sets
+   one custom property rather than restating the selector. */
+.modes { grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr)); }
+
+.mode {
+  padding: 1.1rem 1.2rem;
+  display: flex;
+  flex-direction: column;
+  gap: .35rem;
+}
+
+.mode-kicker {
+  font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: .72rem;
+  letter-spacing: .11em;
+  text-transform: uppercase;
+  color: var(--kicker, var(--muted));
+  margin: 0;
+}
+
+.mode-nav { --kicker: var(--goal); }
+.mode-in  { --kicker: var(--accent); }
+
+.mode h3 {
+  font-family: "IBM Plex Serif", ui-serif, Georgia, serif;
+  font-weight: 600;
+  font-size: 1.1rem;
+  margin: 0;
+}
+
+/* ── Bulleted points ──────────────────────────────────────────────────────
+   The page is lists, not prose: every section below the masthead is scannable
+   in one pass. Markers pick up the accent so they read as structure. */
+.points {
+  margin: 0;
+  padding-left: 1.15rem;
+  max-width: 44rem;
+  display: flex;
+  flex-direction: column;
+  gap: .45rem;
+  color: var(--ink-soft);
+}
+
+.points li::marker { color: var(--accent); }
+.points b { color: var(--ink); font-weight: 600; }
+
+.mode .points { font-size: .95rem; gap: .3rem; max-width: none; }
+
+/* ── Diagram plate ────────────────────────────────────────────────────────
+   Deliberately NOT .plate. That class keeps a light ground in both themes
+   because it mounts white-background matplotlib prints; this diagram is
+   token-driven SVG, so it needs a ground that flips with everything else —
+   otherwise dark-theme text lands on a light slab and vanishes. */
+.diagram-plate {
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  box-shadow: var(--shadow);
+  padding: clamp(.5rem, 2vw, 1rem);
+  overflow-x: auto;              /* the flow scrolls here, never the body */
+}
+
+/* The column caps at 62rem, so the drawing always renders at roughly 0.9x its
+   viewBox. Type sizes below are set for that, not for 1:1. Below the min-width
+   the plate scrolls rather than shrinking the labels out of legibility. */
+.diagram { display: block; width: 100%; min-width: 44rem; height: auto; }
+
+/* SVG paint, all from the token set so both themes resolve as a set. */
+.diagram .box       { fill: var(--box);       stroke: var(--box-rule); stroke-width: 1.2; }
+.diagram .box-goal  { fill: var(--goal-soft); stroke: var(--goal-rule); stroke-width: 1.2; }
+.diagram .flow      { fill: none; stroke: var(--muted); stroke-width: 1.5; }
+.diagram .flow-goal { fill: none; stroke: var(--goal); stroke-width: 1.5; }
+.diagram .mk-ink    { fill: var(--muted); }
+.diagram .mk-goal   { fill: var(--goal); }
+.diagram .switch    { fill: var(--surface); stroke: var(--goal); stroke-width: 1.5; }
+
+.diagram text { font-family: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif; fill: var(--ink); }
+.diagram .t-title { font-size: 16px; font-weight: 600; }
+.diagram .t-titlesm { font-size: 13.5px; font-weight: 600; }
+.diagram .t-sub   { font-size: 12px; fill: var(--ink-soft); }
+.diagram .t-mono  { font-family: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+                    font-size: 11.5px; fill: var(--muted); }
+.diagram .t-arrow { font-family: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+                    font-size: 11px; fill: var(--muted); }
+.diagram .t-lane  { font-family: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+                    font-size: 10.5px; letter-spacing: .14em; fill: var(--muted); }
+.diagram .t-ct    { font-family: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+                    font-size: 15px; font-weight: 500; fill: var(--accent); }
+.diagram .t-nav     { fill: var(--goal); }
+.diagram .t-explore { fill: var(--muted); }
+
+/* ── The P1–P5 index ──────────────────────────────────────────────────────
+   Numbered because the phases really are a sequence: each one picks up where
+   the last left off, left to right along the diagram above. */
+.phases {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  grid-template-columns: 1fr;
+}
+
+.phases li {
+  display: grid;
+  grid-template-columns: 3rem 1fr;
+  gap: .35rem 1rem;
+  align-items: baseline;
+  padding: .8rem 1rem;
+}
+
+.phases .tag {
+  font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: .82rem;
+  font-weight: 500;
+  color: var(--accent);
+}
+
+.phases .what { font-size: .97rem; color: var(--ink-soft); max-width: 44rem; }
+.phases .what b { color: var(--ink); font-weight: 600; }
+
+@media (max-width: 34rem) {
+  .phases li { grid-template-columns: 1fr; }
+}
+</style>
+
+<main class="page">
+
+  <header class="masthead">
+    <p class="eyebrow">
+      <span class="phase">P0</span>
+      <span class="sep">/</span>
+      <span>Overview · static primer</span>
+    </p>
+    <h1>One trained model, two ways to drive</h1>
+    <p class="lead">A driving brain for a wheeled robot: camera pictures in, steering commands out.</p>
+  </header>
+
+  <section>
+    <h2>What it does</h2>
+    <ul class="points">
+      <li>Drives a wheeled robot from <b>camera images alone</b> — no map, no laser scanner, no GPS.</li>
+      <li>Watches the last four camera frames, and optionally one photo of the destination.</li>
+      <li>Answers with the next eight driving commands, recomputed several times a second.</li>
+      <li>Trained <b>once</b>, on recordings of robots driven around real buildings. One weight file, never swapped at run time.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>In and out</h2>
+    <div class="modes cells">
+      <div class="mode mode-in">
+        <p class="mode-kicker">goes in</p>
+        <h3>Pictures</h3>
+        <ul class="points">
+          <li>4 recent camera frames, t−3 … t</li>
+          <li>1 goal photo, t + 8 — optional</li>
+          <li>colour, 96 × 96 pixels each</li>
+        </ul>
+      </div>
+      <div class="mode">
+        <p class="mode-kicker">comes out</p>
+        <h3>Driving commands</h3>
+        <ul class="points">
+          <li>8 steps of (speed, turn)</li>
+          <li>an estimate of how far the goal is</li>
+          <li>redrawn every control cycle</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Core architecture</h2>
+    <figure class="figure">
+      <div class="diagram-plate" tabindex="0">
+        <svg class="diagram" viewBox="0 0 1000 296" role="img"
+             aria-label="NoMaD end to end. Four recent camera frames go through an EfficientNet-B0 frame encoder, becoming four tokens of 256 numbers. A second EfficientNet-B0 with its own weights reads the goal photo stacked together with the current frame — the last of those four, reused — and produces a fifth token. A switch on that goal token's path decides whether it is kept, giving navigation, or hidden, giving exploration. A four-layer four-head transformer weighs all five tokens into one 256-number summary called c-t. That summary conditions a diffusion U-Net, which turns random noise into eight driving commands over ten passes, and also feeds a second head estimating how far the goal is.">
+
+          <defs>
+            <marker id="p0-arw" viewBox="0 0 10 8" refX="9.2" refY="4"
+                    markerWidth="7" markerHeight="6" orient="auto-start-reverse">
+              <path d="M0 0 L10 4 L0 8 Z" class="mk-ink"></path>
+            </marker>
+            <marker id="p0-arw-goal" viewBox="0 0 10 8" refX="9.2" refY="4"
+                    markerWidth="7" markerHeight="6" orient="auto-start-reverse">
+              <path d="M0 0 L10 4 L0 8 Z" class="mk-goal"></path>
+            </marker>
+          </defs>
+
+          <!-- ══ Top lane: the four camera frames ══════════════════════════ -->
+          <text class="t-lane" x="6" y="32">WHAT IT SEES</text>
+
+          <rect class="box" x="6" y="44" width="142" height="52" rx="6"></rect>
+          <text class="t-title" x="77" y="70" text-anchor="middle">4 recent frames</text>
+          <text class="t-mono"  x="77" y="87" text-anchor="middle">t−3 … t</text>
+
+          <line class="flow" x1="148" y1="70" x2="174" y2="70" marker-end="url(#p0-arw)"></line>
+
+          <rect class="box" x="176" y="44" width="142" height="52" rx="6"></rect>
+          <text class="t-title" x="247" y="70" text-anchor="middle">Frame reader</text>
+          <text class="t-mono"  x="247" y="87" text-anchor="middle">ψ · EfficientNet-B0</text>
+
+          <line class="flow" x1="318" y1="70" x2="348" y2="70" marker-end="url(#p0-arw)"></line>
+
+          <rect class="box" x="352" y="57" width="26" height="26" rx="4"></rect>
+          <rect class="box" x="385" y="57" width="26" height="26" rx="4"></rect>
+          <rect class="box" x="418" y="57" width="26" height="26" rx="4"></rect>
+          <rect class="box" x="451" y="57" width="26" height="26" rx="4"></rect>
+          <text class="t-mono" x="414" y="102" text-anchor="middle">4 view tokens</text>
+          <text class="t-mono" x="414" y="117" text-anchor="middle">256 numbers each</text>
+
+          <polyline class="flow" points="477,70 496,70 496,138 518,138"
+                    marker-end="url(#p0-arw)"></polyline>
+
+          <!-- The goal encoder is a SEPARATE EfficientNet-B0 (in_channels=6, its
+               own weights), fed cat([current_frame, goal_image]) — so its token
+               encodes the gap between the two, not the destination alone.
+               The tap starts at the box's right edge, the "t" end of "t−3 … t",
+               because only the LAST of the four frames is reused here:
+               obs_img[:, 3*context_size:] slices channels 9:12. -->
+          <polyline class="flow-goal" points="140,96 140,168 216,168 216,202"
+                    stroke-dasharray="4 3" marker-end="url(#p0-arw-goal)"></polyline>
+          <text class="t-arrow" x="148" y="162">reuses frame t</text>
+
+          <!-- ══ Bottom lane: the goal photo, and the switch ═══════════════ -->
+          <text class="t-lane" x="6" y="194">WHERE IT SHOULD END UP</text>
+
+          <rect class="box-goal" x="6" y="206" width="142" height="52" rx="6"></rect>
+          <text class="t-title" x="77" y="232" text-anchor="middle">1 goal photo</text>
+          <text class="t-mono"  x="77" y="249" text-anchor="middle">t + 8</text>
+
+          <line class="flow-goal" x1="148" y1="232" x2="174" y2="232" marker-end="url(#p0-arw-goal)"></line>
+
+          <rect class="box-goal" x="176" y="206" width="142" height="52" rx="6"></rect>
+          <text class="t-title" x="247" y="232" text-anchor="middle">Goal reader</text>
+          <text class="t-mono"  x="247" y="249" text-anchor="middle">φ · EfficientNet-B0</text>
+
+          <line class="flow-goal" x1="318" y1="232" x2="348" y2="232" marker-end="url(#p0-arw-goal)"></line>
+
+          <rect class="box-goal" x="352" y="219" width="26" height="26" rx="4"></rect>
+          <text class="t-mono" x="365" y="212" text-anchor="middle">1 goal token</text>
+
+          <!-- the switch: the only thing separating the two behaviours -->
+          <line class="flow-goal" x1="378" y1="232" x2="418" y2="232"></line>
+          <polyline class="flow-goal" points="442,232 496,232 496,164 518,164"
+                    marker-end="url(#p0-arw-goal)"></polyline>
+          <circle class="switch" cx="430" cy="232" r="7"></circle>
+          <line class="flow-goal" x1="426" y1="236" x2="435" y2="227"></line>
+          <text class="t-arrow" x="436" y="252" text-anchor="middle">goal masking</text>
+          <text class="t-arrow t-nav"     x="398" y="268">kept   →  navigation</text>
+          <text class="t-arrow t-explore" x="398" y="282">hidden →  exploration</text>
+
+          <!-- ══ Transformer ═══════════════════════════════════════════════ -->
+          <rect class="box" x="520" y="121" width="142" height="60" rx="6"></rect>
+          <text class="t-title" x="591" y="147" text-anchor="middle">Transformer</text>
+          <text class="t-mono"  x="591" y="166" text-anchor="middle">4 layers × 4 heads</text>
+
+          <line class="flow" x1="662" y1="151" x2="690" y2="151" marker-end="url(#p0-arw)"></line>
+          <text class="t-arrow" x="677" y="113" text-anchor="middle">averages</text>
+
+          <!-- ══ The context vector ════════════════════════════════════════ -->
+          <rect class="box" x="694" y="121" width="116" height="60" rx="6"></rect>
+          <text class="t-ct"  x="752" y="145" text-anchor="middle">cₜ</text>
+          <text class="t-sub" x="752" y="162" text-anchor="middle">one 256-number</text>
+          <text class="t-sub" x="752" y="176" text-anchor="middle">summary</text>
+
+          <line class="flow" x1="810" y1="151" x2="838" y2="151" marker-end="url(#p0-arw)"></line>
+          <text class="t-arrow" x="825" y="113" text-anchor="middle">conditions</text>
+
+          <line class="flow" x1="752" y1="181" x2="752" y2="222" marker-end="url(#p0-arw)"></line>
+          <text class="t-arrow" x="744" y="206" text-anchor="end">second head</text>
+
+          <rect class="box" x="677" y="226" width="150" height="48" rx="6"></rect>
+          <text class="t-titlesm" x="752" y="248" text-anchor="middle">How far to the goal</text>
+          <text class="t-mono"    x="752" y="265" text-anchor="middle">distance head</text>
+
+          <!-- ══ Diffusion policy ══════════════════════════════════════════ -->
+          <rect class="box" x="842" y="121" width="156" height="60" rx="6"></rect>
+          <text class="t-title" x="920" y="144" text-anchor="middle">Path generator</text>
+          <text class="t-mono"  x="920" y="161" text-anchor="middle">ConditionalUnet1D</text>
+          <text class="t-mono"  x="920" y="175" text-anchor="middle">K = 10 passes</text>
+
+          <line class="flow" x1="920" y1="181" x2="920" y2="222" marker-end="url(#p0-arw)"></line>
+          <text class="t-arrow" x="912" y="206" text-anchor="end">after 10 passes</text>
+
+          <rect class="box" x="842" y="226" width="156" height="48" rx="6"></rect>
+          <text class="t-titlesm" x="920" y="248" text-anchor="middle">8 × (speed, turn)</text>
+          <text class="t-mono"    x="920" y="265" text-anchor="middle">the next move</text>
+
+        </svg>
+      </div>
+      <figcaption>
+        Two picture readers — same design, <b>separate weights</b> — turn the
+        images into five lists of 256 numbers. The frame at <b>t is used
+        twice</b>: once as the newest thing the robot saw, and again stacked
+        behind the goal photo, so the goal reader sees where the robot is and
+        where it should be together. The transformer boils the five lists into
+        one summary; the path generator denoises that into a route.
+      </figcaption>
+    </figure>
+  </section>
+
+  <ul class="stats">
+    <li><span class="value">2</span><span class="label">picture readers</span></li>
+    <li><span class="value">5</span><span class="label">tokens compared</span></li>
+    <li><span class="value">256</span><span class="label">numbers per token</span></li>
+    <li><span class="value">10</span><span class="label">cleanup passes</span></li>
+  </ul>
+
+  <section>
+    <h2>What it can do</h2>
+    <div class="modes cells">
+      <div class="mode mode-nav">
+        <p class="mode-kicker">goal token kept</p>
+        <h3>Navigation</h3>
+        <ul class="points">
+          <li>Give it a photo of the destination.</li>
+          <li>It drives toward that place, steering around what is in the way.</li>
+        </ul>
+      </div>
+      <div class="mode">
+        <p class="mode-kicker">goal token hidden</p>
+        <h3>Exploration</h3>
+        <ul class="points">
+          <li>Hide that photo from the network.</li>
+          <li>The same weights wander sensibly instead — down corridors, around obstacles.</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>The five deep-dives</h2>
+    <ol class="phases cells">
+      <li>
+        <span class="tag">P1</span>
+        <span class="what"><b>What goes in</b> — the five pictures exactly as
+        the model receives them.</span>
+      </li>
+      <li>
+        <span class="tag">P2</span>
+        <span class="what"><b>Reading a picture</b> — what each reader makes of
+        one, drawn as a heatmap.</span>
+      </li>
+      <li>
+        <span class="tag">P3</span>
+        <span class="what"><b>Weighing them up</b> — attention with the goal
+        token kept and with it hidden, side by side.</span>
+      </li>
+      <li>
+        <span class="tag">P4</span>
+        <span class="what"><b>Noise into a path</b> — all ten cleanup passes,
+        one panel each.</span>
+      </li>
+      <li>
+        <span class="tag">P5</span>
+        <span class="what"><b>The answer</b> — the finished route three ways,
+        and why asking again gives a different valid one.</span>
+      </li>
+    </ol>
+  </section>
+
+  <p class="paper-note">
+    This is the architecture figure of the NoMaD paper: two image encoders, a
+    goal-masked transformer, a diffusion policy head.
+  </p>
+
+  <footer class="provenance">
+    <span><b>Page</b> hand-written · no model run</span>
+    <span><b>Weights behind P1–P5</b> ema_99.pth · nomad_2026_06_13_18_04_23</span>
+    <span><b>Scenes</b> go_stanford recordings</span>
+  </footer>
+
+</main>

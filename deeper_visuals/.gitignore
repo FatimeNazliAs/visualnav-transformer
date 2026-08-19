@@ -12,5 +12,10 @@ out/
 */facts.json
 */*.png
 
+# ...with one exception. P0 has no model run, so its latest.html is not
+# generated output at all — it is hand-written source that `update.sh --static`
+# only copies. Without this negation the primer would never be committed.
+!p0_overview/latest.html
+
 __pycache__/
 *.py[cod]
