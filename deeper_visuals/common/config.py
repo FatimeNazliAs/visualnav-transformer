@@ -9,13 +9,20 @@ Each phase folder holds a tiny config.yaml:
     # …any phase-specific knobs, e.g. num_seeds: 6
 
 load_config() turns that into one frozen object carrying everything the phase's
-run_model.py and the page builder need: the scene, the resolved weight file, the
+run_model.py and the page builder need: the scene, which weights to use, the
 frame indices, and the output directory. Phase-specific knobs stay reachable
 through .extra so this module never needs to know about them.
 
 The output directory is tagged by checkpoint (out/p1/latest/, out/p1/ema/) so
 switching `checkpoint:` never overwrites the other variant's PNGs — you can hold
 both and compare.
+
+Nothing here touches the filesystem under /outputs. The weight file and its run
+folder are properties on PhaseConfig, resolved the first time something actually
+asks for them — which in practice is only model.load_model. That keeps reading a
+config free of the training run, so build_page.py and any test can run on a
+machine with no GPU and no mounts, which is the whole point of the two-script
+split.
 """
 
 from __future__ import annotations
@@ -43,9 +50,8 @@ class PhaseConfig:
     traj: str                   # go_stanford trajectory folder name
     frame: int                  # the current frame, t
     description: str            # human-readable scene description
-    checkpoint_tag: str         # "latest" | "ema"
-    checkpoint: Path            # the actual .pth resolved from the tag
-    run_dir: Path               # the training run folder the weights came from
+    checkpoint_tag: str         # "latest" | "ema" — validated at load time
+    run: str                    # training run folder name, e.g. nomad_2026_…
     out_dir: Path               # where PNGs + facts.json are written
     extra: dict[str, Any] = field(default_factory=dict)
 
@@ -64,11 +70,54 @@ class PhaseConfig:
     def traj_dir(self) -> Path:
         return settings.RAW_DATA_DIR / self.traj
 
+    # ── Weights — resolved on demand, never at load ───────────────────────────
+    # These two are the only members that touch /outputs, and they are reached
+    # exactly once, by model.load_model. Resolving them eagerly in load_config
+    # would mean that *reading a config file* requires the 16 GB training run to
+    # be mounted — which put build_page.py, the half of the pipeline explicitly
+    # designed to run without a GPU, behind the same requirement as the forward
+    # pass. Keeping them lazy is what lets pages (and tests) build on any
+    # machine. The tag itself is still validated eagerly in config_from_dict,
+    # because that is a dict lookup and a typo should fail immediately.
+
+    @property
+    def run_dir(self) -> Path:
+        """The training run folder. Raises if it is not mounted."""
+        run_dir = settings.RUNS_DIR / self.run
+        if not run_dir.is_dir():
+            raise FileNotFoundError(
+                f"training run not found: {run_dir}. Is /outputs mounted? "
+                f"Only the forward pass needs it — page builds do not."
+            )
+        return run_dir
+
+    @property
+    def checkpoint(self) -> Path:
+        """
+        The .pth the tag resolves to. Raises if it is missing.
+
+        Two details worth not rediscovering:
+
+        1. `latest.pth` is not a distinct checkpoint — train_eval_loop.py saves
+           model.state_dict() to both {epoch}.pth and latest.pth back-to-back,
+           so it is the same tensors as 99.pth.
+        2. There is no ema_latest.pth to point at. train_eval_loop.py builds
+           that path and prints "Saved EMA model to …" but never calls
+           torch.save on it (upstream bug), which is why the EMA entry in
+           settings.CHECKPOINT_FILES names the numbered file.
+        """
+        ckpt = self.run_dir / settings.CHECKPOINT_FILES[self.checkpoint_tag]
+        if not ckpt.is_file():
+            raise FileNotFoundError(f"checkpoint not found: {ckpt}")
+        return ckpt
+
     def summary(self) -> str:
+        # Deliberately does not touch .checkpoint — summarising a config must
+        # not require the weights to be present.
         return (
             f"phase={self.phase}  sample={self.sample_key} "
             f"({self.traj} @ f{self.frame})  checkpoint={self.checkpoint_tag} "
-            f"({self.checkpoint.name})"
+            f"({settings.CHECKPOINT_FILES[self.checkpoint_tag]})"
         )
 
 
@@ -104,9 +153,9 @@ def _resolve_sample(spec: Any) -> tuple[str, str, int, str]:
     return str(spec), str(s["traj"]), int(s["frame"]), str(s["description"])
 
 
-def _resolve_checkpoint(tag: str, run: str) -> tuple[Path, Path]:
+def _validate_checkpoint_tag(tag: str) -> str:
     """
-    Map a checkpoint tag onto a real weight file inside the run folder.
+    Normalise and check a `checkpoint:` value. Pure — no filesystem.
 
     The run is settled (see settings.DEFAULT_RUN), so this is a fixed two-entry
     map rather than a search:
@@ -116,30 +165,16 @@ def _resolve_checkpoint(tag: str, run: str) -> tuple[Path, Path]:
                                 runs on and it gives cleaner advisor figures.
         latest -> latest.pth    raw epoch-99 weights, kept as the fallback.
 
-    Two details worth not rediscovering:
-
-    1. `latest.pth` is not a distinct checkpoint — train_eval_loop.py saves
-       model.state_dict() to both {epoch}.pth and latest.pth back-to-back, so it
-       is the same tensors as 99.pth.
-    2. There is no ema_latest.pth to point at. train_eval_loop.py builds that
-       path and prints "Saved EMA model to …" but never calls torch.save on it
-       (upstream bug), which is why the EMA entry names the numbered file.
+    Whether those files actually exist is PhaseConfig.checkpoint's problem, and
+    it only asks when something needs the weights.
     """
-    run_dir = settings.RUNS_DIR / run
-    if not run_dir.is_dir():
-        raise FileNotFoundError(f"training run not found: {run_dir}")
-
     tag = tag.lower()
     if tag not in settings.CHECKPOINT_FILES:
         raise ValueError(
             f"checkpoint must be one of "
             f"{' | '.join(sorted(settings.CHECKPOINT_FILES))}, got {tag!r}"
         )
-
-    ckpt = run_dir / settings.CHECKPOINT_FILES[tag]
-    if not ckpt.is_file():
-        raise FileNotFoundError(f"checkpoint not found: {ckpt}")
-    return ckpt, run_dir
+    return tag
 
 
 def phase_for(phase_dir: Path | str) -> str:
@@ -161,9 +196,8 @@ def config_from_dict(raw: dict, phase: str) -> PhaseConfig:
     resolution rules rather than reimplementing them.
     """
     sample_key, traj, frame, description = _resolve_sample(raw.get("sample", "gentle_left"))
-    tag = str(raw.get("checkpoint", settings.DEFAULT_CHECKPOINT))
+    tag = _validate_checkpoint_tag(str(raw.get("checkpoint", settings.DEFAULT_CHECKPOINT)))
     run = str(raw.get("run", settings.DEFAULT_RUN))
-    ckpt, run_dir = _resolve_checkpoint(tag, run)
 
     # Anything not consumed above is a phase-specific knob (e.g. num_seeds).
     extra = {k: v for k, v in raw.items() if k not in {"sample", "checkpoint", "run"}}
@@ -175,8 +209,7 @@ def config_from_dict(raw: dict, phase: str) -> PhaseConfig:
         frame=frame,
         description=description,
         checkpoint_tag=tag,
-        checkpoint=ckpt,
-        run_dir=run_dir,
+        run=run,
         out_dir=OUT_ROOT / phase / tag,
         extra=extra,
     )

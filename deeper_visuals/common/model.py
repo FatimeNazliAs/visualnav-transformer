@@ -89,7 +89,7 @@ def load_model(cfg: PhaseConfig, *, device: str | None = None, verbose: bool = T
     info = {
         "checkpoint_tag":  cfg.checkpoint_tag,
         "checkpoint_file": cfg.checkpoint.name,
-        "run":             cfg.run_dir.name,
+        "run":             cfg.run,
         "device":          device,
         "n_params":        n_params,
         "n_params_m":      round(n_params / 1e6, 1),
