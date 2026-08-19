@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# deeper_visuals/pN_name/update.sh
+#
+# Artifact URL (fixed — every republish targets this same link):
+#   <recorded on first publish; also listed on the P0 Notion "Models &
+#    datasets used" page, which is the URL registry>
+#
+# Usage:
+#   ./deeper_visuals/pN_name/update.sh                 full run (needs the GPU)
+#   ./deeper_visuals/pN_name/update.sh --page-only     layout/wording only, no GPU
+#
+# Everything real lives in common/update.sh; this stub only pins the phase.
+exec "$(dirname "${BASH_SOURCE[0]}")/../common/update.sh" \
+  "$(dirname "${BASH_SOURCE[0]}")" "$@"

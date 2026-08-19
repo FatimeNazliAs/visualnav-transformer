@@ -1,0 +1,218 @@
+/* deeper_visuals/common/template/style.css
+   Shared look for every advisor page (P0–P5).
+
+   The one design constraint that drives everything here: the hero is always a
+   matplotlib PNG saved on a white ground. So the figure gets its own light
+   "plate" in BOTH themes — a mounted lab print — rather than a transparent
+   figure that would blow out on a dark background. */
+
+/* ── Tokens: light is the base set, every colour defined here ─────────────── */
+:root {
+  --ground:      #f7f8fa;   /* faintly cool page ground */
+  --surface:     #ffffff;
+  --ink:         #16202b;   /* blue-biased near-black */
+  --ink-soft:    #35434f;
+  --muted:       #5c6b7a;
+  --rule:        #dde3e9;
+  --accent:      #b45309;   /* burnt amber — the figures' "current frame" hue */
+  --accent-soft: #fdf3e7;
+  --goal:        #7d3c98;   /* the figures' "goal" purple */
+  --plate:       #fcfcfd;   /* the figure mount — light in both themes */
+  --plate-rule:  #d8dee5;
+  --shadow:      0 1px 2px rgba(22, 32, 43, .06), 0 8px 24px rgba(22, 32, 43, .05);
+}
+
+/* System-dark (no data-theme stamped) — an explicit light choice still wins. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --ground:      #0f1720;
+    --surface:     #17212c;
+    --ink:         #e4eaf0;
+    --ink-soft:    #c2cdd8;
+    --muted:       #93a3b3;
+    --rule:        #2a3743;
+    --accent:      #f0a03c;
+    --accent-soft: #2a2116;
+    --goal:        #c48ad9;
+    --plate:       #f4f5f7;
+    --plate-rule:  #39485a;
+    --shadow:      0 1px 2px rgba(0, 0, 0, .4), 0 8px 24px rgba(0, 0, 0, .3);
+  }
+}
+
+/* Explicit dark choice — wins over a light OS. */
+:root[data-theme="dark"] {
+  --ground:      #0f1720;
+  --surface:     #17212c;
+  --ink:         #e4eaf0;
+  --ink-soft:    #c2cdd8;
+  --muted:       #93a3b3;
+  --rule:        #2a3743;
+  --accent:      #f0a03c;
+  --accent-soft: #2a2116;
+  --goal:        #c48ad9;
+  --plate:       #f4f5f7;
+  --plate-rule:  #39485a;
+  --shadow:      0 1px 2px rgba(0, 0, 0, .4), 0 8px 24px rgba(0, 0, 0, .3);
+}
+
+/* ── Base ─────────────────────────────────────────────────────────────────── */
+body {
+  margin: 0;
+  background: var(--ground);          /* explicit — a transparent body would
+                                         borrow the host's theme */
+  color: var(--ink);
+  font-family: "IBM Plex Sans", ui-sans-serif, system-ui, -apple-system, sans-serif;
+  font-size: 17px;
+  line-height: 1.65;
+  -webkit-font-smoothing: antialiased;
+}
+
+.page {
+  max-width: 62rem;
+  margin: 0 auto;
+  padding: clamp(2rem, 5vw, 4.5rem) clamp(1.15rem, 4vw, 2.5rem) 3.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 2.25rem;                        /* layout owns the spacing, not margins */
+}
+
+/* ── Masthead ─────────────────────────────────────────────────────────────── */
+.masthead { display: flex; flex-direction: column; gap: .85rem; }
+
+.eyebrow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: .6rem .85rem;
+  font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: .74rem;
+  letter-spacing: .13em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.eyebrow .phase {
+  color: var(--accent);
+  font-weight: 500;
+  padding: .18rem .5rem;
+  background: var(--accent-soft);
+  border-radius: 3px;
+}
+
+.eyebrow .sep { color: var(--rule); }
+
+h1 {
+  font-family: "IBM Plex Serif", ui-serif, Georgia, serif;
+  font-weight: 600;
+  font-size: clamp(1.9rem, 4.4vw, 2.75rem);
+  line-height: 1.15;
+  letter-spacing: -.015em;
+  text-wrap: balance;
+  margin: 0;
+}
+
+.lead {
+  max-width: 44rem;                    /* ~65 characters of running text */
+  font-size: 1.12rem;
+  color: var(--ink-soft);
+  margin: 0;
+}
+
+/* ── Figure plate — the mounted print ─────────────────────────────────────── */
+.figure { display: flex; flex-direction: column; gap: .7rem; margin: 0; }
+
+.plate {
+  background: var(--plate);
+  border: 1px solid var(--plate-rule);
+  border-radius: 6px;
+  box-shadow: var(--shadow);
+  padding: clamp(.65rem, 2vw, 1.15rem);
+  overflow-x: auto;                    /* wide strips scroll here, not the body */
+}
+
+.plate img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: 0 auto;
+}
+
+figcaption {
+  font-size: .9rem;
+  color: var(--muted);
+  max-width: 44rem;
+}
+
+figcaption b { color: var(--ink-soft); font-weight: 600; }
+
+/* ── Numbers callout ──────────────────────────────────────────────────────── */
+.stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(8.5rem, 1fr));
+  gap: 1px;                            /* the gap itself draws the rules */
+  background: var(--rule);
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  overflow: hidden;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.stats li {
+  background: var(--surface);
+  padding: .85rem 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: .18rem;
+}
+
+.stats .value {
+  font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-variant-numeric: tabular-nums;
+  font-size: 1.3rem;
+  font-weight: 500;
+  color: var(--ink);
+  line-height: 1.2;
+}
+
+.stats .label {
+  font-size: .76rem;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+/* ── Closing note + provenance ────────────────────────────────────────────── */
+.paper-note {
+  max-width: 44rem;
+  margin: 0;
+  padding-left: .95rem;
+  border-left: 2px solid var(--goal);
+  color: var(--ink-soft);
+  font-size: .98rem;
+}
+
+.provenance {
+  border-top: 1px solid var(--rule);
+  padding-top: 1rem;
+  font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: .74rem;
+  line-height: 1.9;
+  color: var(--muted);
+  display: flex;
+  flex-wrap: wrap;
+  gap: .3rem 1.35rem;
+}
+
+.provenance b { color: var(--ink-soft); font-weight: 500; }
+
+/* ── Accessibility ────────────────────────────────────────────────────────── */
+a { color: var(--accent); }
+a:focus-visible,
+.plate:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+
+@media (prefers-reduced-motion: reduce) {
+  * { animation-duration: .01ms !important; transition-duration: .01ms !important; }
+}

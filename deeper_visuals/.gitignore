@@ -1,0 +1,16 @@
+# deeper_visuals/.gitignore
+#
+# Everything the pipeline generates is derived from the checkpoint + config.yaml
+# and is reproducible with one `update.sh` run, so none of it belongs in git.
+# The repo holds the recipe; the shared disk holds the weights.
+
+# Generated output tree: out/<phase>/<checkpoint_tag>/{facts.json,*.png,latest.html}
+out/
+
+# Belt and braces, in case a phase ever writes beside its config instead.
+*/latest.html
+*/facts.json
+*/*.png
+
+__pycache__/
+*.py[cod]

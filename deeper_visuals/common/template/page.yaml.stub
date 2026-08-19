@@ -1,0 +1,32 @@
+# deeper_visuals/pN_name/page.yaml
+#
+# The advisor-facing words. Kept out of run_model.py so `update.sh --page-only`
+# can re-render copy without touching a GPU.
+#
+# Any {dotted.key} is substituted from facts.json, so numbers on the page can
+# never drift from the forward pass that produced them.
+#
+# The two-surface contract (CLAUDE.md): one plain paragraph, one hero visual, a
+# tiny numbers callout, one line on where it sits in the paper. ~1 screen.
+# No code, no file paths, no unglossed jargon — that all belongs in Notion.
+
+title: <2–4 word artifact name — shows in the browser tab and gallery>
+phase_label: PN
+eyebrow: <short scene descriptor, e.g. "gentle left turn · go_stanford">
+heading: <the page's one-line claim, in plain words>
+
+lead: >
+  <One paragraph. Assume the reader has never read the paper and does not know
+  what an encoder is. Say what goes in, what comes out, and why it matters.>
+
+figures:
+  - file: <name>.png
+    alt: <plain description for screen readers>
+    caption: <one line; <b>bold</b> is allowed for the key term>
+
+stats:                      # 2 to 5 cells, values pulled from facts.json
+  - label: <short label>
+    value: "{some.fact.key}"
+
+paper_note: >
+  <One line on where this sits in the NoMaD paper.>

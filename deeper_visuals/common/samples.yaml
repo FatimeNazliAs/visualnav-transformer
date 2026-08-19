@@ -1,0 +1,67 @@
+# deeper_visuals/common/samples.yaml
+#
+# The curated go_stanford scene library, lifted from the frozen
+# debug_visuals/config.py SAMPLES table.
+#
+# Each scene is verified to sit inside the valid frame range and to show clear,
+# interpretable motion. Grouped by the behaviour the future path shows.
+#
+# Valid frame range for a trajectory:
+#     frame >= CONTEXT_SIZE (3)  and  frame <= total_frames - NUM_ACTIONS - 1
+#
+# To use a scene that is not in this table, a phase's config.yaml can inline it:
+#     sample: {traj: no2vc_21_0, frame: 12}
+
+# ── straight ahead ────────────────────────────────────────────────────────────
+hallway_straight:
+  traj: no9vc_46_0
+  frame: 189
+  description: clean corridor, robot drives straight ahead
+
+person_straight:
+  traj: no6vc_125_2
+  frame: 126
+  description: hallway with a person ahead, straight motion
+
+lobby_straight:
+  traj: no10vc_6_0
+  frame: 55
+  description: straight into a lit lobby / entrance
+
+# ── gentle curves ─────────────────────────────────────────────────────────────
+gentle_left:
+  traj: no12vc_17_0
+  frame: 15
+  description: gentle left curve through a red-carpet lobby
+
+gentle_right:
+  traj: no10vc_22_0
+  frame: 142
+  description: gentle right curve down a hallway
+
+# ── sharp turns ───────────────────────────────────────────────────────────────
+left_turn:
+  traj: no31vc_25_0
+  frame: 11
+  description: sharp left turn in a corridor
+
+left_turn_person:
+  traj: no9vc_54_0
+  frame: 19
+  description: left turn in a store aisle, person ahead
+
+right_turn:
+  traj: no3vc_62_0
+  frame: 6
+  description: right turn near a stairwell
+
+right_turn_doors:
+  traj: no11vc_9_1
+  frame: 54
+  description: right turn toward glass doors
+
+# ── original ──────────────────────────────────────────────────────────────────
+original:
+  traj: no10vc_10_0
+  frame: 30
+  description: the original sample
