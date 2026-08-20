@@ -1,0 +1,50 @@
+# deeper_visuals/p1_inputs/page.yaml
+#
+# The advisor-facing words for P1. Kept out of run_model.py so
+# `update.sh --page-only` re-renders copy in under a second, with no GPU.
+# Every {dotted.key} is substituted from facts.json, so no number here can drift
+# away from the run that produced the figure.
+#
+# House style: short heading, one line of framing, then points. No paragraphs —
+# build_page.py enforces the length caps rather than leaving them to review.
+
+title: What the Robot Sees
+phase_label: P1
+eyebrow: "{scene.description}"
+heading: Five pictures, nothing else
+
+lead: >
+  Everything NoMaD knows about the world when it decides where to drive next.
+
+points:
+  - <b>Four frames from its own camera</b> — the one from right now, plus the
+    three just before it.
+  - Those three are what tell it <b>which way it is already moving</b>.
+  - <b>One photo of where it has been sent</b> — the goal, {input.goal_lead_steps} further on.
+  - Each picture is shrunk to a <b>{input.image_size} thumbnail</b> first.
+  - No map, no GPS, no distance sensor. Just these {input.n_frames_in} pictures.
+
+figures:
+  - file: stage1_frame_strip.png
+    alt: >
+      Five camera thumbnails in a row. The first four are consecutive views down
+      an indoor corridor, the last outlined in orange as the current moment.
+      After a dashed divider, a fifth thumbnail outlined in purple shows the
+      goal: glass doors opening onto daylight.
+    caption: >
+      Left of the divider, <b>what the robot has just seen</b>. Right of it,
+      <b>where it is being sent</b>. Two groups, two separate encoders.
+
+stats:
+  - label: Pictures in
+    value: "{input.n_frames_in}"
+  - label: Size of each
+    value: "{input.image_size}"
+  - label: Goal sits ahead by
+    value: "{input.goal_lead_steps}"
+  - label: Numbers handed to the model
+    value: "{input.n_input_values}"
+
+paper_note: >
+  In the NoMaD paper: the observation context and goal image entering Section 3's
+  two encoders, at the far left of the architecture figure.

@@ -12,10 +12,9 @@ out/
 */facts.json
 */*.png
 
-# ...with one exception. P0 has no model run, so its latest.html is not
-# generated output at all — it is hand-written source that `update.sh --static`
-# only copies. Without this negation the primer would never be committed.
-!p0_overview/latest.html
+# No exceptions any more. P0's primer used to live here as a committed
+# latest.html; its hand-written half is now body.html + style.css and its page
+# is built into out/ like every other phase's.
 
 __pycache__/
 *.py[cod]

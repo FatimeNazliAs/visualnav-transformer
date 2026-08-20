@@ -1,28 +1,39 @@
 # deeper_visuals/common/build_page.py
 """
-Turn a phase's facts.json + PNGs into its advisor page (latest.html).
+Build a phase's advisor page.
 
-This never imports torch and never loads the model — that is the whole point of
-the two-script split. It reads three things:
+Every page in the series is rendered here, through one shell:
 
-    out/<phase>/<tag>/facts.json   the numbers, written by run_model.py
-    out/<phase>/<tag>/*.png        the figures, written by run_model.py
-    <phase_dir>/page.yaml          the advisor-facing words
+    common/template/shell.html   the document — title, fonts, <style>, body slot
+    common/template/style.css    the shared look, the single copy of it
 
-so `update.sh --page-only` can re-render wording and layout in well under a
-second, on a machine with no GPU, while every number on the page still traces
-back to a real forward pass.
+What fills the shell's body slot is what differs between phases:
+
+  * A model-backed phase (P1-P5) fills common/template/page.html from its own
+    page.yaml (the words) and out/<phase>/<tag>/facts.json (the numbers).
+  * A static phase (P0) has no forward pass and so no facts to fill anything
+    from. It supplies its body markup directly, as body.html, and may add a
+    style.css of its own for markup the shared template does not have.
+
+Routing both through the shell is what keeps the stylesheet in one place. P0
+previously carried its own pasted copy with a "re-paste this when style.css
+changes" comment, which is the kind of duplication that is correct exactly once.
+
+This module never imports torch and never loads the model. It reads facts.json,
+the PNGs and the phase's own files, nothing else — which is what makes
+`update.sh --page-only` a sub-second, GPU-free operation while every number on
+the page still traces back to a real forward pass.
 
 The PNGs are base64-embedded rather than linked. A published artifact runs under
 a CSP that blocks external hosts, so latest.html has to be one self-contained
-file — which also means republishing is a single-file operation.
+file — which also makes republishing a single-file operation.
 
 The page follows the two-surface contract from CLAUDE.md: one plain paragraph,
 one hero visual, a small numbers callout, one line on where it sits in the
 paper. Depth belongs on the Notion side, not here.
 
 Run:
-    python -m deeper_visuals.common.build_page deeper_visuals/p1_inputs
+    python3 -m deeper_visuals.common.build_page deeper_visuals/p1_inputs
 """
 
 from __future__ import annotations
@@ -37,7 +48,7 @@ from string import Template
 
 import yaml
 
-from deeper_visuals.common.config import load_config
+from deeper_visuals.common.config import OUT_ROOT, load_config, phase_for
 from deeper_visuals.common.facts import read_facts
 
 TEMPLATE_DIR = Path(__file__).resolve().parent / "template"
@@ -84,8 +95,105 @@ def fill(text: str, facts_flat: dict) -> str:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# The advisor-page contract
+# ══════════════════════════════════════════════════════════════════════════════
+# The limits ARE the contract, so they are stated together, as data, rather than
+# spelled out inside each renderer. An advisor page is scanned in one pass, not
+# read; prose is what it drifts back into the moment nothing stops it. Enforcing
+# that here means a page that drifts fails the build instead of the review — and
+# retuning the contract is one edit to this block, not a hunt through five
+# functions.
+
+COPY_LIMITS = {          # field -> maximum characters
+    "heading": 60,
+    "lead":    150,
+    "point":   130,
+}
+
+LIST_LIMITS = {          # field -> (minimum, maximum) entries
+    "points":  (3, 6),
+    "stats":   (2, 5),
+    "figures": (1, 2),
+}
+
+CONTRACT_HINT = (
+    "The advisor page is scanned in one pass: short heading, one line of "
+    "framing, then points. Depth belongs in the phase's Notion group."
+)
+
+
+def one_line(value: object) -> str:
+    """
+    Collapse a YAML scalar to a single line.
+
+    Copy is written with `key: >` for readability in page.yaml, which keeps the
+    fold's internal line breaks and a trailing newline. Left alone those land in
+    the HTML — inside an alt attribute, or as stray whitespace before a closing
+    tag — so every piece of copy passes through here first.
+    """
+    return " ".join(str(value).split())
+
+
+_BOLD = re.compile(r"</?b>")
+
+
+def within_length(field: str, text: str) -> str:
+    """
+    Check a piece of copy against its cap.
+
+    Measured on the text a reader actually sees: after {dotted.key} substitution
+    (so a cap is not spent on the length of a reference) and ignoring <b> markup
+    (so bolding a term cannot trip it).
+    """
+    visible = _BOLD.sub("", text)
+    limit = COPY_LIMITS[field]
+    if len(visible) > limit:
+        raise ValueError(
+            f"{field} is {len(visible)} characters; keep it under {limit}. "
+            f"{CONTRACT_HINT}\n  {visible[:70]}…"
+        )
+    return text
+
+
+def within_count(field: str, items: list) -> list:
+    low, high = LIST_LIMITS[field]
+    if not low <= len(items) <= high:
+        raise ValueError(
+            f"{len(items)} {field} — use {low} to {high}. {CONTRACT_HINT}"
+        )
+    return items
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # Fragment builders
 # ══════════════════════════════════════════════════════════════════════════════
+
+def resolve(value: object, facts_flat: dict) -> str:
+    """
+    Fold a YAML scalar to one line and substitute {dotted.key} from facts.
+
+    This is the text a reader sees, before escaping — which is what the contract
+    caps are measured against.
+    """
+    return fill(one_line(value), facts_flat)
+
+
+def as_text(text: str) -> str:
+    """Escape resolved copy for HTML. Any <b> in it becomes literal."""
+    return html.escape(text)
+
+
+def as_rich(text: str) -> str:
+    """
+    Escape resolved copy, then re-admit <b>.
+
+    Copy is escaped by default because it is YAML text going into HTML; <b> is
+    the one tag worth having for the key term in a sentence.
+    """
+    return (html.escape(text)
+            .replace("&lt;b&gt;", "<b>")
+            .replace("&lt;/b&gt;", "</b>"))
+
 
 def embed_png(path: Path) -> str:
     """Read a PNG and return it as a data: URI."""
@@ -99,32 +207,21 @@ def embed_png(path: Path) -> str:
 
 def render_figures(page: dict, out_dir: Path, facts_flat: dict) -> str:
     """
-    Build the <figure> blocks.
+    Build the <figure> blocks: a hero, plus at most one supporting figure.
 
-    The contract says one hero visual; a phase may add at most one supporting
-    figure (P5 does: multimodal hero, three-view detail). More than that and the
-    page stops being one screen, so it is refused here rather than in review.
+    P5 is the case for two — multimodal hero, three-view detail. More than that
+    and the page stops being one screen.
     """
-    figures = page.get("figures", [])
-    if not figures:
-        raise ValueError("page.yaml has no 'figures:' entries")
-    if len(figures) > 2:
-        raise ValueError(
-            f"{len(figures)} figures — the advisor page allows a hero plus at "
-            f"most one supporting figure. Move the rest to the Notion group."
-        )
-
     blocks = []
-    for fig in figures:
+    for fig in within_count("figures", page.get("figures", [])):
         src = embed_png(out_dir / fig["file"])
-        alt = html.escape(fill(fig.get("alt", fig["file"]), facts_flat))
+        # alt is an attribute, so it never gets <b> — plain, not rich.
+        alt = as_text(resolve(fig.get("alt", fig["file"]), facts_flat))
         caption = fig.get("caption")
-        cap_html = ""
-        if caption:
-            # Caption allows <b> for emphasis, so escape then re-admit that tag.
-            safe = html.escape(fill(caption, facts_flat))
-            safe = safe.replace("&lt;b&gt;", "<b>").replace("&lt;/b&gt;", "</b>")
-            cap_html = f"\n    <figcaption>{safe}</figcaption>"
+        cap_html = (
+            f'\n    <figcaption>{as_rich(resolve(caption, facts_flat))}</figcaption>'
+            if caption else ""
+        )
         blocks.append(
             f'  <figure class="figure">\n'
             f'    <div class="plate" tabindex="0">\n'
@@ -135,22 +232,34 @@ def render_figures(page: dict, out_dir: Path, facts_flat: dict) -> str:
     return "\n\n".join(blocks)
 
 
+def render_heading(page: dict, facts_flat: dict) -> str:
+    """The page's claim, as a headline rather than a sentence."""
+    return as_text(within_length("heading", resolve(page["heading"], facts_flat)))
+
+
+def render_lead(page: dict, facts_flat: dict) -> str:
+    """The single line of framing under the heading."""
+    return as_rich(within_length("lead", resolve(page["lead"], facts_flat)))
+
+
+def render_points(page: dict, facts_flat: dict) -> str:
+    """The bullets that carry the page's content."""
+    points = within_count("points", page.get("points", []))
+    return "\n".join(
+        f'      <li>'
+        f'{as_rich(within_length("point", resolve(p, facts_flat)))}'
+        f'</li>'
+        for p in points
+    )
+
+
 def render_stats(page: dict, facts_flat: dict) -> str:
-    """Build the numbers callout — small by design, 2 to 5 cells."""
-    stats = page.get("stats", [])
-    if not 2 <= len(stats) <= 5:
-        raise ValueError(
-            f"{len(stats)} stats — the callout is meant to stay tiny; use 2 to 5."
-        )
-    rows = []
-    for s in stats:
-        value = html.escape(fill(s["value"], facts_flat))
-        label = html.escape(str(s["label"]))
-        rows.append(
-            f'    <li><span class="value">{value}</span>'
-            f'<span class="label">{label}</span></li>'
-        )
-    return "\n".join(rows)
+    """The numbers callout — small by design."""
+    return "\n".join(
+        f'    <li><span class="value">{as_text(resolve(s["value"], facts_flat))}</span>'
+        f'<span class="label">{as_text(resolve(s["label"], facts_flat))}</span></li>'
+        for s in within_count("stats", page.get("stats", []))
+    )
 
 
 def render_provenance(facts: dict) -> str:
@@ -172,43 +281,121 @@ def render_provenance(facts: dict) -> str:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# Body sources
+# ══════════════════════════════════════════════════════════════════════════════
+
+def render_phase_body(page: dict, out_dir: Path, phase: str,
+                      eyebrow_default: str) -> str:
+    """Fill the shared page template from page.yaml + facts.json."""
+    facts = read_facts(out_dir)
+    facts_flat = flatten(facts)
+    template = Template((TEMPLATE_DIR / "page.html").read_text())
+    return template.substitute(
+        phase_label=as_text(one_line(page.get("phase_label", phase.upper()))),
+        eyebrow=as_text(resolve(page.get("eyebrow", eyebrow_default), facts_flat)),
+        heading=render_heading(page, facts_flat),
+        lead=render_lead(page, facts_flat),
+        points=render_points(page, facts_flat),
+        paper_note=as_text(resolve(page["paper_note"], facts_flat)),
+        figures=render_figures(page, out_dir, facts_flat),
+        stats=render_stats(page, facts_flat),
+        provenance=render_provenance(facts),
+    )
+
+
+def read_body_file(phase_dir: Path, name: str) -> str:
+    """
+    A static phase's hand-written markup, taken as-is.
+
+    Nothing is substituted into it. A phase writes body.html precisely because
+    it has no facts.json to substitute from, and a {brace} in hand-written HTML
+    should stay a brace.
+    """
+    path = phase_dir / name
+    if not path.is_file():
+        raise FileNotFoundError(
+            f"page.yaml names body: {name}, but {path} does not exist"
+        )
+    return path.read_text().strip()
+
+
+def collect_styles(phase_dir: Path) -> str:
+    """
+    The shared sheet, then the phase's own additions if it has any.
+
+    Order matters: the phase file extends the shared tokens, so it has to come
+    second. Only a phase with markup the shared template does not produce needs
+    one at all — P0's diagram and mode cards are the only case so far.
+    """
+    sheets = [(TEMPLATE_DIR / "style.css").read_text()]
+    phase_sheet = phase_dir / "style.css"
+    if phase_sheet.is_file():
+        sheets.append(phase_sheet.read_text())
+    return "\n\n".join(sheets)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # Entry point
 # ══════════════════════════════════════════════════════════════════════════════
 
-def build(phase_dir: Path) -> Path:
-    phase_dir = Path(phase_dir).resolve()
-    cfg = load_config(phase_dir)
-
-    page_path = phase_dir / "page.yaml"
-    if not page_path.is_file():
+def read_page_yaml(phase_dir: Path) -> dict:
+    path = phase_dir / "page.yaml"
+    if not path.is_file():
         raise FileNotFoundError(f"no page.yaml in {phase_dir}")
-    with open(page_path) as fh:
-        page = yaml.safe_load(fh) or {}
+    with open(path) as fh:
+        return yaml.safe_load(fh) or {}
 
-    facts = read_facts(cfg.out_dir)
-    facts_flat = flatten(facts)
 
-    template = Template((TEMPLATE_DIR / "page.html").read_text())
-    styles = (TEMPLATE_DIR / "style.css").read_text()
+def build(phase_dir: Path) -> Path:
+    """
+    Render <phase_dir> to its page, promote it, and return the served path.
 
-    rendered = template.substitute(
+    Two directories are written on purpose:
+
+        out/<phase>/<tag>/latest.html   the build, kept per checkpoint so
+                                        switching `checkpoint:` never clobbers
+                                        the other variant
+        out/<phase>/latest.html         the promoted copy — the one stable path
+                                        the preview server and every republish
+                                        point at
+
+    A static phase has no checkpoint to tag with, so its build directory is
+    out/<phase>/ and the promotion is a no-op.
+
+    Deciding this here rather than in update.sh means the out/ layout is
+    described in exactly one language. When bash also knew the rule, the two
+    could disagree, and a disagreement sends the forward pass and the page
+    builder to different directories — which fails confusingly.
+    """
+    phase_dir = Path(phase_dir).resolve()
+    phase = phase_for(phase_dir)
+    page = read_page_yaml(phase_dir)
+
+    if body_file := page.get("body"):
+        out_dir = OUT_ROOT / phase
+        body = read_body_file(phase_dir, body_file)
+    else:
+        cfg = load_config(phase_dir)
+        out_dir = cfg.out_dir
+        body = render_phase_body(page, out_dir, phase, cfg.description)
+
+    shell = Template((TEMPLATE_DIR / "shell.html").read_text())
+    rendered = shell.substitute(
         title=html.escape(page["title"]),
-        phase_label=html.escape(page.get("phase_label", cfg.phase.upper())),
-        eyebrow=html.escape(fill(page.get("eyebrow", cfg.description), facts_flat)),
-        heading=html.escape(fill(page["heading"], facts_flat)),
-        lead=html.escape(fill(page["lead"], facts_flat)),
-        paper_note=html.escape(fill(page["paper_note"], facts_flat)),
-        figures=render_figures(page, cfg.out_dir, facts_flat),
-        stats=render_stats(page, facts_flat),
-        provenance=render_provenance(facts),
-        styles=styles,
+        styles=collect_styles(phase_dir),
+        body=body,
     )
 
-    dest = cfg.out_dir / "latest.html"
-    dest.write_text(rendered)
-    size_kb = dest.stat().st_size / 1024
-    print(f"  Built : {dest}  ({size_kb:.0f} KB)")
-    return dest
+    out_dir.mkdir(parents=True, exist_ok=True)
+    built = out_dir / "latest.html"
+    built.write_text(rendered)
+    print(f"  Built : {built}  ({built.stat().st_size / 1024:.0f} KB)")
+
+    served = OUT_ROOT / phase / "latest.html"
+    if served != built:
+        served.write_text(rendered)
+    print(f"  Served: {served}")
+    return served
 
 
 def main() -> None:

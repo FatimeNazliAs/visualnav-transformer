@@ -18,16 +18,24 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-import numpy as np
-
 FACTS_NAME = "facts.json"
 
 
 def _jsonable(obj: Any) -> Any:
-    """Make numpy scalars/arrays and Paths survive json.dump."""
-    if isinstance(obj, (np.integer,)):
+    """
+    Make numpy scalars/arrays and Paths survive json.dump.
+
+    numpy is imported inside the function, not at module scope, because only
+    the writing half of this module needs it. read_facts is what build_page.py
+    calls, and build_page.py is the half that is supposed to run anywhere —
+    a module-level `import numpy` put the whole scientific stack behind
+    `update.sh --page-only` for no reason.
+    """
+    import numpy as np
+
+    if isinstance(obj, np.integer):
         return int(obj)
-    if isinstance(obj, (np.floating,)):
+    if isinstance(obj, np.floating):
         return float(obj)
     if isinstance(obj, np.ndarray):
         return obj.tolist()

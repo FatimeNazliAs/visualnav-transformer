@@ -146,6 +146,23 @@ figcaption {
 
 figcaption b { color: var(--ink-soft); font-weight: 600; }
 
+/* ── Bullets ──────────────────────────────────────────────────────────────
+   Every advisor page is lists, not prose: short heading, one line of framing,
+   then points that are scannable in a single pass. Markers pick up the accent
+   so they read as structure rather than decoration. */
+.points {
+  margin: 0;
+  padding-left: 1.15rem;
+  max-width: 44rem;
+  display: flex;
+  flex-direction: column;
+  gap: .45rem;
+  color: var(--ink-soft);
+}
+
+.points li::marker { color: var(--accent); }
+.points b { color: var(--ink); font-weight: 600; }
+
 /* ── Numbers callout ──────────────────────────────────────────────────────── */
 .stats {
   display: grid;

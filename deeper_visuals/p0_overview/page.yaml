@@ -1,0 +1,7 @@
+# deeper_visuals/p0_overview/page.yaml
+#
+# P0 has no facts.json and no page copy to substitute — its words live
+# directly in body.html. All the shell needs from here is the page's name.
+
+title: How NoMaD Drives
+body: body.html      # hand-written markup instead of the shared page template

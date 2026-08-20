@@ -1,0 +1,23 @@
+# deeper_visuals/common/artifacts.yaml
+#
+# The advisor pages' fixed artifact URLs, one per phase.
+#
+# This is the machine-readable half of the URL registry (the human-readable half
+# is the P0 Notion "Models & datasets used" page). It exists so that "republish
+# p1 webpage" is a complete instruction: the phase id resolves to a URL here,
+# and the file to publish is always deeper_visuals/out/<phase>/latest.html.
+#
+# Each URL is fixed for the life of the project. Publishing the same path again
+# updates that same link; publishing a different path mints a NEW url and
+# strands every advisor holding the old one. So: add a line here the first time
+# a phase is published, and never edit one afterwards.
+#
+# update.sh reads this file to print the right URL at the end of every run,
+# which is what keeps it from silently going stale.
+
+p0: https://claude.ai/code/artifact/1681b5a2-1e17-499a-af10-29bc876ba130
+p1: https://claude.ai/code/artifact/2fa526f2-d3ac-40bc-b7b5-3dce08190389
+# p2: added when P2 is first published
+# p3:
+# p4:
+# p5:

@@ -31,9 +31,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-import yaml
-
 from deeper_visuals.common import settings
+
+# yaml is imported where it is used, not here, so that phase_for() — a pure
+# string operation on a path — costs nothing but the standard library. update.sh
+# calls it on the host before every run; a module-level import would put that
+# behind PyYAML being installed there, and so behind a docker round-trip.
 
 COMMON_DIR   = Path(__file__).resolve().parent
 SAMPLES_PATH = COMMON_DIR / "samples.yaml"
@@ -111,6 +114,22 @@ class PhaseConfig:
             raise FileNotFoundError(f"checkpoint not found: {ckpt}")
         return ckpt
 
+    def weights_provenance(self) -> dict:
+        """
+        Which weights this phase is pinned to, as a facts.json "model" block.
+
+        Touches .checkpoint, so it also proves the file is on disk — a phase
+        that never loads the weights still fails here if /outputs is unmounted
+        or the tag is wrong, instead of publishing a page that quietly cites a
+        checkpoint nobody checked. Loaders extend this dict with what only
+        loading can know (parameter count, device, key mismatches).
+        """
+        return {
+            "checkpoint_tag":  self.checkpoint_tag,
+            "checkpoint_file": self.checkpoint.name,
+            "run":             self.run,
+        }
+
     def summary(self) -> str:
         # Deliberately does not touch .checkpoint — summarising a config must
         # not require the weights to be present.
@@ -122,6 +141,8 @@ class PhaseConfig:
 
 
 def _load_samples() -> dict[str, dict]:
+    import yaml
+
     with open(SAMPLES_PATH) as fh:
         return yaml.safe_load(fh)
 
@@ -225,6 +246,8 @@ def load_config(phase_dir: Path | str, phase: str | None = None) -> PhaseConfig:
     cfg_path = phase_dir / "config.yaml"
     if not cfg_path.is_file():
         raise FileNotFoundError(f"no config.yaml in {phase_dir}")
+
+    import yaml
 
     with open(cfg_path) as fh:
         raw = yaml.safe_load(fh) or {}

@@ -55,10 +55,16 @@ right_turn:
   frame: 6
   description: right turn near a stairwell
 
+# The hero scene, threaded through P1-P5 so an advisor learns one example once.
+# Chosen over gentle_left in P1: at 96x96 the red-carpet lobby is washed out and
+# hard to place, while this one has an unmistakable goal - the observation
+# frames are an indoor corridor and the goal frame is the glass doors onto
+# daylight, so "the goal is somewhere else" reads without explanation. Still a
+# turn, so P3 goal masking and P5 multimodality have something to show.
 right_turn_doors:
   traj: no11vc_9_1
   frame: 54
-  description: right turn toward glass doors
+  description: right turn toward the glass doors, out into daylight
 
 # ── original ──────────────────────────────────────────────────────────────────
 original:

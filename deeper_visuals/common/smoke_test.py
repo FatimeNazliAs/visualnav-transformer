@@ -76,8 +76,15 @@ def main() -> None:
 
     print("\n── Forward pass: encoders + transformer -> c_t ──────────────────")
     with torch.no_grad():
-        # goal mask 0 = goal token visible (navigation)
-        # goal mask 1 = goal token zeroed  (exploration)
+        # goal mask 0 = goal token visible          -> navigation
+        # goal mask 1 = goal token hidden from attention -> exploration
+        #
+        # Hidden, not zeroed. NoMaD_ViNT.forward selects a src_key_padding_mask
+        # so the goal token is excluded from attention entirely — it is still
+        # encoded, the other tokens just cannot see it. The mean-pool is then
+        # rescaled over the 4 remaining tokens. Zeroing the goal *input* would
+        # be a different and wrong experiment: the encoder would happily embed
+        # a black image and the transformer would attend to that embedding.
         nav_mask     = torch.zeros(1, dtype=torch.long, device=device)
         explore_mask = torch.ones(1, dtype=torch.long, device=device)
 

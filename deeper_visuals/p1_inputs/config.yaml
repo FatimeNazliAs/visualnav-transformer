@@ -1,0 +1,12 @@
+# deeper_visuals/p1_inputs/config.yaml
+#
+# P1 — Inputs. The two knobs this phase has.
+#
+#   sample:     a key from common/samples.yaml, or an inline {traj: …, frame: …}
+#   checkpoint: ema (ema_99.pth, default) | latest (raw epoch-99 latest.pth)
+#
+# Change either one and rerun ./deeper_visuals/p1_inputs/update.sh — the strip,
+# the numbers and the page all follow. Nothing else in the phase is tunable.
+
+sample: right_turn_doors   # no11vc_9_1 @ f54 — the hero scene threaded through P1–P5
+checkpoint: ema

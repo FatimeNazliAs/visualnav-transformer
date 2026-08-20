@@ -86,10 +86,9 @@ def load_model(cfg: PhaseConfig, *, device: str | None = None, verbose: bool = T
     model = model.to(device).eval()
     n_params = sum(p.numel() for p in model.parameters())
 
+    # Which weights, from the config; then what only loading them can tell us.
     info = {
-        "checkpoint_tag":  cfg.checkpoint_tag,
-        "checkpoint_file": cfg.checkpoint.name,
-        "run":             cfg.run,
+        **cfg.weights_provenance(),
         "device":          device,
         "n_params":        n_params,
         "n_params_m":      round(n_params / 1e6, 1),

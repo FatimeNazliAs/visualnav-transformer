@@ -6,18 +6,27 @@
 # Any {dotted.key} is substituted from facts.json, so numbers on the page can
 # never drift from the forward pass that produced them.
 #
-# The two-surface contract (CLAUDE.md): one plain paragraph, one hero visual, a
-# tiny numbers callout, one line on where it sits in the paper. ~1 screen.
-# No code, no file paths, no unglossed jargon — that all belongs in Notion.
+# The two-surface contract (CLAUDE.md): lists, not prose. A short heading, one
+# line of framing, 3-6 bullets, one hero visual, a tiny numbers callout, one
+# line on where it sits in the paper. ~1 screen. No code, no file paths, no
+# unglossed jargon — that all belongs in Notion.
+#
+# build_page.py enforces the caps, so a page that drifts back into prose fails
+# the build rather than the review.
 
 title: <2–4 word artifact name — shows in the browser tab and gallery>
 phase_label: PN
-eyebrow: <short scene descriptor, e.g. "gentle left turn · go_stanford">
-heading: <the page's one-line claim, in plain words>
+eyebrow: "{scene.description}"
+heading: <the page's claim, as a headline — under 60 characters>
 
 lead: >
-  <One paragraph. Assume the reader has never read the paper and does not know
-  what an encoder is. Say what goes in, what comes out, and why it matters.>
+  <One line of framing under the heading. Not a paragraph — under 150
+  characters. Assume the reader has never read the paper.>
+
+points:                     # 3 to 6, each under 130 characters
+  - <One idea per bullet. <b>bold</b> the key term.>
+  - <Assume the reader does not know what an encoder is.>
+  - <Numbers come from facts.json as {some.fact.key} so they cannot drift.>
 
 figures:
   - file: <name>.png

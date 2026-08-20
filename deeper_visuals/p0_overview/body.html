@@ -1,0 +1,257 @@
+<!-- deeper_visuals/p0_overview/body.html
+     The P0 primer's markup. Hand-written: P0 is the one phase with no model
+     run, so there is no facts.json to fill the shared page template from.
+
+     Everything outside <main> — the title, the font links, the stylesheet —
+     comes from common/template/shell.html at build time. Edit this file and
+     rerun ./deeper_visuals/p0_overview/update.sh. -->
+
+<main class="page">
+
+  <header class="masthead">
+    <p class="eyebrow">
+      <span class="phase">P0</span>
+      <span class="sep">/</span>
+      <span>Overview · static primer</span>
+    </p>
+    <h1>One trained model, two ways to drive</h1>
+    <p class="lead">A driving brain for a wheeled robot: camera pictures in, steering commands out.</p>
+  </header>
+
+  <section>
+    <h2>What it does</h2>
+    <ul class="points">
+      <li>Drives a wheeled robot from <b>camera images alone</b> — no map, no laser scanner, no GPS.</li>
+      <li>Watches the last four camera frames, and optionally one photo of the destination.</li>
+      <li>Answers with the next eight driving commands, recomputed several times a second.</li>
+      <li>Trained <b>once</b>, on recordings of robots driven around real buildings. One weight file, never swapped at run time.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>In and out</h2>
+    <div class="modes cells">
+      <div class="mode mode-in">
+        <p class="mode-kicker">goes in</p>
+        <h3>Pictures</h3>
+        <ul class="points">
+          <li>4 recent camera frames, t−3 … t</li>
+          <li>1 goal photo, t + 8 — optional</li>
+          <li>colour, 96 × 96 pixels each</li>
+        </ul>
+      </div>
+      <div class="mode">
+        <p class="mode-kicker">comes out</p>
+        <h3>Driving commands</h3>
+        <ul class="points">
+          <li>8 steps of (speed, turn)</li>
+          <li>an estimate of how far the goal is</li>
+          <li>redrawn every control cycle</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Core architecture</h2>
+    <figure class="figure">
+      <div class="diagram-plate" tabindex="0">
+        <svg class="diagram" viewBox="0 0 1000 296" role="img"
+             aria-label="NoMaD end to end. Four recent camera frames go through an EfficientNet-B0 frame encoder, becoming four tokens of 256 numbers. A second EfficientNet-B0 with its own weights reads the goal photo stacked together with the current frame — the last of those four, reused — and produces a fifth token. A switch on that goal token's path decides whether it is kept, giving navigation, or hidden, giving exploration. A four-layer four-head transformer weighs all five tokens into one 256-number summary called c-t. That summary conditions a diffusion U-Net, which turns random noise into eight driving commands over ten passes, and also feeds a second head estimating how far the goal is.">
+
+          <defs>
+            <marker id="p0-arw" viewBox="0 0 10 8" refX="9.2" refY="4"
+                    markerWidth="7" markerHeight="6" orient="auto-start-reverse">
+              <path d="M0 0 L10 4 L0 8 Z" class="mk-ink"></path>
+            </marker>
+            <marker id="p0-arw-goal" viewBox="0 0 10 8" refX="9.2" refY="4"
+                    markerWidth="7" markerHeight="6" orient="auto-start-reverse">
+              <path d="M0 0 L10 4 L0 8 Z" class="mk-goal"></path>
+            </marker>
+          </defs>
+
+          <!-- ══ Top lane: the four camera frames ══════════════════════════ -->
+          <text class="t-lane" x="6" y="32">WHAT IT SEES</text>
+
+          <rect class="box" x="6" y="44" width="142" height="52" rx="6"></rect>
+          <text class="t-title" x="77" y="70" text-anchor="middle">4 recent frames</text>
+          <text class="t-mono"  x="77" y="87" text-anchor="middle">t−3 … t</text>
+
+          <line class="flow" x1="148" y1="70" x2="174" y2="70" marker-end="url(#p0-arw)"></line>
+
+          <rect class="box" x="176" y="44" width="142" height="52" rx="6"></rect>
+          <text class="t-title" x="247" y="70" text-anchor="middle">Frame reader</text>
+          <text class="t-mono"  x="247" y="87" text-anchor="middle">ψ · EfficientNet-B0</text>
+
+          <line class="flow" x1="318" y1="70" x2="348" y2="70" marker-end="url(#p0-arw)"></line>
+
+          <rect class="box" x="352" y="57" width="26" height="26" rx="4"></rect>
+          <rect class="box" x="385" y="57" width="26" height="26" rx="4"></rect>
+          <rect class="box" x="418" y="57" width="26" height="26" rx="4"></rect>
+          <rect class="box" x="451" y="57" width="26" height="26" rx="4"></rect>
+          <text class="t-mono" x="414" y="102" text-anchor="middle">4 view tokens</text>
+          <text class="t-mono" x="414" y="117" text-anchor="middle">256 numbers each</text>
+
+          <polyline class="flow" points="477,70 496,70 496,138 518,138"
+                    marker-end="url(#p0-arw)"></polyline>
+
+          <!-- The goal encoder is a SEPARATE EfficientNet-B0 (in_channels=6, its
+               own weights), fed cat([current_frame, goal_image]) — so its token
+               encodes the gap between the two, not the destination alone.
+               The tap starts at the box's right edge, the "t" end of "t−3 … t",
+               because only the LAST of the four frames is reused here:
+               obs_img[:, 3*context_size:] slices channels 9:12. -->
+          <polyline class="flow-goal" points="140,96 140,168 216,168 216,202"
+                    stroke-dasharray="4 3" marker-end="url(#p0-arw-goal)"></polyline>
+          <text class="t-arrow" x="148" y="162">reuses frame t</text>
+
+          <!-- ══ Bottom lane: the goal photo, and the switch ═══════════════ -->
+          <text class="t-lane" x="6" y="194">WHERE IT SHOULD END UP</text>
+
+          <rect class="box-goal" x="6" y="206" width="142" height="52" rx="6"></rect>
+          <text class="t-title" x="77" y="232" text-anchor="middle">1 goal photo</text>
+          <text class="t-mono"  x="77" y="249" text-anchor="middle">t + 8</text>
+
+          <line class="flow-goal" x1="148" y1="232" x2="174" y2="232" marker-end="url(#p0-arw-goal)"></line>
+
+          <rect class="box-goal" x="176" y="206" width="142" height="52" rx="6"></rect>
+          <text class="t-title" x="247" y="232" text-anchor="middle">Goal reader</text>
+          <text class="t-mono"  x="247" y="249" text-anchor="middle">φ · EfficientNet-B0</text>
+
+          <line class="flow-goal" x1="318" y1="232" x2="348" y2="232" marker-end="url(#p0-arw-goal)"></line>
+
+          <rect class="box-goal" x="352" y="219" width="26" height="26" rx="4"></rect>
+          <text class="t-mono" x="365" y="212" text-anchor="middle">1 goal token</text>
+
+          <!-- the switch: the only thing separating the two behaviours -->
+          <line class="flow-goal" x1="378" y1="232" x2="418" y2="232"></line>
+          <polyline class="flow-goal" points="442,232 496,232 496,164 518,164"
+                    marker-end="url(#p0-arw-goal)"></polyline>
+          <circle class="switch" cx="430" cy="232" r="7"></circle>
+          <line class="flow-goal" x1="426" y1="236" x2="435" y2="227"></line>
+          <text class="t-arrow" x="436" y="252" text-anchor="middle">goal masking</text>
+          <text class="t-arrow t-nav"     x="398" y="268">kept   →  navigation</text>
+          <text class="t-arrow t-explore" x="398" y="282">hidden →  exploration</text>
+
+          <!-- ══ Transformer ═══════════════════════════════════════════════ -->
+          <rect class="box" x="520" y="121" width="142" height="60" rx="6"></rect>
+          <text class="t-title" x="591" y="147" text-anchor="middle">Transformer</text>
+          <text class="t-mono"  x="591" y="166" text-anchor="middle">4 layers × 4 heads</text>
+
+          <line class="flow" x1="662" y1="151" x2="690" y2="151" marker-end="url(#p0-arw)"></line>
+          <text class="t-arrow" x="677" y="113" text-anchor="middle">averages</text>
+
+          <!-- ══ The context vector ════════════════════════════════════════ -->
+          <rect class="box" x="694" y="121" width="116" height="60" rx="6"></rect>
+          <text class="t-ct"  x="752" y="145" text-anchor="middle">cₜ</text>
+          <text class="t-sub" x="752" y="162" text-anchor="middle">one 256-number</text>
+          <text class="t-sub" x="752" y="176" text-anchor="middle">summary</text>
+
+          <line class="flow" x1="810" y1="151" x2="838" y2="151" marker-end="url(#p0-arw)"></line>
+          <text class="t-arrow" x="825" y="113" text-anchor="middle">conditions</text>
+
+          <line class="flow" x1="752" y1="181" x2="752" y2="222" marker-end="url(#p0-arw)"></line>
+          <text class="t-arrow" x="744" y="206" text-anchor="end">second head</text>
+
+          <rect class="box" x="677" y="226" width="150" height="48" rx="6"></rect>
+          <text class="t-titlesm" x="752" y="248" text-anchor="middle">How far to the goal</text>
+          <text class="t-mono"    x="752" y="265" text-anchor="middle">distance head</text>
+
+          <!-- ══ Diffusion policy ══════════════════════════════════════════ -->
+          <rect class="box" x="842" y="121" width="156" height="60" rx="6"></rect>
+          <text class="t-title" x="920" y="144" text-anchor="middle">Path generator</text>
+          <text class="t-mono"  x="920" y="161" text-anchor="middle">ConditionalUnet1D</text>
+          <text class="t-mono"  x="920" y="175" text-anchor="middle">K = 10 passes</text>
+
+          <line class="flow" x1="920" y1="181" x2="920" y2="222" marker-end="url(#p0-arw)"></line>
+          <text class="t-arrow" x="912" y="206" text-anchor="end">after 10 passes</text>
+
+          <rect class="box" x="842" y="226" width="156" height="48" rx="6"></rect>
+          <text class="t-titlesm" x="920" y="248" text-anchor="middle">8 × (speed, turn)</text>
+          <text class="t-mono"    x="920" y="265" text-anchor="middle">the next move</text>
+
+        </svg>
+      </div>
+      <figcaption>
+        Two picture readers — same design, <b>separate weights</b> — turn the
+        images into five lists of 256 numbers. The frame at <b>t is used
+        twice</b>: once as the newest thing the robot saw, and again stacked
+        behind the goal photo, so the goal reader sees where the robot is and
+        where it should be together. The transformer boils the five lists into
+        one summary; the path generator denoises that into a route.
+      </figcaption>
+    </figure>
+  </section>
+
+  <ul class="stats">
+    <li><span class="value">2</span><span class="label">picture readers</span></li>
+    <li><span class="value">5</span><span class="label">tokens compared</span></li>
+    <li><span class="value">256</span><span class="label">numbers per token</span></li>
+    <li><span class="value">10</span><span class="label">cleanup passes</span></li>
+  </ul>
+
+  <section>
+    <h2>What it can do</h2>
+    <div class="modes cells">
+      <div class="mode mode-nav">
+        <p class="mode-kicker">goal token kept</p>
+        <h3>Navigation</h3>
+        <ul class="points">
+          <li>Give it a photo of the destination.</li>
+          <li>It drives toward that place, steering around what is in the way.</li>
+        </ul>
+      </div>
+      <div class="mode">
+        <p class="mode-kicker">goal token hidden</p>
+        <h3>Exploration</h3>
+        <ul class="points">
+          <li>Hide that photo from the network.</li>
+          <li>The same weights wander sensibly instead — down corridors, around obstacles.</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>The five deep-dives</h2>
+    <ol class="phases cells">
+      <li>
+        <span class="tag">P1</span>
+        <span class="what"><b>What goes in</b> — the five pictures exactly as
+        the model receives them.</span>
+      </li>
+      <li>
+        <span class="tag">P2</span>
+        <span class="what"><b>Reading a picture</b> — what each reader makes of
+        one, drawn as a heatmap.</span>
+      </li>
+      <li>
+        <span class="tag">P3</span>
+        <span class="what"><b>Weighing them up</b> — attention with the goal
+        token kept and with it hidden, side by side.</span>
+      </li>
+      <li>
+        <span class="tag">P4</span>
+        <span class="what"><b>Noise into a path</b> — all ten cleanup passes,
+        one panel each.</span>
+      </li>
+      <li>
+        <span class="tag">P5</span>
+        <span class="what"><b>The answer</b> — the finished route three ways,
+        and why asking again gives a different valid one.</span>
+      </li>
+    </ol>
+  </section>
+
+  <p class="paper-note">
+    This is the architecture figure of the NoMaD paper: two image encoders, a
+    goal-masked transformer, a diffusion policy head.
+  </p>
+
+  <footer class="provenance">
+    <span><b>Page</b> hand-written · no model run</span>
+    <span><b>Weights behind P1–P5</b> ema_99.pth · nomad_2026_06_13_18_04_23</span>
+    <span><b>Scenes</b> go_stanford recordings</span>
+  </footer>
+
+</main>

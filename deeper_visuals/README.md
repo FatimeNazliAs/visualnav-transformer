@@ -25,15 +25,19 @@ deeper_visuals/
     model.py               build NoMaD and load a checkpoint onto it
     facts.py               facts.json read/write — the run_model <-> build_page seam
     viz.py                 save_fig + the shared figure palette
-    build_page.py          facts.json + PNGs -> latest.html (never loads torch)
+    build_page.py          page assembly -> latest.html (never loads torch)
     smoke_test.py          prove the checkpoint + forward pass still work
     update.sh              the driver every phase's update.sh execs
-    template/              page.html + style.css, and the per-phase stubs
+    template/              shell.html + page.html + style.css, and the stubs
   pN_name/                 one folder per phase (created by that phase)
     config.yaml            sample + checkpoint
     page.yaml              the advisor-facing words
     run_model.py           forward pass -> facts.json + PNGs
-    update.sh              4-line stub -> common/update.sh
+    update.sh              3-line stub -> common/update.sh
+  p0_overview/             the exception: a hand-written phase
+    page.yaml              just the title, and `body:` naming the markup file
+    body.html              the primer's markup (no facts to fill a template from)
+    style.css              P0-only rules, layered on the shared sheet
   out/                     generated, gitignored
     pN/<tag>/              facts.json, *.png, latest.html per checkpoint
     pN/latest.html         the promoted page the preview server serves
@@ -41,8 +45,14 @@ deeper_visuals/
 
 ## Run environment
 
+**You run everything from the host.** `update.sh` does the docker/conda dance
+itself — there is no step where you enter the container by hand. It also works
+unchanged if you happen to already be inside it.
+
+The container only has to exist and be running:
+
 ```bash
-# On the host
+# once — on the host
 screen -S nomad_deeper_viz
 
 docker run --gpus all --shm-size=8g -it --name naz_nomad_deeper_viz \
@@ -53,24 +63,29 @@ docker run --gpus all --shm-size=8g -it --name naz_nomad_deeper_viz \
   -p 8001:8001 \
   nomad:latest bash
 
-# Inside the container, every fresh shell
-source /opt/conda/etc/profile.d/conda.sh && conda activate vint_train
-cd /app/visualnav-transformer
+# after a reboot, or if you stopped it
+docker start naz_nomad_deeper_viz
 ```
 
+If it is not running, `update.sh` says so and prints the command to fix it
+rather than failing with an import error.
+
 Data lives at `/data/raw/go_stanford/go_stanford`; training runs at
-`/outputs/nomad/`.
+`/outputs/nomad/`. Override the container name with `CONTAINER=…` if it moves.
 
 **Preview port is 8001, not 8000.** On this host `:8000` is held by the NWM
 walkthrough's `http.server`. Override with `--port` or `PORT=` if that changes.
 
 ## The per-phase loop
 
-1. Edit `deeper_visuals/pN_name/config.yaml` — `sample:` (a key from
-   `common/samples.yaml`) and `checkpoint:` (`ema` by default, or `latest`).
-2. Run `./deeper_visuals/pN_name/update.sh`.
+1. Edit `deeper_visuals/pN_name/config.yaml` — `sample:` (a **key** from
+   `common/samples.yaml`, e.g. `gentle_left`, not a trajectory folder name) and
+   `checkpoint:` (`ema` by default, or `latest`).
+2. Run `./deeper_visuals/pN_name/update.sh` — from the host, from the repo root.
+   That is the whole command. It echoes the scene it read back at you, then
+   runs the forward pass in the container and builds the page.
    Add `--page-only` to skip the forward pass when only wording or layout
-   changed — no GPU needed, sub-second.
+   changed — sub-second.
 3. Preview at `http://localhost:8001/pN/latest.html` (VS Code forwards the port).
 4. Republish: in that phase's Claude Code chat, say
    `republish pN/latest.html -> <the phase's fixed artifact URL>`.
@@ -79,6 +94,24 @@ walkthrough's `http.server`. Override with `--port` or `PORT=` if that changes.
 Starting a new phase: copy `common/template/update.sh.stub` and
 `common/template/page.yaml.stub` into the phase folder as `update.sh` and
 `page.yaml`.
+
+### How a page is assembled
+
+Every page — P0's included — is rendered by `common/build_page.py` through
+`common/template/shell.html`, which owns the document: the title, the font
+links, and the one `<style>` block. Only the body differs:
+
+| Phase kind | Body comes from | Extra CSS |
+| --- | --- | --- |
+| model-backed (P1–P5) | `common/template/page.html`, filled from `page.yaml` + `facts.json` | none |
+| hand-written (P0) | the phase's own `body.html`, named by `body:` in `page.yaml` | the phase's own `style.css`, appended after the shared sheet |
+
+`common/template/style.css` is therefore the **only** copy of the shared look.
+A phase adds to it by dropping a `style.css` beside its `page.yaml`; it never
+restates it.
+
+Likewise, whether a phase runs the model is not a flag — `update.sh` runs
+`run_model.py` if the phase has one. P0 does not, so it never does.
 
 ## Checkpoint
 
@@ -110,9 +143,15 @@ Two implementation details, so they are not rediscovered the hard way:
 
 ## Smoke test
 
+Unlike `update.sh`, this one is run inside the container:
+
 ```bash
-python -m deeper_visuals.common.smoke_test
-python -m deeper_visuals.common.smoke_test --sample left_turn --checkpoint ema
+docker exec -it naz_nomad_deeper_viz bash
+source /opt/conda/etc/profile.d/conda.sh && conda activate vint_train
+cd /app/visualnav-transformer
+
+python3 -m deeper_visuals.common.smoke_test
+python3 -m deeper_visuals.common.smoke_test --sample left_turn --checkpoint ema
 ```
 
 Loads the checkpoint and pushes one scene through encoders → transformer →
