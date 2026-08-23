@@ -1,0 +1,133 @@
+# deeper_visuals/p3_transformer_masking/page.yaml
+#
+# The advisor-facing words for P3. Kept out of run_model.py so
+# `update.sh --page-only` re-renders copy in under a second, with no GPU.
+# Every {dotted.key} is substituted from facts.json, so no number here can drift
+# away from the forward pass that produced the figures.
+#
+# House style: short heading, one line of framing, then points. No paragraphs —
+# build_page.py enforces the length caps rather than leaving them to review.
+#
+# The word "attention" is used exactly once, in the second figure's disclosure,
+# and glossed on the spot. Everywhere else it is "looking at" — the advisor does
+# not need the term to understand the mechanism, and the term without the
+# mechanism is worth nothing.
+
+title: The Goal Switch
+phase_label: P3
+eyebrow: "{scene.description}"
+heading: One switch hides the goal from everything else
+
+lead: >
+  Five pictures go in at once — the last four camera frames, and the goal.
+  Each one decides how much to look at the others.
+
+points:
+  # ": " inside a plain scalar parses as a mapping, so this one is folded.
+  - >
+    The five are the camera frames at <b>t−3, t−2, t−1</b> and <b>now</b>, plus
+    the <b>goal</b>.
+  - The goal is the view from <b>{goal.frames_ahead} frames further on</b> —
+    about {goal.metres_ahead:.1f} m up the corridor, not a distant destination.
+  - They are read <b>together</b>, not one after another — every picture can
+    look at every other.
+  - That happens <b>{transformer.n_heads} ways at once</b>, and the whole thing
+    repeats {transformer.n_layers} times over.
+  - The goal is barely consulted until the <b>last round</b>. Before that the
+    frames are sorting out each other.
+  - >
+    Hiding the goal is <b>one switch</b> — same weights, same pictures, and the
+    other four still see each other.
+
+figures:
+  - file: stage3_attention.png
+    alt: >
+      Eight grids in two rows of four. To the left of each row is a vertical
+      filmstrip of the five pictures — three earlier camera frames, the current
+      frame outlined in orange, and the goal outlined in purple — lined up with
+      the five rows of every grid beside it. Each grid is shaded from white to
+      deep purple, with columns labelled t minus 3, t minus 2, t minus 1, now
+      and goal. The top row of grids is navigating, goal in view; the bottom row
+      exploring, goal hidden. A purple outline marks the goal column in all
+      eight. In the top row it is shaded in the first two grids; in the bottom
+      row it is white in every one.
+    caption: >
+      <b>Each row is one of the pictures on the left</b>, deciding where to
+      look. The <b>outlined column is the goal</b> — shaded while it is in view,
+      and <b>completely empty</b> in every grid once it is hidden.
+    details:
+      summary: How to read one grid, in order
+      points:
+        - >
+          <b>1. Take one row.</b> A row is one picture — the label on the left
+          says which one.
+        - >
+          <b>2. Read across it.</b> Darker means that picture spent more of its
+          looking on the picture named underneath.
+        - >
+          <b>3. Every row spends the same total.</b> So darker in one place
+          always means lighter somewhere else in that row.
+        - >
+          <b>4. Or read straight down a column instead.</b> That is how much one
+          picture got looked at <b>by all the others</b> — often the more useful
+          view, and what the percentages here measure.
+        - >
+          <b>5. Find the outlined column.</b> That one is the goal — shaded on
+          the top row, empty on the bottom.
+        - >
+          <b>6. Then compare the four panels.</b> Each is a separate way of
+          looking, and each learned what to look at on its own.
+        - >
+          <b>7. They did not learn the same thing.</b> Each has a favourite:
+          {attention.navigating.favourites}.
+
+  - file: stage3_context_vector.png
+    alt: >
+      Three long horizontal strips of 256 thin coloured bands. The first two,
+      labelled navigating and exploring, are blue and red and look nearly
+      identical to each other. The third, in purple, shows how far each of the
+      256 numbers moved between them, with scattered darker bands.
+    caption: >
+      Everything above collapses into <b>one list of {context.dim} numbers</b> —
+      the only thing the next stage is given. The two modes point almost the
+      same way, but differ by <b>{context.relative_change:.0%}</b>.
+    details:
+      summary: Do the two lists really differ?
+      points:
+        - >
+          <b>1. The five outputs are averaged</b> into the single list of
+          {context.dim} numbers that the next stage is given.
+        - >
+          <b>2. With the goal hidden, only
+          {context.pooled_from_explore} are averaged</b> — the hidden one is
+          left out, not counted as a zero, and the average is rescaled.
+        - >
+          <b>3. So the two lists differ by {context.relative_change:.0%}.</b> They
+          point almost the same way ({context.cosine:.2f} out of 1.00), which is why
+          the strips look alike, but {context.dims_moved_1pct} numbers moved.
+        - >
+          <b>4. The distance estimate feels it.</b> How far off the goal is goes
+          from {distance.steps_nav:.1f} steps to {distance.steps_explore:.1f} once the
+          goal is hidden.
+        - >
+          <b>5. The eight-step path barely does — on this scene.</b> The goal
+          here sits straight along the way the robot was already going.
+        - >
+          <b>6. So here the goal shapes "how far", more than "which way".</b>
+          A goal somewhere else is what would separate the two, and P5 tests that.
+
+stats:
+  - label: Pictures compared at once
+    value: "{context.pooled_from}"
+  - label: Ways of looking
+    value: "{transformer.n_heads} × {transformer.n_layers} rounds"
+  - label: Looking spent on the goal
+    value: "{attention.navigating.goal_share:.0%}"
+  - label: Once it is hidden
+    value: "{attention.exploring.goal_share:.0%}"
+  - label: Numbers that shifted
+    value: "{context.dims_moved_1pct} of {context.dim}"
+
+paper_note: >
+  In the NoMaD paper — the goal-masked attention of Section 3, the one
+  mechanism that lets a single network both seek a goal and wander without one.

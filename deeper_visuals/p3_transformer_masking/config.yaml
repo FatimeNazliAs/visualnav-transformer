@@ -1,0 +1,18 @@
+# deeper_visuals/p3_transformer_masking/config.yaml
+#
+# P3 — Transformer & goal masking. The two knobs this phase has.
+#
+#   sample:     a key from common/samples.yaml, or an inline {traj: …, frame: …}
+#   checkpoint: ema (ema_99.pth, default) | latest (raw epoch-99 latest.pth)
+#
+# Change either one and rerun ./deeper_visuals/p3_transformer_masking/update.sh.
+# This phase runs the same scene through the transformer twice — once with the
+# goal token visible, once with it hidden from attention — so both figures and
+# every number on the page follow whatever is set here.
+#
+# A scene where the robot turns is worth keeping: with the goal visible the
+# attention has somewhere to point. On a dead-straight corridor the two modes
+# have much less to tell apart.
+
+sample: right_turn_doors   # no11vc_9_1 @ f54 — the hero scene threaded through P1–P5
+checkpoint: ema

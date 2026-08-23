@@ -56,6 +56,12 @@ MHA_NUM_ATTENTION_HEADS  = 4
 MHA_NUM_ATTENTION_LAYERS = 4
 MHA_FF_DIM_FACTOR        = 4
 
+# go_stanford's average spacing between consecutive frames, in metres, from
+# train/vint_train/data/data_config.yaml. It is a DISTANCE, not a time — the
+# repo records no frame rate anywhere, so the goal's offset can be stated in
+# metres but never in seconds.
+METRIC_WAYPOINT_SPACING = 0.12
+
 # ── ImageNet normalisation (must match training pre-processing) ───────────────
 IMG_MEAN = [0.485, 0.456, 0.406]
 IMG_STD  = [0.229, 0.224, 0.225]
