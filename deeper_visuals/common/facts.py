@@ -20,6 +20,13 @@ from typing import Any
 
 FACTS_NAME = "facts.json"
 
+# The keys build_page.render_provenance reads with a bare subscript, checked
+# here so a phase that forgets one fails while writing rather than while
+# publishing. P1 writes cfg.weights_provenance() (3 keys) and P2/P3 write
+# load_model's info (8); this is the subset every phase must agree on, and the
+# reason the two shapes can coexist without the footer quietly printing "n/a".
+REQUIRED_MODEL_KEYS = ("checkpoint_file", "run")
+
 
 def _jsonable(obj: Any) -> Any:
     """
@@ -44,16 +51,24 @@ def _jsonable(obj: Any) -> Any:
     raise TypeError(f"not JSON-serialisable: {type(obj).__name__}")
 
 
-def write_facts(cfg, payload: dict, figures: list[str]) -> Path:
+def build_record(cfg, payload: dict, figures: list[str]) -> dict:
     """
-    Write cfg.out_dir/facts.json.
+    Assemble the record without writing it.
 
-    The stored record is always the phase-specific `payload` plus a provenance
-    block, so any page can state which scene and which weight file produced it
-    without the phase having to remember to include that itself.
+    Split from write_facts so the seam's *shape* can be asserted without
+    producing a file — previously there was no way to obtain the record at all
+    except by writing one, which put the only structural guarantee in the
+    pipeline out of reach of any test.
     """
-    cfg.out_dir.mkdir(parents=True, exist_ok=True)
-    record = {
+    missing = [k for k in REQUIRED_MODEL_KEYS
+               if k not in payload.get("model", {})]
+    if missing:
+        raise KeyError(
+            f"facts payload is missing model.{', model.'.join(missing)} — "
+            f"the page footer reads these to say which weights produced it. "
+            f"Pass cfg.weights_provenance() or load_model's info as 'model'."
+        )
+    return {
         "phase":     cfg.phase,
         "generated": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "scene": {
@@ -67,6 +82,22 @@ def write_facts(cfg, payload: dict, figures: list[str]) -> Path:
         "figures": figures,
         **payload,
     }
+
+
+def write_facts(cfg, payload: dict, figures: list[str]) -> Path:
+    """
+    Write cfg.out_dir/facts.json.
+
+    The stored record is always the phase-specific `payload` plus a provenance
+    block, so any page can state which scene and which weight file produced it
+    without the phase having to remember to include that itself.
+
+    Numbers go in as numbers. How they read on the page is decided at the page
+    seam by build_page.fill's format specs, so facts.json keeps what was
+    measured rather than a rendering of it.
+    """
+    cfg.out_dir.mkdir(parents=True, exist_ok=True)
+    record = build_record(cfg, payload, figures)
     path = cfg.out_dir / FACTS_NAME
     with open(path, "w") as fh:
         json.dump(record, fh, indent=2, default=_jsonable)

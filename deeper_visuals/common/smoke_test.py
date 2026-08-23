@@ -20,13 +20,12 @@ from __future__ import annotations
 import argparse
 
 import numpy as np
-import torch
-from diffusers.schedulers.scheduling_ddpm import DDPMScheduler
 
-from deeper_visuals.common import settings
+from deeper_visuals.common import denoise, settings
 from deeper_visuals.common.config import config_from_dict
 from deeper_visuals.common.data import load_sample, to_model_input
-from deeper_visuals.common.model import load_model
+from deeper_visuals.common.model import (
+    GOAL_HIDDEN, GOAL_VISIBLE, encode_tokens, load_model)
 
 SEP = "─" * 66
 
@@ -71,67 +70,61 @@ def main() -> None:
         )
     print("  State dict : loaded cleanly (0 missing, 0 unexpected)")
 
-    obs_t  = torch.from_numpy(obs_input).unsqueeze(0).to(device)
-    goal_t = torch.from_numpy(goal_input).unsqueeze(0).to(device)
-
     print("\n── Forward pass: encoders + transformer -> c_t ──────────────────")
-    with torch.no_grad():
-        # goal mask 0 = goal token visible          -> navigation
-        # goal mask 1 = goal token hidden from attention -> exploration
-        #
-        # Hidden, not zeroed. NoMaD_ViNT.forward selects a src_key_padding_mask
-        # so the goal token is excluded from attention entirely — it is still
-        # encoded, the other tokens just cannot see it. The mean-pool is then
-        # rescaled over the 4 remaining tokens. Zeroing the goal *input* would
-        # be a different and wrong experiment: the encoder would happily embed
-        # a black image and the transformer would attend to that embedding.
-        nav_mask     = torch.zeros(1, dtype=torch.long, device=device)
-        explore_mask = torch.ones(1, dtype=torch.long, device=device)
+    # Through encode_tokens, the same path every phase uses. Building the masks
+    # and calling the model by hand here — as this test used to — meant the one
+    # genuinely deep function in common/ was the only thing the smoke test never
+    # touched, and its docstring says its frame-major unpack is "impossible to
+    # notice when B is 1". That is precisely what a smoke test should cover.
+    #
+    # goal mask 0 = goal token visible          -> navigation
+    # goal mask 1 = goal token hidden from attention -> exploration
+    #
+    # Hidden, not zeroed. NoMaD_ViNT.forward selects a src_key_padding_mask so
+    # the goal token is excluded from attention entirely — it is still encoded,
+    # the other tokens just cannot see it. The mean-pool is then rescaled over
+    # the 4 remaining tokens.
+    nav = encode_tokens(model, obs_input[None], goal_input[None], device,
+                        goal_mask=GOAL_VISIBLE)
+    exp = encode_tokens(model, obs_input[None], goal_input[None], device,
+                        goal_mask=GOAL_HIDDEN)
 
-        ct_nav = model("vision_encoder", obs_img=obs_t, goal_img=goal_t,
-                       input_goal_mask=nav_mask)
-        ct_exp = model("vision_encoder", obs_img=obs_t, goal_img=goal_t,
-                       input_goal_mask=explore_mask)
+    print(f"  obs tokens  : {nav.obs_tokens.shape}")
+    print(f"  goal token  : {nav.goal_token.shape}")
+    print(f"  tokens in   : {nav.tokens.shape}   (what the transformer sees)")
+    print(f"  c_t (navigation) : {nav.context.shape}")
+    print(f"  c_t (exploration): {exp.context.shape}")
 
-    print(f"  c_t (navigation) : {tuple(ct_nav.shape)}")
-    print(f"  c_t (exploration): {tuple(ct_exp.shape)}")
-    delta = (ct_nav - ct_exp).abs().mean().item()
+    if not np.array_equal(nav.tokens, exp.tokens):
+        raise SystemExit(
+            "  FAIL — the goal mask changed the encoder tokens, which it cannot "
+            "do. Masking hides the goal from attention, not from the encoder."
+        )
+    print("  Masking left the tokens untouched -> it acts on attention only")
+
+    delta = float(np.abs(nav.context - exp.context).mean())
     print(f"  mean |nav - explore| : {delta:.4f}")
     if delta == 0.0:
         raise SystemExit("  FAIL — goal masking had no effect on c_t")
     print("  Goal masking changes c_t -> masking is wired up correctly")
 
     print("\n── Forward pass: diffusion head ────────────────────────────────")
-    scheduler = DDPMScheduler(
-        num_train_timesteps=settings.K_DENOISING,
-        beta_schedule="squaredcos_cap_v2",
-        clip_sample=True,
-        prediction_type="epsilon",
-    )
-    scheduler.set_timesteps(settings.K_DENOISING)
+    # Through common/denoise.py rather than a private copy of the K-step loop.
+    result = denoise.denoise(model, nav.context, device, seed=0)
+    actions = result.actions
 
-    with torch.no_grad():
-        naction = torch.randn(
-            (1, settings.NUM_ACTIONS, settings.ACTION_DIM), device=device
-        )
-        for k in scheduler.timesteps:
-            noise_pred = model(
-                "noise_pred_net", sample=naction,
-                timestep=k.unsqueeze(0).to(device), global_cond=ct_nav,
-            )
-            naction = scheduler.step(
-                model_output=noise_pred, timestep=k, sample=naction
-            ).prev_sample
-
-        dist = model("dist_pred_net", obsgoal_cond=ct_nav)
-
-    actions = naction.cpu().numpy()[0]
     print(f"  denoised actions : {actions.shape}  "
-          f"({settings.NUM_ACTIONS} steps x {settings.ACTION_DIM} dims, K={settings.K_DENOISING})")
+          f"({settings.NUM_ACTIONS} steps x {settings.ACTION_DIM} dims, "
+          f"K={result.n_steps})")
     print(f"  action range     : [{actions.min():.3f}, {actions.max():.3f}]")
-    print(f"  distance head    : {float(dist.item()):.3f}")
+    print(f"  distance head    : "
+          f"{denoise.distance_to_goal(model, nav.context, device):.3f}")
     if not np.isfinite(actions).all():
         raise SystemExit("  FAIL — denoised actions contain NaN/Inf")
+    if result.n_steps != settings.K_DENOISING:
+        raise SystemExit(
+            f"  FAIL — expected {settings.K_DENOISING} denoising steps, "
+            f"got {result.n_steps}")
 
     print(f"\n{SEP}")
     print("  PASS — checkpoint loads and a full forward pass runs clean.")

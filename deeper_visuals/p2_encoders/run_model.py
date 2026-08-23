@@ -48,7 +48,7 @@ import matplotlib.gridspec as gridspec
 import numpy as np
 from matplotlib.patches import FancyArrowPatch, FancyBboxPatch
 
-from deeper_visuals.common import settings, viz
+from deeper_visuals.common import measure, settings, viz
 from deeper_visuals.common.config import load_config
 from deeper_visuals.common.data import load_sample, to_model_input
 from deeper_visuals.common.facts import write_facts
@@ -85,12 +85,14 @@ def encode_tokens(model, sample: dict, device: str) -> tuple[np.ndarray, np.ndar
     A batch of one over common.model.encode_tokens, which owns the hooks and
     the frame-major unpacking. Nothing about reading tokens out of NoMaD lives
     in this phase.
+
+    Its c_t is ignored here on purpose: this phase stops at the tokens, and c_t
+    is only meaningful once the transformer has mixed them — which is P3.
     """
     obs_batch  = to_model_input(sample["obs_raw"])[None]
     goal_batch = to_model_input([sample["goal_raw"]])[None]
-    obs_tokens, goal_tokens = model_lib.encode_tokens(
-        model, obs_batch, goal_batch, device)
-    return obs_tokens[0], goal_tokens[0]
+    encoding = model_lib.encode_tokens(model, obs_batch, goal_batch, device)
+    return encoding.obs_tokens[0], encoding.goal_token[0]
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -101,13 +103,9 @@ def _draw_token(ax, token: np.ndarray, vabs: float, *, xlabel: str = ""):
     """
     One token as a single-row heatmap, on a scale shared with every other row.
 
-    Rendered as 1 x 256 rather than reshaped into a square: the 256 dimensions
-    have no order and no neighbours, so a 16 x 16 tile would invent a structure
-    the vector does not have and invite the reader to look for patches in it.
+    viz.vector_strip owns the 1 x N decision and the reason for it.
     """
-    image = ax.imshow(
-        token.reshape(1, -1), aspect="auto", cmap="RdBu_r", vmin=-vabs, vmax=vabs,
-    )
+    image = viz.vector_strip(ax, token, vabs=vabs)
     viz.plate(ax, edge=viz.COLOR_MUTED, width=0.6, subtitle=xlabel)
     return image
 
@@ -208,7 +206,7 @@ def plot_token_strips(sample: dict, obs_tokens: np.ndarray, goal_token: np.ndarr
     ax_psi = fig.add_subplot(grid[:n_obs, COL_ENCODER])
     _draw_encoder(ax_psi, "camera encoder",
                   ["one network,", "run once per frame",
-                   f"{encoders['psi_params_m']} learned settings"],
+                   f"{encoders['psi_params_m']:.2f}M learned settings"],
                   color=viz.COLOR_MUTED, fill="#f3f5f6")
 
     # ── Current frame + goal -> encoder phi ───────────────────────────────────
@@ -227,14 +225,13 @@ def plot_token_strips(sample: dict, obs_tokens: np.ndarray, goal_token: np.ndarr
     ax_phi = fig.add_subplot(grid[-1, COL_ENCODER])
     _draw_encoder(ax_phi, "goal encoder",
                   ["a different network,", "fed both frames at once",
-                   f"{encoders['phi_params_m']} learned settings"],
+                   f"{encoders['phi_params_m']:.2f}M learned settings"],
                   color=viz.COLOR_GOAL, fill="#f7f1fa")
 
     # Room under the rows for the colour key, which is outside every axes.
     fig.subplots_adjust(left=0.035, right=0.985, top=0.94, bottom=0.14)
 
-    # Everything below reads laid-out positions, so settle the canvas first.
-    fig.canvas.draw()
+    viz.settle(fig)
     for ax_thumb, ax_heat in obs_rows:
         _connect(fig, ax_thumb, ax_psi, ax_heat, color=viz.COLOR_MUTED)
     _connect(fig, ax_goal, ax_phi, ax_heat_goal, color=viz.COLOR_GOAL)
@@ -267,10 +264,6 @@ def _annotate_goal_row(fig, ax_now, ax_goal) -> None:
 # The numbers
 # ══════════════════════════════════════════════════════════════════════════════
 
-def _millions(n: int) -> str:
-    return f"{n / 1e6:.2f}M"
-
-
 def measure_encoders(model) -> dict:
     """
     The two encoders, measured off the loaded model rather than asserted.
@@ -297,9 +290,10 @@ def measure_encoders(model) -> dict:
         "phi_in_channels":   encoder.goal_encoder._conv_stem.in_channels,
         "psi_params":        psi_params,
         "phi_params":        phi_params,
-        "psi_params_m":      _millions(psi_params),
-        "phi_params_m":      _millions(phi_params),
-        "encoder_params_m":  _millions(psi_params + phi_params + compress_params),
+        "psi_params_m":      measure.millions(psi_params),
+        "phi_params_m":      measure.millions(phi_params),
+        "encoder_params_m":  measure.millions(
+                                 psi_params + phi_params + compress_params),
         "feature_dim":       encoder.num_obs_features,
         "token_dim":         encoder.obs_encoding_size,
         "compression":       f"{encoder.num_obs_features} → {encoder.obs_encoding_size}",
@@ -325,34 +319,13 @@ def measure_tokens(sample: dict, obs_tokens: np.ndarray, goal_token: np.ndarray)
         "token_dim":          token_dim,
         "obs_tokens_shape":   f"{obs_tokens.shape[0]} × {obs_tokens.shape[1]}",
         "goal_token_shape":   f"1 × {goal_token.size}",
-        "numbers_per_frame":  f"{numbers_per_frame:,}",
-        "shrink_factor":      f"{numbers_per_frame // token_dim}×",
-        "value_range":        _range(all_tokens),
-        "obs_value_range":    _range(obs_tokens),
-        "goal_value_range":   _range(goal_token),
-        "obs_similarity":     f"{_mean_similarity(obs_tokens, obs_tokens):.2f}",
-        "goal_similarity":    f"{_mean_similarity(obs_tokens, goal_token[None, :]):.2f}",
+        "numbers_per_frame":  numbers_per_frame,
+        "shrink_factor":      numbers_per_frame // token_dim,
+        "value_min":          float(all_tokens.min()),
+        "value_max":          float(all_tokens.max()),
+        "obs_similarity":     measure.mean_cosine(obs_tokens, obs_tokens),
+        "goal_similarity":    measure.mean_cosine(obs_tokens, goal_token[None, :]),
     }
-
-
-def _range(values: np.ndarray) -> str:
-    """The span of a token or set of tokens, as the page and Notion quote it."""
-    return f"{values.min():.2f} … {values.max():.2f}"
-
-
-def _mean_similarity(a: np.ndarray, b: np.ndarray) -> float:
-    """
-    Mean cosine similarity between two sets of tokens.
-
-    When both sides are the same set, the diagonal is dropped — a token's
-    similarity to itself is 1 by definition and would only pull the average up.
-    """
-    unit_a = a / np.linalg.norm(a, axis=1, keepdims=True)
-    unit_b = b / np.linalg.norm(b, axis=1, keepdims=True)
-    similarity = unit_a @ unit_b.T
-    if a.shape == b.shape and np.array_equal(a, b):
-        return float(similarity[~np.eye(len(a), dtype=bool)].mean())
-    return float(similarity.mean())
 
 
 def main() -> None:

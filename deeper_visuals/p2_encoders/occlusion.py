@@ -40,7 +40,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from deeper_visuals.common import model as model_lib, viz
+from deeper_visuals.common import measure, model as model_lib, viz
 from deeper_visuals.common.data import to_model_input
 from deeper_visuals.common.viz import plt
 
@@ -95,7 +95,7 @@ class DependenceProbe:
         """
         a = self.psi.ravel() - self.psi.mean()
         b = self.phi.ravel() - self.phi.mean()
-        return float(a @ b / (np.linalg.norm(a) * np.linalg.norm(b)))
+        return measure.cosine(a, b)
 
     def facts(self) -> dict:
         """
@@ -107,19 +107,17 @@ class DependenceProbe:
         """
         return {
             "probes":      self.probes,
-            "patch":       f"{self.patch} × {self.patch} pixels",
+            "patch":       self.patch,
             "stride":      self.stride,
-            "psi_peak":    f"{self.psi.max():.3f}",
-            "phi_peak":    f"{self.phi.max():.3f}",
-            "map_overlap": f"{self.overlap:.2f}",
+            "psi_peak":    float(self.psi.max()),
+            "phi_peak":    float(self.phi.max()),
+            "map_overlap": self.overlap,
         }
 
 
 def _cosine_distance(base: np.ndarray, moved: np.ndarray) -> np.ndarray:
     """1 - cosine similarity, per row. 0 = the token did not move at all."""
-    unit_base = base / np.linalg.norm(base)
-    unit_moved = moved / np.linalg.norm(moved, axis=1, keepdims=True)
-    return 1.0 - unit_moved @ unit_base
+    return 1.0 - measure.cosine_to_each(base, moved)
 
 
 def _occluded(frame: np.ndarray, top: int, left: int, fill: np.ndarray) -> np.ndarray:
@@ -158,9 +156,9 @@ def probe_dependence(model, sample: dict, device: str) -> DependenceProbe:
     def obs_stack(frame: np.ndarray) -> np.ndarray:
         return to_model_input(list(context) + [frame])
 
-    base_obs, base_goal = model_lib.encode_tokens(
+    baseline = model_lib.encode_tokens(
         model, obs_stack(current)[None], goal_input[None], device)
-    base_psi, base_phi = base_obs[0, -1], base_goal[0]
+    base_psi, base_phi = baseline.obs_tokens[0, -1], baseline.goal_token[0]
 
     positions = [(top, left)
                  for top in range(0, height - PATCH + 1, STRIDE)
@@ -179,13 +177,12 @@ def probe_dependence(model, sample: dict, device: str) -> DependenceProbe:
                               for t, l in chunk])
         goal_batch = np.repeat(goal_input[None], len(chunk), axis=0)
 
-        obs_tokens, goal_tokens = model_lib.encode_tokens(
-            model, obs_batch, goal_batch, device)
+        probed = model_lib.encode_tokens(model, obs_batch, goal_batch, device)
         distances = {
             # [:, -1] is the current frame — the only one an occlusion of it
             # can have moved. common.model.encode_tokens owns the unpacking.
-            "psi": _cosine_distance(base_psi, obs_tokens[:, -1]),
-            "phi": _cosine_distance(base_phi, goal_tokens),
+            "psi": _cosine_distance(base_psi, probed.obs_tokens[:, -1]),
+            "phi": _cosine_distance(base_phi, probed.goal_token),
         }
 
         for i, (top, left) in enumerate(chunk):
@@ -275,7 +272,7 @@ def plot_occlusion(sample: dict, probe: "DependenceProbe", save_path):
 
     # After the layout settles, or the key is placed against positions that
     # subplots_adjust is about to move out from under it.
-    fig.canvas.draw()
+    viz.settle(fig)
     viz.worded_key(fig, heat, [axes[1], axes[2]],
                    ["barely matters", "matters most"], drop=0.055)
 

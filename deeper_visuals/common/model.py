@@ -18,6 +18,9 @@ pip-installed.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
+import numpy as np
 import torch
 
 from vint_train.models.nomad.nomad import NoMaD, DenseNetwork
@@ -28,20 +31,52 @@ from deeper_visuals.common import settings
 from deeper_visuals.common.config import PhaseConfig
 
 
-def encode_tokens(model, obs_batch, goal_batch, device: str):
+# NoMaD_ViNT's goal-mask convention (nomad_vint.py: 0 = no mask, 1 = mask), named
+# so call sites read as behaviours rather than as magic integers. The mask selects
+# a row of the model's own `all_masks`, which is a src_key_padding_mask: in
+# exploration the goal token is hidden from attention, NOT zeroed at the input.
+# It is still encoded — the other four tokens simply cannot see it.
+GOAL_VISIBLE = 0   # navigation  — the goal token takes part in attention
+GOAL_HIDDEN  = 1   # exploration — the goal token is masked out of attention
+
+
+@dataclass(frozen=True)
+class VisionEncoding:
+    """
+    One pass of the vision encoder: the tokens that went in, and the c_t out.
+
+    Kept together because they are one forward pass. The tokens are what P2
+    draws and what P3 feeds to the transformer; `context` is what P4's diffusion
+    head is conditioned on. Splitting them across two calls would mean running
+    the two EfficientNets twice to see both halves of the same computation.
+    """
+
+    obs_tokens: np.ndarray   # (B, N_OBS_FRAMES, ENCODING_SIZE)
+    goal_token: np.ndarray   # (B, ENCODING_SIZE)
+    context:    np.ndarray   # (B, ENCODING_SIZE) — c_t, the mean-pooled output
+
+    @property
+    def tokens(self) -> np.ndarray:
+        """The full (B, N_TOKENS, ENCODING_SIZE) sequence the transformer sees."""
+        return np.concatenate([self.obs_tokens, self.goal_token[:, None, :]], axis=1)
+
+
+def encode_tokens(model, obs_batch, goal_batch, device: str, *,
+                  goal_mask: int = GOAL_VISIBLE) -> VisionEncoding:
     """
     Run the real vision encoder over a batch and read its tokens back out.
 
     obs_batch  (B, 3*N_OBS_FRAMES, H, W)  ->  obs_tokens  (B, N_OBS_FRAMES, 256)
-    goal_batch (B, 3, H, W)               ->  goal_tokens (B, 256)
+    goal_batch (B, 3, H, W)               ->  goal_token  (B, 256)
+                                              context     (B, 256)
 
-    Captured with forward hooks on the two compression layers rather than by
-    re-running the encoder pipeline by hand. Those layers are the seam worth
-    hooking: everything before them is EfficientNet, everything after is the
-    transformer, and their output is exactly the token sequence NoMaD_ViNT
-    assembles. The frozen debug_visuals/visualize_stage2.py reimplemented that
-    pipeline instead — a second copy of upstream code, free to drift from it.
-    A hook has no copy to drift.
+    The tokens are captured with forward hooks on the two compression layers
+    rather than by re-running the encoder pipeline by hand. Those layers are the
+    seam worth hooking: everything before them is EfficientNet, everything after
+    is the transformer, and their output is exactly the token sequence
+    NoMaD_ViNT assembles. The frozen debug_visuals/visualize_stage2.py
+    reimplemented that pipeline instead — a second copy of upstream code, free to
+    drift from it. A hook has no copy to drift.
 
     The row ordering is this function's one real piece of knowledge, and the
     reason it lives here rather than at each call site. NoMaD_ViNT splits the
@@ -50,9 +85,11 @@ def encode_tokens(model, obs_batch, goal_batch, device: str):
     is easy to get subtly wrong and impossible to notice when B is 1 — so it is
     done once, here, the same way the model does it.
 
-    The mask is the navigation one (goal visible). Masking hides the goal token
-    from attention, not from the encoder, so it cannot change either token; P3
-    is where the mask has something to show.
+    `goal_mask` (GOAL_VISIBLE / GOAL_HIDDEN) changes `context` and nothing else.
+    Masking hides the goal token from attention, not from the encoder, so both
+    token arrays come back identical either way — which is precisely the fact P3
+    is built to show, and the reason the mask belongs on this call rather than
+    on a separate one.
     """
     captured = {}
 
@@ -68,12 +105,12 @@ def encode_tokens(model, obs_batch, goal_batch, device: str):
     ]
     try:
         with torch.no_grad():
-            model(
+            context = model(
                 "vision_encoder",
                 obs_img=torch.as_tensor(obs_batch).to(device),
                 goal_img=torch.as_tensor(goal_batch).to(device),
-                input_goal_mask=torch.zeros(len(obs_batch), dtype=torch.long,
-                                            device=device),
+                input_goal_mask=torch.full((len(obs_batch),), goal_mask,
+                                           dtype=torch.long, device=device),
             )
     finally:
         for handle in handles:
@@ -82,7 +119,11 @@ def encode_tokens(model, obs_batch, goal_batch, device: str):
     batch_size = len(obs_batch)
     obs_tokens = captured["obs"].reshape(
         settings.N_OBS_FRAMES, batch_size, settings.ENCODING_SIZE)
-    return obs_tokens.transpose(1, 0, 2), captured["goal"]
+    return VisionEncoding(
+        obs_tokens=obs_tokens.transpose(1, 0, 2),
+        goal_token=captured["goal"],
+        context=context.detach().cpu().numpy(),
+    )
 
 
 def get_device() -> str:

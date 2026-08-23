@@ -6,12 +6,12 @@ Each phase folder holds a tiny config.yaml:
 
     sample: gentle_left     # a key from common/samples.yaml, or {traj:…, frame:…}
     checkpoint: latest      # latest | ema
-    # …any phase-specific knobs, e.g. num_seeds: 6
 
 load_config() turns that into one frozen object carrying everything the phase's
 run_model.py and the page builder need: the scene, which weights to use, the
-frame indices, and the output directory. Phase-specific knobs stay reachable
-through .extra so this module never needs to know about them.
+frame indices, and the output directory. A phase-specific knob (P5's num_seeds)
+is read by that phase straight from its own config.yaml; PhaseConfig previously
+carried an `extra` dict for them that nothing ever read.
 
 The output directory is tagged by checkpoint (out/p1/latest/, out/p1/ema/) so
 switching `checkpoint:` never overwrites the other variant's PNGs — you can hold
@@ -27,7 +27,7 @@ split.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -56,7 +56,6 @@ class PhaseConfig:
     checkpoint_tag: str         # "latest" | "ema" — validated at load time
     run: str                    # training run folder name, e.g. nomad_2026_…
     out_dir: Path               # where PNGs + facts.json are written
-    extra: dict[str, Any] = field(default_factory=dict)
 
     # ── Derived frame indices — one definition, so every phase agrees ─────────
     @property
@@ -220,9 +219,6 @@ def config_from_dict(raw: dict, phase: str) -> PhaseConfig:
     tag = _validate_checkpoint_tag(str(raw.get("checkpoint", settings.DEFAULT_CHECKPOINT)))
     run = str(raw.get("run", settings.DEFAULT_RUN))
 
-    # Anything not consumed above is a phase-specific knob (e.g. num_seeds).
-    extra = {k: v for k, v in raw.items() if k not in {"sample", "checkpoint", "run"}}
-
     return PhaseConfig(
         phase=phase,
         sample_key=sample_key,
@@ -232,7 +228,6 @@ def config_from_dict(raw: dict, phase: str) -> PhaseConfig:
         checkpoint_tag=tag,
         run=run,
         out_dir=OUT_ROOT / phase / tag,
-        extra=extra,
     )
 
 

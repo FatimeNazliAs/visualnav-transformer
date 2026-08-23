@@ -78,22 +78,53 @@ def flatten(d: dict, prefix: str = "") -> dict:
 # Deliberately not str.format: it reads "{scene.sample}" as attribute access on
 # an object named `scene`, not as a key in the flattened dict. Substituting by
 # regex keeps the dotted path meaning exactly what facts.json shows.
-_REF = re.compile(r"\{([A-Za-z0-9_.]+)\}")
+#
+# The optional :spec after the key is a standard format spec, and it is what
+# lets facts.json hold measurements instead of renderings. Before it, the seam
+# could carry only strings, so every phase formatted its numbers inside
+# run_model.py — which put "should this read 9% or 0.09?" behind a GPU, and left
+# facts.json holding round(v * 100) with the measured value gone for good.
+_REF = re.compile(r"\{([A-Za-z0-9_.]+)(?::([^}]+))?\}")
+
+# What a list renders as when a spec is given. Lists reach the page rarely and
+# always as a progression (per-layer figures, per-head shares), so one separator
+# is enough; a phase that needs another writes the string itself.
+LIST_JOIN = " → "
 
 
 def fill(text: str, facts_flat: dict) -> str:
-    """Substitute {dotted.key} references in a page.yaml string from facts."""
+    """
+    Substitute {dotted.key} and {dotted.key:spec} references from facts.
+
+    The spec is applied per element for a list, so {a.per_layer:.0%} on
+    [0.01, 0.05] gives "1% → 5%" — which is why no phase needs to pre-join one.
+    """
 
     def sub(m: "re.Match") -> str:
-        key = m.group(1)
+        key, spec = m.group(1), m.group(2)
         if key not in facts_flat:
             raise KeyError(
                 f"page.yaml references {{{key}}}, which is not in facts.json. "
                 f"Available keys: {', '.join(sorted(facts_flat))}"
             )
-        return str(facts_flat[key])
+        return _render(facts_flat[key], spec, key)
 
     return _REF.sub(sub, str(text))
+
+
+def _render(value: object, spec: str | None, key: str) -> str:
+    """One fact, formatted. Raises with the key named if the spec cannot apply."""
+    if isinstance(value, list):
+        return LIST_JOIN.join(_render(item, spec, key) for item in value)
+    if not spec:
+        return str(value)
+    try:
+        return format(value, spec)
+    except (ValueError, TypeError) as exc:
+        raise ValueError(
+            f"page.yaml formats {{{key}:{spec}}} but facts.json holds "
+            f"{value!r} ({type(value).__name__}): {exc}"
+        ) from None
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -221,8 +252,19 @@ def render_figures(page: dict, out_dir: Path, facts_flat: dict) -> str:
     P5 is the case for two — multimodal hero, three-view detail. More than that
     and the page stops being one screen.
     """
+    generated = facts_flat.get("figures", [])
     blocks = []
     for fig in within_count("figures", page.get("figures", [])):
+        # facts.json records what run_model.py actually wrote. Checking against
+        # it turns a rename into one clear message here, instead of a
+        # "figure not found" from embed_png with the right name sitting unread
+        # in facts.json two lines away.
+        if generated and fig["file"] not in generated:
+            raise KeyError(
+                f"page.yaml shows {fig['file']}, but this run produced "
+                f"{', '.join(generated)}. Rename it in page.yaml, or rerun "
+                f"update.sh without --page-only."
+            )
         src = embed_png(out_dir / fig["file"])
         # alt is an attribute, so it never gets <b> — plain, not rich.
         alt = as_text(resolve(fig.get("alt", fig["file"]), facts_flat))
@@ -311,13 +353,18 @@ def render_provenance(facts: dict) -> str:
     """
     The footer line that makes the page auditable: which scene, which weights,
     when. Advisors ignore it; it is what lets the author trust the figure.
+
+    Every key is required, and read with a bare subscript so a missing one fails
+    the build. It previously fell back to "n/a" for the weights, which meant the
+    line whose entire job is auditability would happily publish
+    "Weights n/a · run n/a" rather than stop. facts.write_facts guarantees the
+    shape, so there is nothing left to defend against.
     """
-    scene = facts["scene"]
-    model = facts.get("model", {})
+    scene, model = facts["scene"], facts["model"]
     items = [
         ("Scene", f"{scene['sample']} ({scene['traj']} @ frame {scene['frame']})"),
-        ("Weights", f"{model.get('checkpoint_file', 'n/a')} · {model.get('run', 'n/a')}"),
-        ("Generated", facts.get("generated", "n/a")),
+        ("Weights", f"{model['checkpoint_file']} · {model['run']}"),
+        ("Generated", facts["generated"]),
     ]
     return "\n".join(
         f"    <span><b>{html.escape(k)}</b> {html.escape(str(v))}</span>"
@@ -329,15 +376,20 @@ def render_provenance(facts: dict) -> str:
 # Body sources
 # ══════════════════════════════════════════════════════════════════════════════
 
-def render_phase_body(page: dict, out_dir: Path, phase: str,
-                      eyebrow_default: str) -> str:
+# Every phase's page.yaml sets this, so it is a fallback rather than a default.
+# It used to be threaded in from cfg.description, which made the GPU-free half
+# of the pipeline reach into the config layer for one dead string.
+EYEBROW_FALLBACK = "{scene.description}"
+
+
+def render_phase_body(page: dict, out_dir: Path, phase: str) -> str:
     """Fill the shared page template from page.yaml + facts.json."""
     facts = read_facts(out_dir)
     facts_flat = flatten(facts)
     template = Template((TEMPLATE_DIR / "page.html").read_text())
     return template.substitute(
         phase_label=as_text(one_line(page.get("phase_label", phase.upper()))),
-        eyebrow=as_text(resolve(page.get("eyebrow", eyebrow_default), facts_flat)),
+        eyebrow=as_text(resolve(page.get("eyebrow", EYEBROW_FALLBACK), facts_flat)),
         heading=render_heading(page, facts_flat),
         lead=render_lead(page, facts_flat),
         points=render_points(page, facts_flat),
@@ -422,7 +474,7 @@ def build(phase_dir: Path) -> Path:
     else:
         cfg = load_config(phase_dir)
         out_dir = cfg.out_dir
-        body = render_phase_body(page, out_dir, phase, cfg.description)
+        body = render_phase_body(page, out_dir, phase)
 
     shell = Template((TEMPLATE_DIR / "shell.html").read_text())
     rendered = shell.substitute(

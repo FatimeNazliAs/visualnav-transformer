@@ -11,6 +11,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import numpy as np
+
 import matplotlib
 matplotlib.use("Agg")   # headless — no display inside the container
 import matplotlib.pyplot as plt   # noqa: E402  — must follow matplotlib.use
@@ -91,6 +93,59 @@ def worded_key(fig, mappable, axes: list, labels: list[str], *,
     bar.outline.set_linewidth(0.6)
     if caption:
         bar.set_label(caption, fontsize=LABEL_SIZE, color=COLOR_MUTED)
+
+
+def settle(fig) -> None:
+    """
+    Lay the figure out, so laid-out positions can be read from it.
+
+    Call this once before any annotation that reads `get_position()`. imshow
+    pins each axes to the image aspect, so until the canvas has been laid out
+    get_position() still reports the cell the gridspec allotted, not the smaller
+    box the image was fitted into — annotating from that box leaves labels and
+    rules floating in the slack.
+
+    One line, but it earns a name: the rationale above was written out five
+    times across four phase files before this existed, once per call site, and
+    a hazard explained five times is a module that has not been created yet.
+    """
+    fig.canvas.draw()
+
+
+def band(axes: list) -> tuple[float, float, float, float]:
+    """
+    The figure-fraction box a run of panels actually occupies.
+
+    Returns (left, right, bottom, top). Call after `settle`.
+
+    Every figure in the series annotates groups of panels — a divider between
+    two runs, a caption under one, a colour key spanning several — and each
+    needs the same rectangle. Four call sites computed it independently before
+    this was promoted out of P1.
+    """
+    boxes = [ax.get_position() for ax in axes]
+    return (min(b.x0 for b in boxes), max(b.x1 for b in boxes),
+            min(b.y0 for b in boxes), max(b.y1 for b in boxes))
+
+
+def vector_strip(ax, values, *, vabs: float | None = None, cmap: str = "RdBu_r",
+                 vmin: float | None = None, vmax: float | None = None):
+    """
+    One vector as a single-row heatmap, and the reason it is drawn that way.
+
+    Rendered as 1 x N rather than reshaped into a square: the dimensions of
+    these vectors have no order and no neighbours, so a 16 x 16 tile would
+    invent a structure the vector does not have and invite the reader to look
+    for patches in it. P2 draws tokens this way, P3 draws c_t this way, and P4's
+    noise vectors and P5's action sequences will want the same thing.
+
+    `vabs` is the common case — a symmetric diverging scale centred on zero.
+    Pass vmin/vmax instead for a sequential one.
+    """
+    if vabs is not None:
+        vmin, vmax = -vabs, vabs
+    return ax.imshow(np.asarray(values).reshape(1, -1), aspect="auto",
+                     cmap=cmap, vmin=vmin, vmax=vmax)
 
 
 def save_fig(fig, save_path: Path, *, facecolor: str | None = "white") -> Path:

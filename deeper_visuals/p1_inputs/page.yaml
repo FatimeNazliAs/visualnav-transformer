@@ -20,7 +20,7 @@ points:
   - <b>Four frames from its own camera</b> — the one from right now, plus the
     three just before it.
   - Those three are what tell it <b>which way it is already moving</b>.
-  - <b>One photo of where it has been sent</b> — the goal, {input.goal_lead_steps} further on.
+  - <b>One photo of where it has been sent</b> — the goal, {input.goal_lead_steps} frames further on.
   - Each picture is shrunk to a <b>{input.image_size} thumbnail</b> first.
   - No map, no GPS, no distance sensor. Just these {input.n_frames_in} pictures.
 
@@ -41,9 +41,9 @@ stats:
   - label: Size of each
     value: "{input.image_size}"
   - label: Goal sits ahead by
-    value: "{input.goal_lead_steps}"
+    value: "{input.goal_lead_steps} frames"
   - label: Numbers handed to the model
-    value: "{input.n_input_values}"
+    value: "{input.n_input_values:,}"
 
 paper_note: >
   In the NoMaD paper: the observation context and goal image entering Section 3's

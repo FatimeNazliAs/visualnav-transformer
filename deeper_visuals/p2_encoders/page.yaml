@@ -18,14 +18,14 @@ lead: >
   a short list of numbers first.
 
 points:
-  - One picture is <b>{tokens.numbers_per_frame} numbers</b>. What comes out the
+  - One picture is <b>{tokens.numbers_per_frame:,} numbers</b>. What comes out the
     other side is <b>{tokens.token_dim}</b>.
   - The four camera frames all go through <b>one network</b>, one at a time.
   - The goal goes through a <b>second, separate network</b> — and not on its own.
   - That one is handed <b>the goal and the current view together</b>, so the goal
     is always read against where the robot is now.
   - Frames of the same corridor land on <b>near-identical lists</b>
-    ({tokens.obs_similarity} alike); the goal lands far off ({tokens.goal_similarity}).
+    ({tokens.obs_similarity:.2f} alike); the goal lands far off ({tokens.goal_similarity:.2f}).
   - Hide part of the picture and the numbers shift — the two networks turn out to
     <b>rely on different parts of it</b>.
 
@@ -47,7 +47,7 @@ figures:
       points:
         - >
           <b>They are two different networks</b>, not one network used twice — same
-          design, but each learned its own {encoders.psi_params_m} settings.
+          design, but each learned its own {encoders.psi_params_m:.2f}M settings.
         - >
           <b>Camera encoder</b> — in: one frame, {encoders.psi_in_channels} colour
           channels. Out: {tokens.token_dim} numbers. It runs once per frame, so four
@@ -75,7 +75,7 @@ figures:
     caption: >
       Cover part of the view, encode it again, see how far the numbers move.
       The two networks lean on <b>different regions of the same frame</b> —
-      the maps correlate {dependence.map_overlap}.
+      the maps correlate {dependence.map_overlap:.2f}.
     details:
       summary: How to read this picture
       points:
@@ -100,13 +100,13 @@ figures:
 
 stats:
   - label: Numbers per picture
-    value: "{tokens.numbers_per_frame}"
+    value: "{tokens.numbers_per_frame:,}"
   - label: After the encoder
     value: "{tokens.token_dim}"
   - label: Lists handed on
     value: "{tokens.n_tokens}"
   - label: Learned settings
-    value: "{encoders.encoder_params_m}"
+    value: "{encoders.encoder_params_m:.1f}M"
 
 paper_note: >
   In the NoMaD paper: the two visual encoders of Section 3 — the observation

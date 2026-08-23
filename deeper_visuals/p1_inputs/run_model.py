@@ -46,23 +46,9 @@ GAP_RATIO = 0.34
 # The figure
 # ══════════════════════════════════════════════════════════════════════════════
 
-def _band(axes: list) -> tuple[float, float, float, float]:
-    """
-    The figure-fraction box a run of panels actually occupies.
-
-    Read after a draw on purpose. imshow pins each axes to the image aspect, so
-    until the canvas has been laid out get_position() still reports the cell the
-    gridspec allotted, not the smaller square the frame was fitted into —
-    annotating from that box leaves labels and rules floating in the slack.
-    """
-    boxes = [ax.get_position() for ax in axes]
-    return (min(b.x0 for b in boxes), max(b.x1 for b in boxes),
-            min(b.y0 for b in boxes), max(b.y1 for b in boxes))
-
-
 def _group_label(fig, axes: list, text: str, *, color: str) -> None:
     """Caption a run of panels, centred just under them."""
-    left, right, bottom, _ = _band(axes)
+    left, right, bottom, _ = viz.band(axes)
     fig.text(
         (left + right) / 2, bottom - 0.13, text,
         ha="center", va="center", fontsize=10.5, color=color, fontweight="bold",
@@ -71,8 +57,8 @@ def _group_label(fig, axes: list, text: str, *, color: str) -> None:
 
 def _divider(fig, left_axes: list, right_ax, *, color: str) -> None:
     """The dashed rule between the two encoders' inputs, sized to the frames."""
-    x = (_band(left_axes)[1] + _band([right_ax])[0]) / 2
-    _, _, bottom, top = _band(left_axes)
+    x = (viz.band(left_axes)[1] + viz.band([right_ax])[0]) / 2
+    _, _, bottom, top = viz.band(left_axes)
     fig.add_artist(plt.Line2D(
         [x, x], [bottom, top],
         transform=fig.transFigure, color=color, linewidth=1.0, linestyle=(0, (4, 4)),
@@ -123,8 +109,7 @@ def plot_frame_strip(sample: dict, save_path):
     # so are invisible to the layout engine.
     fig.subplots_adjust(bottom=0.22)
 
-    # Everything below annotates the laid-out figure, so settle it first.
-    fig.canvas.draw()
+    viz.settle(fig)
     _divider(fig, obs_axes, goal_ax, color=viz.COLOR_MUTED)
     _group_label(fig, obs_axes, "what it has just seen", color=viz.COLOR_MUTED)
     _group_label(fig, [goal_ax], "where to go", color=viz.COLOR_GOAL)
@@ -154,6 +139,9 @@ def measure_input(sample: dict) -> dict:
     channels_per_frame = obs_tensor.shape[0] // n_obs        # 12 / 4 = 3, i.e. RGB
     phi_channels = channels_per_frame + goal_tensor.shape[0]  # current frame + goal
 
+    # Shapes are the one thing still written as strings: "12 × 96 × 96" is a
+    # shape, not a quantity, and there is no format spec that would render a
+    # tuple that way. Everything measurable goes in as a number.
     def shape_str(*dims) -> str:
         return " × ".join(str(d) for d in dims)
 
@@ -164,10 +152,10 @@ def measure_input(sample: dict) -> dict:
         "obs_tensor":       shape_str(*obs_tensor.shape),
         "goal_tensor":      shape_str(*goal_tensor.shape),
         "phi_input_tensor": shape_str(phi_channels, height, width),
-        "goal_lead_steps":  f"{settings.NUM_ACTIONS} steps",
-        "n_input_values":   f"{obs_tensor.size + goal_tensor.size:,}",
-        "value_range":      (f"{float(min(obs_tensor.min(), goal_tensor.min())):.2f} "
-                             f"… {float(max(obs_tensor.max(), goal_tensor.max())):.2f}"),
+        "goal_lead_steps":  settings.NUM_ACTIONS,
+        "n_input_values":   int(obs_tensor.size + goal_tensor.size),
+        "value_min":        float(min(obs_tensor.min(), goal_tensor.min())),
+        "value_max":        float(max(obs_tensor.max(), goal_tensor.max())),
     }
 
 
