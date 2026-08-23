@@ -28,9 +28,11 @@ The PNGs are base64-embedded rather than linked. A published artifact runs under
 a CSP that blocks external hosts, so latest.html has to be one self-contained
 file — which also makes republishing a single-file operation.
 
-The page follows the two-surface contract from CLAUDE.md: one plain paragraph,
-one hero visual, a small numbers callout, one line on where it sits in the
-paper. Depth belongs on the Notion side, not here.
+The page follows the two-surface contract from CLAUDE.md: a short heading, one
+line of framing, 3-6 bullets, one hero visual, a small numbers callout, one line
+on where it sits in the paper — plus an optional collapsed disclosure for the
+mechanism a reader asks about only after the page has landed. Everything past
+that belongs on the Notion side.
 
 Run:
     python3 -m deeper_visuals.common.build_page deeper_visuals/p1_inputs
@@ -108,17 +110,24 @@ COPY_LIMITS = {          # field -> maximum characters
     "heading": 60,
     "lead":    150,
     "point":   130,
+    "summary": 70,
+    # A detail is the one place the page is allowed to say more than a bullet,
+    # because it is collapsed by default and the reader chose to open it. Still
+    # capped: two lines of explanation, not a paragraph.
+    "detail":  200,
 }
 
 LIST_LIMITS = {          # field -> (minimum, maximum) entries
     "points":  (3, 6),
     "stats":   (2, 5),
     "figures": (1, 2),
+    "details": (3, 8),
 }
 
 CONTRACT_HINT = (
     "The advisor page is scanned in one pass: short heading, one line of "
-    "framing, then points. Depth belongs in the phase's Notion group."
+    "framing, then points. A little more depth can go in the collapsed "
+    "`details:` block; anything past that belongs in the phase's Notion group."
 )
 
 
@@ -226,7 +235,8 @@ def render_figures(page: dict, out_dir: Path, facts_flat: dict) -> str:
             f'  <figure class="figure">\n'
             f'    <div class="plate" tabindex="0">\n'
             f'      <img src="{src}" alt="{alt}">\n'
-            f'    </div>{cap_html}\n'
+            f'    </div>{cap_html}'
+            f'{render_details(fig, facts_flat)}\n'
             f'  </figure>'
         )
     return "\n\n".join(blocks)
@@ -260,6 +270,41 @@ def render_stats(page: dict, facts_flat: dict) -> str:
         f'<span class="label">{as_text(resolve(s["label"], facts_flat))}</span></li>'
         for s in within_count("stats", page.get("stats", []))
     )
+
+
+def render_details(figure: dict, facts_flat: dict) -> str:
+    """
+    A figure's optional collapsed disclosure, rendered directly beneath it.
+
+    The advisor page is scanned in one pass, which is why the visible part is
+    capped at 3-6 short bullets. That cap kept pushing out one specific kind of
+    content: what a reader wants *after* a picture has caught them — how to read
+    it, what the parts of it mean, why it was made this way. Sending them to
+    Notion for that means losing them. Collapsed, it costs the scan nothing.
+
+    It hangs off the figure rather than the page because that is the question it
+    answers: not "tell me more about this phase" but "what am I looking at". A
+    page with two figures needs two different answers, and a disclosure parked
+    at the bottom cannot say which picture it belongs to.
+
+    A figure with nothing to disclose omits the key and the section vanishes;
+    it is not a required part of the contract.
+    """
+    block = figure.get("details")
+    if not block:
+        return ""
+
+    items = "\n".join(
+        f'        <li>'
+        f'{as_rich(within_length("detail", resolve(d, facts_flat)))}'
+        f'</li>'
+        for d in within_count("details", block.get("points", []))
+    )
+    summary = as_rich(within_length("summary", resolve(block["summary"], facts_flat)))
+    return (f'\n    <details class="more">\n'
+            f'      <summary>{summary}</summary>\n'
+            f'      <ul>\n{items}\n      </ul>\n'
+            f'    </details>')
 
 
 def render_provenance(facts: dict) -> str:

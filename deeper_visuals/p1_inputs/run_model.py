@@ -28,8 +28,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import numpy as np
-
 from deeper_visuals.common import settings, viz
 from deeper_visuals.common.config import load_config
 from deeper_visuals.common.data import load_sample, to_model_input
@@ -47,17 +45,6 @@ GAP_RATIO = 0.34
 # ══════════════════════════════════════════════════════════════════════════════
 # The figure
 # ══════════════════════════════════════════════════════════════════════════════
-
-def _draw_panel(ax, frame: np.ndarray, title: str, *, edge: str, width: float) -> None:
-    """One frame, framed. Ticks off but spines kept — the border is the label."""
-    ax.imshow(frame)
-    ax.set_xticks([])
-    ax.set_yticks([])
-    for spine in ax.spines.values():
-        spine.set_edgecolor(edge)
-        spine.set_linewidth(width)
-    ax.set_title(title, fontsize=10, pad=6, color=edge)
-
 
 def _band(axes: list) -> tuple[float, float, float, float]:
     """
@@ -118,15 +105,17 @@ def plot_frame_strip(sample: dict, save_path):
         steps_back = n_obs - 1 - offset
         is_current = steps_back == 0
         heading = "now  (t)" if is_current else f"t − {steps_back}"
-        _draw_panel(
-            ax, frame, f"{heading}\nframe {fidx}",
+        ax.imshow(frame)
+        viz.plate(
+            ax, title=f"{heading}\nframe {fidx}",
             edge=viz.COLOR_CURRENT if is_current else viz.COLOR_MUTED,
             width=2.6 if is_current else 1.0,
         )
 
     # ── Goal -> encoder phi ───────────────────────────────────────────────────
-    _draw_panel(
-        goal_ax, goal_raw, f"goal  (t + {settings.NUM_ACTIONS})\nframe {goal_idx}",
+    goal_ax.imshow(goal_raw)
+    viz.plate(
+        goal_ax, title=f"goal  (t + {settings.NUM_ACTIONS})\nframe {goal_idx}",
         edge=viz.COLOR_GOAL, width=2.6,
     )
 

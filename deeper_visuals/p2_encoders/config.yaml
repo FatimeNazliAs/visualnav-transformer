@@ -1,0 +1,14 @@
+# deeper_visuals/p2_encoders/config.yaml
+#
+# P2 — Encoders. The two knobs this phase has.
+#
+#   sample:     a key from common/samples.yaml, or an inline {traj: …, frame: …}
+#   checkpoint: ema (ema_99.pth, default) | latest (raw epoch-99 latest.pth)
+#
+# Change either one and rerun ./deeper_visuals/p2_encoders/update.sh — the
+# tokens, the numbers and the page all follow. Unlike P1 this phase really
+# loads the weights, so `checkpoint:` changes what the figure shows: the two
+# encoders are what the tokens are read out of.
+
+sample: right_turn_doors   # no11vc_9_1 @ f54 — the hero scene threaded through P1–P5
+checkpoint: ema

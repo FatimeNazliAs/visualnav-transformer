@@ -1,0 +1,113 @@
+# deeper_visuals/p2_encoders/page.yaml
+#
+# The advisor-facing words for P2. Kept out of run_model.py so
+# `update.sh --page-only` re-renders copy in under a second, with no GPU.
+# Every {dotted.key} is substituted from facts.json, so no number here can drift
+# away from the forward pass that produced the figure.
+#
+# House style: short heading, one line of framing, then points. No paragraphs —
+# build_page.py enforces the length caps rather than leaving them to review.
+
+title: Pictures Into Numbers
+phase_label: P2
+eyebrow: "{scene.description}"
+heading: Each picture becomes 256 numbers
+
+lead: >
+  The model cannot look at a photo. Two small networks boil every frame down to
+  a short list of numbers first.
+
+points:
+  - One picture is <b>{tokens.numbers_per_frame} numbers</b>. What comes out the
+    other side is <b>{tokens.token_dim}</b>.
+  - The four camera frames all go through <b>one network</b>, one at a time.
+  - The goal goes through a <b>second, separate network</b> — and not on its own.
+  - That one is handed <b>the goal and the current view together</b>, so the goal
+    is always read against where the robot is now.
+  - Frames of the same corridor land on <b>near-identical lists</b>
+    ({tokens.obs_similarity} alike); the goal lands far off ({tokens.goal_similarity}).
+  - Hide part of the picture and the numbers shift — the two networks turn out to
+    <b>rely on different parts of it</b>.
+
+figures:
+  - file: stage2_token_strips.png
+    alt: >
+      Five rows, read left to right. Each of the first four shows one camera
+      thumbnail with an arrow into a single tall box labelled camera encoder,
+      and an arrow out of it to a long horizontal strip of red and blue cells —
+      that frame's 256 numbers. The bottom row shows two thumbnails, the current
+      view plus the goal, feeding a separate box labelled goal encoder, which
+      produces a strip of its own.
+    caption: >
+      Frames in, the network, the numbers out — blue below zero, red above. The
+      four camera frames share <b>one box because they share one network</b>; the
+      goal has a <b>separate one</b>, fed two frames at once.
+    details:
+      summary: More about the two encoders
+      points:
+        - >
+          <b>They are two different networks</b>, not one network used twice — same
+          design, but each learned its own {encoders.psi_params_m} settings.
+        - >
+          <b>Camera encoder</b> — in: one frame, {encoders.psi_in_channels} colour
+          channels. Out: {tokens.token_dim} numbers. It runs once per frame, so four
+          times over.
+        - >
+          <b>Goal encoder</b> — in: the current frame and the goal frame stacked
+          together, {encoders.phi_in_channels} colour channels. Out:
+          {tokens.token_dim} numbers, once.
+        - >
+          <b>Why the goal one sees both:</b> a goal photo on its own says where to
+          end up, but not how far off you are right now.
+        - >
+          Given both, its numbers describe the goal <b>relative to where the robot
+          is</b> — which way to move, rather than a place to be.
+        - >
+          Inside each — a frame first becomes {encoders.feature_dim} measurements,
+          then one last step squeezes those down to {tokens.token_dim}.
+
+  - file: stage2_what_it_depends_on.png
+    alt: >
+      Three panels. The first two show the same greyscale camera frame with a
+      bright heat overlay marking which regions each encoder's token depends on
+      — spread widely in the first, concentrated in a small area in the second.
+      The third panel shows the goal photograph in full colour for reference.
+    caption: >
+      Cover part of the view, encode it again, see how far the numbers move.
+      The two networks lean on <b>different regions of the same frame</b> —
+      the maps correlate {dependence.map_overlap}.
+    details:
+      summary: How to read this picture
+      points:
+        - >
+          We wanted to know <b>which parts of the photo the numbers come
+          from</b>.
+        - >
+          So we covered one small square of the photo and ran it through the
+          network again.
+        - >
+          If the numbers changed a lot, that square mattered. If nothing
+          changed, the network was barely using it.
+        - >
+          We repeated that {dependence.probes} times, sliding the square across
+          the whole picture.
+        - >
+          <b>Bright means it mattered.</b> Dark means the network hardly noticed
+          it was gone.
+        - >
+          Same photo both times — only the network differs. They light up in
+          different places, which is the whole point.
+
+stats:
+  - label: Numbers per picture
+    value: "{tokens.numbers_per_frame}"
+  - label: After the encoder
+    value: "{tokens.token_dim}"
+  - label: Lists handed on
+    value: "{tokens.n_tokens}"
+  - label: Learned settings
+    value: "{encoders.encoder_params_m}"
+
+paper_note: >
+  In the NoMaD paper: the two visual encoders of Section 3 — the observation
+  encoder and the goal encoder — whose tokens feed the transformer.

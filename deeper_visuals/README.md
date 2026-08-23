@@ -13,6 +13,22 @@ Phases: **P0** overview (static) · **P1** inputs · **P2** encoders ·
 > It never imports from that folder. `debug_visuals/` backs an already-delivered
 > presentation and stays frozen.
 
+## The two encoders — which letter is which
+
+The paper's names appear throughout the code and in Notion. They are easy to
+mix up, so, once:
+
+| Symbol | In code | Plain name | Input | Runs |
+| --- | --- | --- | --- | --- |
+| **ψ** (psi) | `vision_encoder.obs_encoder` | **observation / camera encoder** | one frame, 3 channels | once per frame — 4× per step |
+| **φ** (phi) | `vision_encoder.goal_encoder` | **goal encoder** | the current frame **and** the goal frame stacked, 6 channels | once per step |
+
+They are **separate** EfficientNet-B0 instances, about 5.29M parameters each —
+not one network used twice. Both emit a 256-number token.
+
+Mnemonic: **ψ** is the one there are four of. The advisor pages never use the
+Greek letters at all; they say "camera encoder" and "goal encoder".
+
 ## Layout
 
 ```

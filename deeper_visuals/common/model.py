@@ -28,6 +28,63 @@ from deeper_visuals.common import settings
 from deeper_visuals.common.config import PhaseConfig
 
 
+def encode_tokens(model, obs_batch, goal_batch, device: str):
+    """
+    Run the real vision encoder over a batch and read its tokens back out.
+
+    obs_batch  (B, 3*N_OBS_FRAMES, H, W)  ->  obs_tokens  (B, N_OBS_FRAMES, 256)
+    goal_batch (B, 3, H, W)               ->  goal_tokens (B, 256)
+
+    Captured with forward hooks on the two compression layers rather than by
+    re-running the encoder pipeline by hand. Those layers are the seam worth
+    hooking: everything before them is EfficientNet, everything after is the
+    transformer, and their output is exactly the token sequence NoMaD_ViNT
+    assembles. The frozen debug_visuals/visualize_stage2.py reimplemented that
+    pipeline instead — a second copy of upstream code, free to drift from it.
+    A hook has no copy to drift.
+
+    The row ordering is this function's one real piece of knowledge, and the
+    reason it lives here rather than at each call site. NoMaD_ViNT splits the
+    channel-stacked observations into frames along the *batch* dimension, so
+    compress_obs_enc emits (N_OBS_FRAMES * B, 256) frame-major. Unpacking that
+    is easy to get subtly wrong and impossible to notice when B is 1 — so it is
+    done once, here, the same way the model does it.
+
+    The mask is the navigation one (goal visible). Masking hides the goal token
+    from attention, not from the encoder, so it cannot change either token; P3
+    is where the mask has something to show.
+    """
+    captured = {}
+
+    def capture(name: str):
+        def hook(_module, _inputs, output):
+            captured[name] = output.detach().cpu().numpy()
+        return hook
+
+    encoder = model.vision_encoder
+    handles = [
+        encoder.compress_obs_enc.register_forward_hook(capture("obs")),
+        encoder.compress_goal_enc.register_forward_hook(capture("goal")),
+    ]
+    try:
+        with torch.no_grad():
+            model(
+                "vision_encoder",
+                obs_img=torch.as_tensor(obs_batch).to(device),
+                goal_img=torch.as_tensor(goal_batch).to(device),
+                input_goal_mask=torch.zeros(len(obs_batch), dtype=torch.long,
+                                            device=device),
+            )
+    finally:
+        for handle in handles:
+            handle.remove()
+
+    batch_size = len(obs_batch)
+    obs_tokens = captured["obs"].reshape(
+        settings.N_OBS_FRAMES, batch_size, settings.ENCODING_SIZE)
+    return obs_tokens.transpose(1, 0, 2), captured["goal"]
+
+
 def get_device() -> str:
     return "cuda" if torch.cuda.is_available() else "cpu"
 

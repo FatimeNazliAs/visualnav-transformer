@@ -33,6 +33,17 @@ figures:
     alt: <plain description for screen readers>
     caption: <one line; <b>bold</b> is allowed for the key term>
 
+    # Optional per figure. A collapsed disclosure directly under that picture,
+    # answering "what am I looking at" — how to read it, what its parts mean.
+    # Omit the key and nothing is rendered. 3-8 points, each under 200
+    # characters: longer than a bullet, because the reader chose to open it,
+    # but still not a paragraph. Two figures can carry two different ones.
+    details:
+      summary: <what opening this gets them — under 70 characters>
+      points:
+        - <One idea per line. <b>bold</b> the key term, same as points above.>
+        - <Good use: how to read the picture, or why it was made this way.>
+
 stats:                      # 2 to 5 cells, values pulled from facts.json
   - label: <short label>
     value: "{some.fact.key}"

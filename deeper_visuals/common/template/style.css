@@ -119,6 +119,64 @@ h1 {
   margin: 0;
 }
 
+/* ── Disclosure — the one place depth is allowed on an advisor page ───────────
+   Collapsed by default, so the page is still scanned in one pass; a reader who
+   wants the mechanism opens it instead of leaving for Notion. Everything here
+   is token-driven, so it follows the theme like the rest of the page. */
+.more {
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+  background: var(--surface);
+  padding: 0 1.1rem;
+}
+
+.more > summary {
+  cursor: pointer;
+  padding: .85rem 0;
+  font-weight: 600;
+  color: var(--ink);
+  list-style: none;                  /* the stock triangle is replaced below */
+  display: flex;
+  align-items: center;
+  gap: .6rem;
+}
+
+.more > summary::-webkit-details-marker { display: none; }
+
+/* A rotating chevron, drawn in the text colour so it never needs a theme rule
+   of its own. */
+.more > summary::before {
+  content: "";
+  flex: none;
+  width: .42rem;
+  height: .42rem;
+  border-right: 2px solid var(--accent);
+  border-bottom: 2px solid var(--accent);
+  transform: rotate(-45deg);
+  transition: transform .15s ease;
+}
+
+.more[open] > summary::before { transform: rotate(45deg); }
+
+.more > summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+  border-radius: 4px;
+}
+
+.more ul {
+  margin: 0;
+  padding: 0 0 1.1rem 1.1rem;
+  display: flex;
+  flex-direction: column;
+  gap: .55rem;
+  color: var(--ink-soft);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .more > summary::before { transition: none; }
+}
+
 /* ── Figure plate — the mounted print ─────────────────────────────────────── */
 .figure { display: flex; flex-direction: column; gap: .7rem; margin: 0; }
 
