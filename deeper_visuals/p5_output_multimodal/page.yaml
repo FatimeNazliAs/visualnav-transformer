@@ -1,0 +1,125 @@
+# deeper_visuals/p5_output_multimodal/page.yaml
+#
+# The advisor-facing words for P5. Kept out of run_model.py so
+# `update.sh --page-only` re-renders copy in under a second, with no GPU.
+# Every {dotted.key} is substituted from facts.json, so no number here can drift
+# away from the forward pass that produced the figures.
+#
+# The page answers four questions in order: WHY sample at all, HOW the
+# randomness gets in, WHAT that produces, and WHERE the numbers came from.
+# That last one is the easiest to forget and the first thing a reader asks:
+# every count on this page is either the model's or ours, and the page has to
+# say which. Eight steps is the model's — it was trained to plan that many.
+# The number of runs is ours.
+#
+# Three things this copy must not overclaim, because the measurement does not
+# support them:
+#
+#   1. The runs do NOT fork. There is no left-or-right choice on any of the ten
+#      curated scenes, in either mode. The word "multimodality" is therefore
+#      absent; what is here is a fan that widens with distance.
+#   2. Nothing is a speed and nothing takes seconds. The two channels are
+#      position deltas and the repo records no frame rate.
+#   3. There is no average run. The reference line is the route the robot
+#      actually drove, not a mean of the samples.
+#   4. "Drives just one of the steps it planned" is deployment/src/navigate.py,
+#      which picks a single waypoint per control cycle (--waypoint, default 2)
+#      and re-runs the model on the next one. Not a figure of speech.
+#
+# The words "diffusion", "denoising", "sampling" and "ancestral" do not appear.
+# The mechanism is describable without them; the terms are in Notion.
+
+title: Sampled, Not Asked
+phase_label: P5
+eyebrow: "{scene.description}"
+heading: Run it again and it plans differently
+
+lead: >
+  There is rarely one right path. So the model draws one at random from the
+  good ones, rather than computing a single answer.
+
+points:
+  - >
+    <b>Why not just answer?</b> Averaging two good paths can give a bad one —
+    the line between them runs through whatever they avoided.
+  - >
+    So every run is a <b>draw, not a calculation</b>. Ask twice and you get two
+    plans.
+  - >
+    The scene is encoded <b>once</b>. All the runs read the same
+    {sampling.context_dim} numbers.
+  - >
+    Only <b>randomness</b> differs — the scribble each run starts from, plus
+    fresh noise at {sampling.noise_injections} of the {sampling.k_steps} passes.
+  - >
+    They <b>agree on the next step</b>, {spread.gap_first_cm:.1f} cm apart, and
+    differ by {spread.gap_last_cm:.1f} cm at step {spread.n_steps}.
+  - >
+    All are <b>valid</b> — each ends within {accuracy.endpoint_worst_cm:.0f} cm
+    of where the robot really went.
+
+figures:
+  - file: stage5_seed_spread.png
+    alt: >
+      Two panels. On the left, {spread.n_runs} thin blue curves bend right from
+      a grey dot, over a thicker faint pink curve; orange double-headed arrows
+      mark the gap between the outermost curves near the robot and at the far
+      end. On the right, a blue line with {spread.n_steps} markers rises
+      steadily from left to right above a shaded area.
+    caption: >
+      <b>{spread.n_runs} runs</b> of one scene — together on the left, measured
+      on the right.
+    details:
+      summary: What the two panels show
+      points:
+        - >
+          <b>Left:</b> every run at once, over the route the robot really drove.
+          Same turn, slightly different each time.
+        - >
+          <b>Right:</b> the gap between them at each step. Distance against step
+          number — never time, and nothing here is a speed.
+        - >
+          <b>Why {spread.n_steps} steps?</b> That one is the model's, not ours.
+          It was trained to plan {spread.n_steps} ahead, every time.
+        - >
+          <b>Only one step is ever driven.</b> The robot replans from a fresh
+          picture, so the far end matters less than it looks.
+
+  - file: stage5_in_and_out.png
+    alt: >
+      Two rows of {spread.n_runs} small square panels sharing one scale. The top
+      row, labelled what it starts from, holds large tangled grey scribbles, all
+      different. The bottom row, labelled what it produces, holds small blue
+      curves that all make the same turn, labelled run 1 onwards.
+    caption: >
+      Where the difference comes from — <b>{spread.n_runs} random starts</b>,
+      {spread.n_runs} plans.
+    details:
+      summary: Where the randomness goes
+      points:
+        - >
+          <b>Top:</b> the scribble each run begins from. <b>Bottom:</b> what
+          {sampling.k_steps} passes turned it into.
+        - >
+          <b>One scale for both rows.</b> The starts sprawl {spread.start_gap:.0f} m
+          across; that is why the answers look so small.
+        - >
+          <b>Almost all of it is washed out.</b> What survives is the spread the
+          other picture measures.
+        - >
+          <b>Why {spread.n_runs} runs?</b> That one is ours — enough to see the
+          spread, few enough to draw in a row.
+
+stats:
+  - label: Runs of one scene
+    value: "{spread.n_runs}"
+  - label: Apart at the first step
+    value: "{spread.gap_first_cm:.1f} cm"
+  - label: Apart at step {spread.n_steps}
+    value: "{spread.gap_last_cm:.1f} cm"
+  - label: Off the real route
+    value: "{accuracy.endpoint_mean_cm:.0f} cm"
+
+paper_note: >
+  In the NoMaD paper — the diffusion policy of Section 3, sampled repeatedly
+  rather than run once.

@@ -56,3 +56,55 @@ def mean_cosine(a: np.ndarray, b: np.ndarray) -> float:
 def millions(n: int) -> float:
     """A parameter count in millions, as a number for the page to format."""
     return float(n) / 1e6
+
+
+def widest_gap(points: np.ndarray) -> float:
+    """
+    The largest distance between any two of a set of points, in their own units.
+
+    `points` is (n, dim). This is how far apart a set of independent samples
+    actually are, and it is deliberately not a standard deviation: a std is a
+    spread about a mean, and the mean of several sampled paths is a fiction —
+    it is the averaged-away answer a diffusion policy exists in order not to
+    produce. The widest gap needs no centre to be defined against, so it can be
+    quoted on a page without implying one.
+
+    Defined by `widest_pair`, so that a figure annotating the gap and a page
+    quoting it are provably talking about the same two samples.
+    """
+    points = np.asarray(points, dtype=float)
+    if len(points) < 2:
+        return 0.0
+    first, second = widest_pair(points)
+    return float(np.linalg.norm(points[first] - points[second]))
+
+
+def widest_pair(points: np.ndarray) -> tuple[int, int]:
+    """
+    Which two of a set of points are furthest apart — their indices.
+
+    Separate from `widest_gap` because a figure needs the pair, not the
+    distance: an arrow drawn between two samples chosen independently of the
+    quoted number is exactly how a picture ends up annotating a gap it is not
+    showing. O(n^2), which is nothing at the handful of runs a phase samples.
+    """
+    points = np.asarray(points, dtype=float)
+    if len(points) < 2:
+        return (0, 0)
+    deltas = points[:, None, :] - points[None, :, :]
+    flat = int(np.linalg.norm(deltas, axis=-1).argmax())
+    return divmod(flat, len(points))
+
+
+def gap_per_step(paths: np.ndarray) -> np.ndarray:
+    """
+    How far apart a set of paths are at each step along them — (n_steps,).
+
+    `paths` is (n_paths, n_steps, dim), all measured from the same origin. The
+    answer is one `widest_gap` per step, which is the series a phase plots when
+    the question is not "do these differ" but "differ WHERE": paths that leave
+    the same point can only disagree by degrees, and the degree is what grows.
+    """
+    paths = np.asarray(paths, dtype=float)
+    return np.array([widest_gap(paths[:, step]) for step in range(paths.shape[1])])
+

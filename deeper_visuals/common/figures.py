@@ -108,8 +108,15 @@ class Row:
     subtitle: str
     paths: np.ndarray
     colour: str
-    end_title: str
-    arrow: str          # "→" or "←"
+    # The last panel's title, where the row builds toward one. None when the
+    # columns are not a progression and no panel is the destination.
+    end_title: str | None = None
+    # "→" or "←", or None when the columns are not a process. P4's columns are
+    # noise levels, so they run in a direction and the arrow says which. P5's
+    # are independent samples — they have no order at all, and an arrow drawn
+    # under them would assert one. A row that is not going anywhere says so by
+    # leaving this off rather than by picking a harmless-looking direction.
+    arrow: str | None = None
 
 
 def draw_row(axes: list, row: Row, box: tuple) -> None:
@@ -147,6 +154,9 @@ def label_row(fig, axes: list, row: Row, *, x: float = 0.008,
              ha="left", va="center", fontsize=viz.LABEL_SIZE,
              color=row.colour, linespacing=1.8)
 
+    if row.arrow is None:
+        return
+
     y = bottom - arrow_drop
     ends = (right, left) if row.arrow == "←" else (left, right)
     fig.add_artist(Line2D(
@@ -157,18 +167,28 @@ def label_row(fig, axes: list, row: Row, *, x: float = 0.008,
 
 
 def number_panels(fig, axes: list, *, first: str = "start",
-                  drop: float = 0.045) -> None:
+                  labels: list[str] | None = None, drop: float = 0.045) -> None:
     """
-    Number a row's panels, so they can be counted off the figure.
+    Caption a row's panels, so they can be counted off the figure.
 
     A count in a caption is a claim; a reader who can point at the sixth panel
-    has checked it. The first panel is usually a starting state rather than a
-    step, so it is named by `first` instead of numbered — numbering it would
-    make the last panel one higher than the number of steps taken.
+    has checked it.
+
+    Two captioning rules, because the series has two kinds of row. By default
+    the columns are steps of one process, so they are numbered and the first
+    panel is named by `first` rather than numbered — numbering a starting state
+    would make the last panel one higher than the number of steps taken. Pass
+    `labels` instead when the columns are not steps at all (P5's are separate
+    runs) and the caption is the caller's word rather than an index.
     """
+    if labels is not None and len(labels) != len(axes):
+        raise ValueError(
+            f"{len(labels)} labels for {len(axes)} panels — one each, in order")
+
     for index, ax in enumerate(axes):
         position = ax.get_position()
-        fig.text((position.x0 + position.x1) / 2, position.y0 - drop,
-                 first if index == 0 else str(index),
+        text = labels[index] if labels is not None else (
+            first if index == 0 else str(index))
+        fig.text((position.x0 + position.x1) / 2, position.y0 - drop, text,
                  ha="center", va="center", fontsize=8.5,
                  color=viz.COLOR_MUTED)

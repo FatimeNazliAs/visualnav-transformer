@@ -1,0 +1,28 @@
+# deeper_visuals/p5_output_multimodal/config.yaml
+#
+# P5 — Output & multimodality. The knobs this phase has.
+#
+#   sample:     a key from common/samples.yaml, or an inline {traj: …, frame: …}
+#   checkpoint: ema (ema_99.pth, default) | latest (raw epoch-99 latest.pth)
+#   num_seeds:  how many times to sample the same scene
+#
+# Change any of them and rerun ./deeper_visuals/p5_output_multimodal/update.sh.
+#
+# `num_seeds` is this phase's own knob and it is the whole subject. P4 pinned
+# the noise draw so its eleven pictures described one run; this phase unpins it
+# and runs the SAME context vector N times over. The seeds are 0 … num_seeds-1,
+# so this one number is the only thing to set and every run is reproducible.
+#
+# Six is enough to see the fan and few enough that six panels stay legible in a
+# row. More runs widen the measured gap slightly — it is a maximum over pairs,
+# so it can only grow — which is a reason to change this deliberately rather
+# than casually: the page quotes that gap.
+#
+# A scene where the robot turns is worth keeping. On a straight corridor the
+# runs agree almost exactly and the fan has nothing to open into; the ten-scene
+# sweep run while building this phase put hallway_straight at 8% of path length
+# and the turns at 16–23%.
+
+sample: right_turn_doors   # no11vc_9_1 @ f54 — the hero scene threaded through P1–P5
+checkpoint: ema
+num_seeds: 6
