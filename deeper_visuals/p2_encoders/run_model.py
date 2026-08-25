@@ -48,7 +48,7 @@ import matplotlib.gridspec as gridspec
 import numpy as np
 from matplotlib.patches import FancyArrowPatch, FancyBboxPatch
 
-from deeper_visuals.common import measure, settings, viz
+from deeper_visuals.common import figures, measure, settings, viz
 from deeper_visuals.common.config import load_config
 from deeper_visuals.common.data import load_sample
 from deeper_visuals.common.facts import write_facts
@@ -188,16 +188,14 @@ def plot_token_strips(sample: dict, obs_tokens: np.ndarray, goal_token: np.ndarr
 
     # ── Observation frames -> encoder psi ─────────────────────────────────────
     obs_rows = []
+    labels = sample.token_labels
     for row, (frame, frame_idx, token) in enumerate(zip(obs_raw, obs_idxs, obs_tokens)):
-        steps_back = n_obs - 1 - row
-        is_current = steps_back == 0
-        edge = viz.COLOR_CURRENT if is_current else viz.COLOR_MUTED
-        heading = "now  (t)" if is_current else f"t − {steps_back}"
+        is_current = row == n_obs - 1
+        heading = "now  (t)" if is_current else labels[row]
 
         ax_thumb = fig.add_subplot(grid[row, COL_THUMB])
-        ax_thumb.imshow(frame)
-        viz.plate(ax_thumb, edge=edge, width=2.6 if is_current else 1.0,
-                  title=f"{heading}\nframe {frame_idx}")
+        figures.scene_frame(ax_thumb, frame, kind="now" if is_current else "past",
+                            title=f"{heading}\nframe {frame_idx}")
         ax_heat = fig.add_subplot(grid[row, COL_HEATMAP])
         obs_image = _draw_token(ax_heat, token, vabs_obs)
         obs_rows.append((ax_thumb, ax_heat))
@@ -211,12 +209,10 @@ def plot_token_strips(sample: dict, obs_tokens: np.ndarray, goal_token: np.ndarr
     # ── Current frame + goal -> encoder phi ───────────────────────────────────
     ax_now  = fig.add_subplot(grid[-1, COL_EXTRA_THUMB])
     ax_goal = fig.add_subplot(grid[-1, COL_THUMB])
-    ax_now.imshow(obs_raw[-1])
-    viz.plate(ax_now, edge=viz.COLOR_CURRENT, width=2.6,
-              title=f"now  (t)\nframe {obs_idxs[-1]}")
-    ax_goal.imshow(goal_raw)
-    viz.plate(ax_goal, edge=viz.COLOR_GOAL, width=2.6,
-              title=f"goal  (t + {settings.NUM_ACTIONS})\nframe {goal_idx}")
+    figures.scene_frame(ax_now, obs_raw[-1], kind="now",
+                        title=f"now  (t)\nframe {obs_idxs[-1]}")
+    figures.scene_frame(ax_goal, goal_raw, kind="goal",
+                        title=f"goal  (t + {settings.NUM_ACTIONS})\nframe {goal_idx}")
     ax_heat_goal = fig.add_subplot(grid[-1, COL_HEATMAP])
     _draw_token(ax_heat_goal, goal_token, vabs_goal,
                 xlabel=f"the {goal_token.size} numbers in one token")
@@ -295,7 +291,6 @@ def measure_encoders(model) -> dict:
                                  psi_params + phi_params + compress_params),
         "feature_dim":       encoder.num_obs_features,
         "token_dim":         encoder.obs_encoding_size,
-        "compression":       f"{encoder.num_obs_features} → {encoder.obs_encoding_size}",
     }
 
 
@@ -316,8 +311,6 @@ def measure_tokens(sample: dict, obs_tokens: np.ndarray, goal_token: np.ndarray)
         "n_tokens":           len(all_tokens),
         "n_obs_tokens":       len(obs_tokens),
         "token_dim":          token_dim,
-        "obs_tokens_shape":   f"{obs_tokens.shape[0]} × {obs_tokens.shape[1]}",
-        "goal_token_shape":   f"1 × {goal_token.size}",
         "numbers_per_frame":  numbers_per_frame,
         "shrink_factor":      numbers_per_frame // token_dim,
         "value_min":          float(all_tokens.min()),

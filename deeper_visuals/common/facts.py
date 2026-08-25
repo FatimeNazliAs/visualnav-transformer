@@ -28,6 +28,22 @@ FACTS_NAME = "facts.json"
 REQUIRED_MODEL_KEYS = ("checkpoint_file", "run")
 
 
+def shape_str(*dims) -> str:
+    """
+    A tensor shape as it is written on a page — "12 × 96 × 96".
+
+    The one exemption to "facts.json holds numbers". A shape is not a quantity:
+    there is no format spec that renders a tuple this way, and nothing on a page
+    ever computes with it. The exemption was argued once, in P1, and then not
+    promoted — so P2 and P4 each re-derived it as f-strings and P4 picked a
+    different separator for the same joining job. Three spellings of one
+    exemption is how an exemption becomes a habit.
+
+    Anything measurable still goes in as a number and is formatted at the page.
+    """
+    return " × ".join(str(d) for d in dims)
+
+
 def _jsonable(obj: Any) -> Any:
     """
     Make numpy scalars/arrays and Paths survive json.dump.

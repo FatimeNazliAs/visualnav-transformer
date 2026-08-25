@@ -108,3 +108,25 @@ def gap_per_step(paths: np.ndarray) -> np.ndarray:
     paths = np.asarray(paths, dtype=float)
     return np.array([widest_gap(paths[:, step]) for step in range(paths.shape[1])])
 
+
+def error_per_step(paths: np.ndarray, reference: np.ndarray) -> np.ndarray:
+    """
+    How far a path is from a reference path, at each step along it — metres.
+
+    `paths` is (..., n_steps, dim) and `reference` is (n_steps, dim); the leading
+    axes are left alone, so one path and a stack of them are the same call. The
+    answer keeps its per-step shape rather than reducing, because the two phases
+    that need it reduce differently: one takes the endpoint of a single path, the
+    other the worst endpoint across several.
+
+    This is the measurement that says whether a predicted path is any good, and
+    both P4 and P5 quote it on their advisor pages. Each had written its own
+    `measure_against_truth` — same name, same quantity, different reductions,
+    different key names, different units — which is exactly the situation this
+    module was created to end for cosine similarity ("four definitions of it
+    meant nothing in the code said those numbers were comparable"). Two pages a
+    reader sees back to back now cite one definition.
+    """
+    return np.linalg.norm(
+        np.asarray(paths, dtype=float) - np.asarray(reference, dtype=float),
+        axis=-1)

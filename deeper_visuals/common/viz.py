@@ -39,6 +39,14 @@ TITLE_SIZE = 10
 TITLE_PAD = 6
 LABEL_SIZE = 9
 
+# How heavy a plate's border is. "The border is the label", says plate() below —
+# and the weight is half of that label: a heavy border means this panel is the
+# subject, a light one means it is context. Three phases picked 2.6 for the
+# emphasis and one picked 2.2, which is the sort of difference nobody notices in
+# one figure and everybody feels across five.
+PLATE_EMPHASIS = 2.6
+PLATE_PLAIN = 1.0
+
 
 def plate(ax, *, edge: str = COLOR_MUTED, width: float = 1.0,
           title: str | None = None, subtitle: str | None = None,
@@ -129,6 +137,29 @@ def band(axes: list) -> tuple[float, float, float, float]:
     this was promoted out of P1.
     """
     boxes = [ax.get_position() for ax in axes]
+    return (min(b.x0 for b in boxes), max(b.x1 for b in boxes),
+            min(b.y0 for b in boxes), max(b.y1 for b in boxes))
+
+
+def occupied(fig, axes: list) -> tuple[float, float, float, float]:
+    """
+    The figure-fraction box a run of panels occupies once DRAWN — ticks, tick
+    labels and axis labels included. Returns (left, right, bottom, top).
+
+    `band` above measures the axes rectangles. That is the right answer when the
+    panels have had their ticks stripped, which is most of this series — and the
+    wrong one for a row that keeps them. A caption placed a fixed distance from
+    the axes box lands clear of one row and on top of another's tick labels,
+    which is precisely what happened when P3's rows joined the shared row
+    labeller. Both measurements are worth having; they differ only for panels
+    with decorations, and it is exactly those panels that need this one.
+
+    Call after `settle` — it reads the renderer.
+    """
+    renderer = fig.canvas.get_renderer()
+    to_fraction = fig.transFigure.inverted()
+    boxes = [to_fraction.transform_bbox(ax.get_tightbbox(renderer))
+             for ax in axes]
     return (min(b.x0 for b in boxes), max(b.x1 for b in boxes),
             min(b.y0 for b in boxes), max(b.y1 for b in boxes))
 

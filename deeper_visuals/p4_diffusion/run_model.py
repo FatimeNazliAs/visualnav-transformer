@@ -61,9 +61,10 @@ import numpy as np
 from matplotlib.lines import Line2D
 
 from deeper_visuals.common import actions as action_space
-from deeper_visuals.common import denoise, figures, settings, viz
+from deeper_visuals.common import denoise, figures, measure, settings, viz
 from deeper_visuals.common.config import load_config, read_raw
 from deeper_visuals.common.data import Scene, load_ground_truth, load_sample
+from deeper_visuals.common import facts
 from deeper_visuals.common.facts import write_facts
 from deeper_visuals.common import model as model_lib
 from deeper_visuals.common.model import load_model
@@ -308,8 +309,7 @@ def measure_descent(result: denoise.Denoised) -> dict:
         "n_steps":            result.n_steps,
         "n_states":           len(paths),
         "seed":               result.seed,
-        "shape":              " × ".join(str(d) for d in result.trajectory.shape),
-        "action_shape":       f"{settings.NUM_ACTIONS} × {settings.ACTION_DIM}",
+        "shape":              facts.shape_str(*result.trajectory.shape),
         "n_numbers":          int(result.actions.size),
         "travelled_noise":    per_step[0],
         "travelled_final":    per_step[-1],
@@ -361,9 +361,13 @@ def measure_against_truth(result: denoise.Denoised, truth: np.ndarray) -> dict:
     `endpoint` is the headline because it is the error a reader can picture; the
     mean over all NUM_ACTIONS waypoints is kept beside it so a single lucky
     endpoint cannot flatter the result.
+
+    The distance itself comes from common/measure.error_per_step. P5 asks the
+    same question of six paths at once, and the two phases had each written a
+    `measure_against_truth` of their own — one definition each of a number both
+    of their pages quote.
     """
-    path = result.path
-    per_step = np.linalg.norm(path - truth, axis=1)
+    per_step = measure.error_per_step(result.path, truth)
     # Both units are stored. Everything else in this phase is metres, but these
     # are the only distances small enough that metres round to two noisy
     # decimals, and "7 cm" is the reading the page wants.
@@ -388,7 +392,9 @@ def conditioning_facts(model) -> dict:
     head = model.dist_pred_net
     return {
         "context_dim":  settings.ENCODING_SIZE,
-        "down_dims":    " → ".join(str(d) for d in settings.DOWN_DIMS),
+        # A list, not "64 → 128 → 256". build_page.fill joins a list per
+        # element with " → " already, and is tested for it.
+        "down_dims":    list(settings.DOWN_DIMS),
         "unet_params":  float(sum(p.numel() for p in unet.parameters())) / 1e6,
         "head_params":  float(sum(p.numel() for p in head.parameters())) / 1e6,
         "enters_as":    "global_cond",

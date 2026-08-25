@@ -32,6 +32,7 @@ from dataclasses import dataclass
 import matplotlib.colors as mcolors
 import numpy as np
 from matplotlib.lines import Line2D
+from matplotlib.transforms import offset_copy
 
 from deeper_visuals.common import viz
 
@@ -100,6 +101,39 @@ def draw_path(ax, path: np.ndarray, colour, *, width: float, alpha: float = 1.0,
                    zorder=3 if alpha == 1.0 else 2)
 
 
+# What a frame of the scene looks like, by what it IS. Before this, five call
+# sites across three files each decided the colour and the border weight from an
+# `is_current` flag, and one of them chose 2.2 where the others chose 2.6.
+# Naming the roles rather than the widths is what keeps a sixth call site from
+# inventing a seventh convention.
+FRAME_STYLES = {
+    "now":  (viz.COLOR_CURRENT, viz.PLATE_EMPHASIS),
+    "past": (viz.COLOR_MUTED,   viz.PLATE_PLAIN),
+    "goal": (viz.COLOR_GOAL,    viz.PLATE_EMPHASIS),
+}
+
+
+def scene_frame(ax, image, *, kind: str, title: str | None = None,
+                subtitle: str | None = None, bold: bool = False):
+    """
+    Draw one frame of the scene, framed the way this series frames that kind.
+
+    `kind` is what the frame is — "now", "past" or "goal" — not what it should
+    look like. That is the whole point: the caller knows which frame it is
+    holding and nothing else, so the colour and the weight cannot drift between
+    a phase that shows the frame strip and a phase that shows it again beside a
+    heat map.
+    """
+    if kind not in FRAME_STYLES:
+        raise ValueError(
+            f"unknown frame kind {kind!r} — one of {', '.join(FRAME_STYLES)}")
+    edge, width = FRAME_STYLES[kind]
+    ax.imshow(image)
+    viz.plate(ax, edge=edge, width=width, title=title, subtitle=subtitle,
+              bold=bold)
+    return ax
+
+
 @dataclass(frozen=True, eq=False)
 class Row:
     """One strip of panels: its name, its states, its colour, which way it runs."""
@@ -139,20 +173,46 @@ def draw_row(axes: list, row: Row, box: tuple) -> None:
                   title=row.end_title if is_clean else None, bold=True)
 
 
-def label_row(fig, axes: list, row: Row, *, x: float = 0.008,
-              arrow_drop: float = 0.105) -> None:
+def label_row(fig, axes: list, row: Row, *, gap: float = 11.0,
+              rotate: float = 0.0, fontsize: float | None = None,
+              bold: bool = False, arrow_drop: float = 0.105) -> None:
     """
-    The row's name to its left, and an arrow showing which way it runs.
+    The row's name beside it, and an arrow showing which way it runs.
 
-    `x` and `arrow_drop` are figure fractions and must agree with the
-    `subplots_adjust(left=…)` the caller chose — which is exactly the coupling
-    that let two phases place the same label 22px apart. Passing them keeps the
-    decision at the call site that owns the layout, instead of hidden here.
+    The label is placed against the row it labels — `gap` points clear of
+    everything that row actually occupies — rather than at a figure fraction the
+    caller supplies.
+
+    "Occupies" rather than "the panels" on purpose: P3's rows carry tick labels
+    outside their axes and P4's do not, so measuring the axes box alone puts the
+    same gap in two different places. viz.occupied measures what was rendered.
+
+    That is the fix for a coupling this function used to document and then hand
+    back: the old `x` had to agree with whatever `subplots_adjust(left=…)` the
+    caller had chosen, and nothing checked that it did. P4 paired left=0.135
+    with x=0.008 and P5 paired left=0.155 with x=0.010 — neither wrong, neither
+    connected, and the only detector a human comparing two PNGs. A parameter
+    that must be kept in sync with another parameter is better deleted than
+    documented, so the band decides and `x` is gone.
+
+    The caller still chooses its own left margin; it just no longer has to tell
+    this function about it. Too small a margin now clips the label instead of
+    silently misplacing it, which is a failure you can see.
     """
+    # Two measurements, because the label and the arrow answer to different
+    # things. The label must clear whatever the row actually rendered, tick
+    # labels included; the arrow says how the PANELS run and so is drawn to the
+    # panels' own edges — measuring it against the decorations would stretch it
+    # past the strip it describes.
+    outer_left, _, _, _ = viz.occupied(fig, axes)
     left, right, bottom, top = viz.band(axes)
-    fig.text(x, (bottom + top) / 2, f"{row.title}\n{row.subtitle}",
-             ha="left", va="center", fontsize=viz.LABEL_SIZE,
-             color=row.colour, linespacing=1.8)
+    fig.text(outer_left, (bottom + top) / 2, f"{row.title}\n{row.subtitle}",
+             transform=offset_copy(fig.transFigure, fig=fig, x=-gap, y=0,
+                                   units="points"),
+             ha="center" if rotate else "right", va="center",
+             rotation=rotate, fontsize=fontsize or viz.LABEL_SIZE,
+             fontweight="bold" if bold else "normal",
+             color=row.colour, linespacing=1.9 if bold else 1.8)
 
     if row.arrow is None:
         return

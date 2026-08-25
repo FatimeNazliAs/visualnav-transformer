@@ -53,7 +53,7 @@ import matplotlib.gridspec as gridspec
 import numpy as np
 from matplotlib.patches import Rectangle
 
-from deeper_visuals.common import denoise, measure, settings, viz
+from deeper_visuals.common import denoise, figures, measure, settings, viz
 from deeper_visuals.common.config import load_config
 from deeper_visuals.common.data import load_sample
 from deeper_visuals.common.facts import write_facts
@@ -71,11 +71,11 @@ CONTEXT_FIGURE_NAME = "stage3_context_vector.png"
 # to, and so the only one where hiding it changes the picture.
 LAYER_SHOWN = -1
 
-# The five tokens, in the order NoMaD_ViNT assembles them. Deliberately the
-# words P1 and P2 already used for these exact frames, not F0..F4 — this is the
-# same scene the reader has been following since P1, and the payoff for
-# threading one scene through every phase is that the axes need no glossary.
-TOKEN_LABELS = ["t − 3", "t − 2", "t − 1", "now", "goal"]
+# The five tokens' names now come from data.Scene.token_labels, derived from
+# settings.CONTEXT_SIZE. They used to be a literal list here with a comment
+# saying they were deliberately P1's and P2's words — which asserted the
+# agreement instead of arranging it, and baked in a context size of 3. Raising
+# CONTEXT_SIZE would have left this figure mislabelled and nothing would fail.
 GOAL_COLUMN = settings.N_TOKENS - 1
 
 # Each mode: the label the panel carries, the sub-label that says what the
@@ -125,7 +125,8 @@ def run_both_modes(model, sample: dict, device: str) -> tuple[dict, dict]:
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _draw_head(ax, weights: np.ndarray, vmax: float, *, colour: str,
-               title: str | None, show_y: bool, show_x: bool):
+               labels: list[str], title: str | None, show_y: bool,
+               show_x: bool):
     """
     One head's N x N attention grid.
 
@@ -151,13 +152,13 @@ def _draw_head(ax, weights: np.ndarray, vmax: float, *, colour: str,
 
     if show_y:
         ax.set_yticks(range(settings.N_TOKENS))
-        ax.set_yticklabels(TOKEN_LABELS, fontsize=viz.LABEL_SIZE)
+        ax.set_yticklabels(labels, fontsize=viz.LABEL_SIZE)
         _colour_frame_labels(ax.get_yticklabels())
         ax.set_ylabel("this picture …", fontsize=viz.LABEL_SIZE,
                       color=viz.COLOR_MUTED, labelpad=8)
     if show_x:
         ax.set_xticks(range(settings.N_TOKENS))
-        ax.set_xticklabels(TOKEN_LABELS, fontsize=viz.LABEL_SIZE,
+        ax.set_xticklabels(labels, fontsize=viz.LABEL_SIZE,
                            rotation=45, ha="right")
         _colour_frame_labels(ax.get_xticklabels())
     return image
@@ -177,7 +178,7 @@ def _colour_frame_labels(labels) -> None:
             label.set_color(viz.COLOR_MUTED)
 
 
-def plot_attention(passes: dict, save_path):
+def plot_attention(passes: dict, labels: list[str], save_path):
     """
     The hero: four ways of looking across, two modes down.
 
@@ -209,7 +210,7 @@ def plot_attention(passes: dict, save_path):
         for head in range(n_heads):
             ax = fig.add_subplot(grid[row, head])
             image = _draw_head(
-                ax, weights[head], vmax, colour=colour,
+                ax, weights[head], vmax, colour=colour, labels=labels,
                 title=f"way {head + 1} of {n_heads}" if row == 0 else None,
                 show_y=head == 0, show_x=is_last_row,
             )
@@ -221,10 +222,9 @@ def plot_attention(passes: dict, save_path):
     viz.settle(fig)
 
     for ax, (name, sublabel, _mask, colour) in zip(first_column, MODES):
-        box = ax.get_position()
-        fig.text(0.030, (box.y0 + box.y1) / 2, f"{name}\n{sublabel}",
-                 ha="center", va="center", fontsize=11.5, color=colour,
-                 fontweight="bold", linespacing=1.9, rotation=90)
+        figures.label_row(
+            fig, [ax], figures.Row(name, sublabel, None, colour),
+            rotate=90, fontsize=11.5, bold=True, gap=20.0)
 
     # Says which way to read the grid, once, in the figure itself — the caption
     # should not have to carry "rows, not columns".
@@ -311,7 +311,7 @@ def plot_context_vector(encodings: dict, save_path):
 # The numbers
 # ══════════════════════════════════════════════════════════════════════════════
 
-def measure_attention(passes: dict) -> dict:
+def measure_attention(passes: dict, labels: list[str]) -> dict:
     """
     How much attention the goal token receives, per head and per layer.
 
@@ -351,7 +351,7 @@ def measure_attention(passes: dict) -> dict:
             "heads_using_goal":     int((per_head >= 0.10).sum()),
             "per_layer_goal_share": per_layer,
             "favourites": ", ".join(
-                f"way {i + 1} → {TOKEN_LABELS[int(col.argmax())]}"
+                f"way {i + 1} → {labels[int(col.argmax())]}"
                 for i, col in enumerate(columns)
             ),
         }
@@ -430,7 +430,7 @@ def main() -> None:
     model, info = load_model(cfg)
 
     passes, encodings = run_both_modes(model, sample, info["device"])
-    attention_facts = measure_attention(passes)
+    attention_facts = measure_attention(passes, sample.token_labels)
     context_facts = measure_context(encodings, passes)
     distance_facts = measure_distance(model, encodings, info["device"])
 
@@ -442,7 +442,8 @@ def main() -> None:
           f"{attention_facts[MODES[1][0]]['goal_share']:.0%} masked  ·  "
           f"c_t moves {context_facts['relative_change']:.0%}")
 
-    attention_fig = plot_attention(passes, cfg.out_dir / ATTENTION_FIGURE_NAME)
+    attention_fig = plot_attention(passes, sample.token_labels,
+                                   cfg.out_dir / ATTENTION_FIGURE_NAME)
     context_fig = plot_context_vector(encodings, cfg.out_dir / CONTEXT_FIGURE_NAME)
 
     write_facts(

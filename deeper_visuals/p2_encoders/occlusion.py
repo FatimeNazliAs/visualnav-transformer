@@ -40,7 +40,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from deeper_visuals.common import measure, model as model_lib, viz
+from deeper_visuals.common import figures, measure, model as model_lib, viz
 from deeper_visuals.common.data import to_model_input
 from deeper_visuals.common.viz import plt
 
@@ -243,18 +243,16 @@ def plot_occlusion(sample: dict, probe: "DependenceProbe", save_path):
     # The untouched frame comes first. Without somewhere to look that has no
     # colour on it, a reader has nothing to compare the two maps against and
     # cannot tell which shapes are the room and which are the measurement.
-    axes[0].imshow(current)
-    viz.plate(axes[0], edge=viz.COLOR_CURRENT, width=2.2, bold=True,
-              title="the frame being tested",
-              subtitle="no marks — this is the view")
+    figures.scene_frame(axes[0], current, kind="now", bold=True,
+                        title="the frame being tested",
+                        subtitle="no marks — this is the view")
     heat = _draw_map(axes[1], current, probe.psi,
                      "what the camera encoder uses", edge=viz.COLOR_CURRENT)
     _draw_map(axes[2], current, probe.phi,
               "what the goal encoder uses", edge=viz.COLOR_GOAL)
-    axes[3].imshow(goal)
-    viz.plate(axes[3], edge=viz.COLOR_GOAL, width=2.2, bold=True,
-              title="the goal it was aiming at",
-              subtitle="a different place, further on")
+    figures.scene_frame(axes[3], goal, kind="goal", bold=True,
+                        title="the goal it was aiming at",
+                        subtitle="a different place, further on")
 
     fig.text(
         0.5, 0.075,

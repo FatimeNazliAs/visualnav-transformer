@@ -41,6 +41,8 @@ from dataclasses import dataclass
 import numpy as np
 import torch
 
+from deeper_visuals.common import measure
+
 
 @dataclass(frozen=True)
 class TransformerPass:
@@ -156,5 +158,8 @@ def geometry(model) -> dict:
         "n_heads":      self_attn.num_heads,
         "d_model":      self_attn.embed_dim,
         "d_head":       self_attn.embed_dim // self_attn.num_heads,
-        "n_params_m":   f"{sum(p.numel() for p in sa_encoder.parameters()) / 1e6:.2f}M",
+        # A number, not "3.16M". The key says _m and measure.millions exists;
+        # formatting it here put the rounding and the unit behind a GPU run.
+        "n_params_m":   measure.millions(
+                            sum(p.numel() for p in sa_encoder.parameters())),
     }

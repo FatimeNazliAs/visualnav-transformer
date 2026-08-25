@@ -80,3 +80,17 @@ def test_paths_that_never_differ_never_have_a_gap():
     one = _fan(n_paths=1)[0]
     assert np.allclose(measure.gap_per_step(np.stack([one, one, one])), 0.0)
 
+
+def test_error_per_step_leaves_leading_axes_alone():
+    """One path and a stack of them are the same call — P4 and P5's shared need."""
+    reference = _fan(n_paths=1)[0]
+    stack = _fan(n_paths=4)
+    together = measure.error_per_step(stack, reference)
+    assert together.shape == (4, stack.shape[1])
+    for i in range(len(stack)):
+        assert np.allclose(together[i], measure.error_per_step(stack[i], reference))
+
+
+def test_a_path_has_no_error_against_itself():
+    path = _fan(n_paths=1)[0]
+    assert np.allclose(measure.error_per_step(path, path), 0.0)

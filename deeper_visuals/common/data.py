@@ -69,6 +69,25 @@ class Scene:
         return self.obs_raw[-1]
 
     @property
+    def token_labels(self) -> list[str]:
+        """
+        What the five tokens are called, in the order NoMaD_ViNT assembles them.
+
+        These exact words appear on P1's frame strip, P2's encoder rows and P3's
+        attention axes, and the payoff of threading one scene through every phase
+        is that the axes need no glossary. P3 previously wrote them out as a
+        literal list with a comment saying they were "deliberately the words P1
+        and P2 already used" — an assertion of agreement rather than agreement.
+        It also baked CONTEXT_SIZE into the list, so raising the context size in
+        settings.py would have left P3 silently mislabelling every panel of its
+        attention figure while P1 and P2 followed along correctly.
+
+        Derived here instead, from the one place the context size is set.
+        """
+        past = [f"t − {back}" for back in range(settings.CONTEXT_SIZE, 0, -1)]
+        return [*past, "now", "goal"]
+
+    @property
     def obs_input(self) -> np.ndarray:
         """The observation stack, unbatched — (3 * N_OBS_FRAMES, H, W)."""
         return to_model_input(self.obs_raw)

@@ -20,9 +20,12 @@ from __future__ import annotations
 import sys
 import traceback
 
-from deeper_visuals.tests import test_actions, test_copy_contract, test_spread
+from deeper_visuals.tests import (test_actions, test_copy_contract,
+                                  test_facts_seam, test_scene_vocabulary,
+                                  test_spread)
 
-MODULES = (test_actions, test_copy_contract, test_spread)
+MODULES = (test_actions, test_copy_contract, test_facts_seam,
+           test_scene_vocabulary, test_spread)
 
 
 def main() -> int:

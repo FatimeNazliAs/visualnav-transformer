@@ -28,7 +28,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from deeper_visuals.common import settings, viz
+from deeper_visuals.common import facts, figures, settings, viz
 from deeper_visuals.common.config import load_config
 from deeper_visuals.common.data import load_sample
 from deeper_visuals.common.facts import write_facts
@@ -87,23 +87,20 @@ def plot_frame_strip(sample: dict, save_path):
     gap_ax.axis("off")
 
     # ── Observation context -> encoder psi ────────────────────────────────────
+    # The frame names come from the scene rather than from this loop, so the
+    # words on this strip and the words on P3's attention axes are the same
+    # strings and not two lists that agree by inspection.
+    labels = sample.token_labels
     for offset, (ax, frame, fidx) in enumerate(zip(obs_axes, obs_raw, obs_idxs)):
-        steps_back = n_obs - 1 - offset
-        is_current = steps_back == 0
-        heading = "now  (t)" if is_current else f"t − {steps_back}"
-        ax.imshow(frame)
-        viz.plate(
-            ax, title=f"{heading}\nframe {fidx}",
-            edge=viz.COLOR_CURRENT if is_current else viz.COLOR_MUTED,
-            width=2.6 if is_current else 1.0,
-        )
+        is_current = offset == n_obs - 1
+        heading = "now  (t)" if is_current else labels[offset]
+        figures.scene_frame(ax, frame, kind="now" if is_current else "past",
+                            title=f"{heading}\nframe {fidx}")
 
     # ── Goal -> encoder phi ───────────────────────────────────────────────────
-    goal_ax.imshow(goal_raw)
-    viz.plate(
-        goal_ax, title=f"goal  (t + {settings.NUM_ACTIONS})\nframe {goal_idx}",
-        edge=viz.COLOR_GOAL, width=2.6,
-    )
+    figures.scene_frame(
+        goal_ax, goal_raw, kind="goal",
+        title=f"goal  (t + {settings.NUM_ACTIONS})\nframe {goal_idx}")
 
     # Room at the bottom for the group labels, which sit outside every axes and
     # so are invisible to the layout engine.
@@ -139,19 +136,15 @@ def measure_input(sample: dict) -> dict:
     channels_per_frame = obs_tensor.shape[0] // n_obs        # 12 / 4 = 3, i.e. RGB
     phi_channels = channels_per_frame + goal_tensor.shape[0]  # current frame + goal
 
-    # Shapes are the one thing still written as strings: "12 × 96 × 96" is a
-    # shape, not a quantity, and there is no format spec that would render a
-    # tuple that way. Everything measurable goes in as a number.
-    def shape_str(*dims) -> str:
-        return " × ".join(str(d) for d in dims)
-
+    # Shapes are the one thing still written as strings — see facts.shape_str,
+    # which is where the exemption is argued and where every phase now spells it.
     return {
         "n_obs_frames":     n_obs,
         "n_frames_in":      n_obs + 1,
-        "image_size":       shape_str(height, width),
-        "obs_tensor":       shape_str(*obs_tensor.shape),
-        "goal_tensor":      shape_str(*goal_tensor.shape),
-        "phi_input_tensor": shape_str(phi_channels, height, width),
+        "image_size":       facts.shape_str(height, width),
+        "obs_tensor":       facts.shape_str(*obs_tensor.shape),
+        "goal_tensor":      facts.shape_str(*goal_tensor.shape),
+        "phi_input_tensor": facts.shape_str(phi_channels, height, width),
         "goal_lead_steps":  settings.NUM_ACTIONS,
         "n_input_values":   int(obs_tensor.size + goal_tensor.size),
         "value_min":        float(min(obs_tensor.min(), goal_tensor.min())),

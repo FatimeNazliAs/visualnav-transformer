@@ -316,7 +316,7 @@ def plot_in_and_out(starts: np.ndarray, paths: np.ndarray, save_path):
     viz.settle(fig)
 
     for row, axes in zip(rows, drawn):
-        figures.label_row(fig, axes, row, x=0.010)
+        figures.label_row(fig, axes, row)
     figures.number_panels(fig, drawn[1],
                           labels=[f"run {i + 1}" for i in range(n_runs)])
     return viz.save_fig(fig, save_path)
@@ -385,7 +385,7 @@ def measure_against_truth(paths: np.ndarray, truth: np.ndarray) -> dict:
     that one lucky sample cannot flatter; "the closest one got within 2 cm"
     would be true of a set that also contained a run driving into a wall.
     """
-    endpoint = np.linalg.norm(paths[:, -1] - truth[-1], axis=1)
+    endpoint = measure.error_per_step(paths, truth)[:, -1]
     return {
         "endpoint_worst_cm": float(endpoint.max()) * 100,
         "endpoint_mean_cm":  float(endpoint.mean()) * 100,
