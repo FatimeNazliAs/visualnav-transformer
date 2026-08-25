@@ -24,6 +24,11 @@ COLOR_GOAL    = "#8e44ad"
 COLOR_NAV     = "#2980b9"
 COLOR_EXPLORE = "#16a085"
 COLOR_MUTED   = "#7f8c8d"
+# What the robot actually did, where a figure has it to compare against. Magenta
+# because that is what NoMaD's own training visualisations use for the ground
+# truth (train_utils.visualize_diffusion_action_distribution), and a reader who
+# has seen those should not have to learn a second convention.
+COLOR_TRUTH   = "#c2247e"
 
 DPI = 150
 

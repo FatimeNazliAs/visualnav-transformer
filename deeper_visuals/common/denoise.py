@@ -23,7 +23,14 @@ import numpy as np
 import torch
 from diffusers.schedulers.scheduling_ddpm import DDPMScheduler
 
+from deeper_visuals.common import actions as action_space
 from deeper_visuals.common import settings
+
+# The action-space arithmetic lives in common/actions.py, which imports numpy and
+# nothing else, so it can be exercised without a GPU. Re-exported here because
+# `denoise.to_waypoints` is the name three phases and the Notion pages already
+# use, and because a caller holding a Denoised wants it right there.
+to_waypoints = action_space.to_waypoints
 
 
 @dataclass(frozen=True)
@@ -47,8 +54,13 @@ class Denoised:
 
     @property
     def path(self) -> np.ndarray:
-        """The actions accumulated into a path, (NUM_ACTIONS, ACTION_DIM)."""
-        return self.actions.cumsum(axis=0)
+        """Where the clean sequence goes, in metres — (NUM_ACTIONS, ACTION_DIM)."""
+        return to_waypoints(self.actions)
+
+    @property
+    def paths(self) -> np.ndarray:
+        """Every step of the descent as a path — (K+1, NUM_ACTIONS, ACTION_DIM)."""
+        return to_waypoints(self.trajectory)
 
 
 def build_scheduler() -> DDPMScheduler:
@@ -92,6 +104,39 @@ def denoise(model, context, device: str, *, seed: int | None = None) -> Denoised
             steps.append(actions.cpu().numpy()[0])
 
     return Denoised(actions=steps[-1], trajectory=np.stack(steps), seed=seed)
+
+
+def corrupt(actions: np.ndarray, *, seed: int | None = None) -> np.ndarray:
+    """
+    The forward process: a real action sequence, buried under noise step by step.
+
+    Returns (K+1, NUM_ACTIONS, ACTION_DIM), index k holding `actions` with k
+    steps' worth of noise on it — so index 0 is the untouched sequence and
+    index K is indistinguishable from a random draw.
+
+    This is the half of diffusion that training does and inference never
+    touches, and it is the half that explains the other. `denoise` above is
+    trained to undo exactly this: pick a random k, corrupt a real sequence to
+    that level, and ask the network which part of the result was the noise.
+    Every step of the descent is that same question asked again.
+
+    Uses the scheduler's own add_noise, so the amount added at each k matches
+    the schedule the checkpoint was trained under rather than an approximation
+    of it. One noise draw is shared across all K+1 levels: the ladder is meant
+    to show one sequence disappearing, and re-drawing per level would make each
+    rung a different picture that happens to be noisier.
+    """
+    if seed is not None:
+        torch.manual_seed(seed)
+
+    scheduler = build_scheduler()
+    clean = torch.as_tensor(np.asarray(actions), dtype=torch.float32)[None]
+    noise = torch.randn(clean.shape)
+
+    rungs = [clean[0].numpy()]
+    for step in reversed(scheduler.timesteps):
+        rungs.append(scheduler.add_noise(clean, noise, step.unsqueeze(0))[0].numpy())
+    return np.stack(rungs)
 
 
 def distance_to_goal(model, context, device: str) -> float:

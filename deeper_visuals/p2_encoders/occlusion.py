@@ -145,7 +145,7 @@ def probe_dependence(model, sample: dict, device: str) -> DependenceProbe:
     being asked of it is "which parts of the current view does the goal token
     depend on", not "which parts of the goal".
     """
-    obs_frames, goal_frame = sample["obs_raw"], sample["goal_raw"]
+    obs_frames, goal_frame = sample.obs_raw, sample.goal_raw
     current = obs_frames[-1]
     height, width = current.shape[:2]
     fill = current.reshape(-1, 3).mean(axis=0).astype(np.uint8)
@@ -233,7 +233,7 @@ def plot_occlusion(sample: dict, probe: "DependenceProbe", save_path):
     The third panel is not decoration: the goal encoder's map cannot be read
     without knowing what goal it was working towards.
     """
-    current, goal = sample["obs_raw"][-1], sample["goal_raw"]
+    current, goal = sample.now, sample.goal_raw
 
     fig, axes = plt.subplots(
         1, 4, figsize=(13.0, 4.3),

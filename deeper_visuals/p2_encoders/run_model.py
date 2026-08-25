@@ -50,7 +50,7 @@ from matplotlib.patches import FancyArrowPatch, FancyBboxPatch
 
 from deeper_visuals.common import measure, settings, viz
 from deeper_visuals.common.config import load_config
-from deeper_visuals.common.data import load_sample, to_model_input
+from deeper_visuals.common.data import load_sample
 from deeper_visuals.common.facts import write_facts
 from deeper_visuals.common import model as model_lib
 from deeper_visuals.common.model import load_model
@@ -89,8 +89,7 @@ def encode_tokens(model, sample: dict, device: str) -> tuple[np.ndarray, np.ndar
     Its c_t is ignored here on purpose: this phase stops at the tokens, and c_t
     is only meaningful once the transformer has mixed them — which is P3.
     """
-    obs_batch  = to_model_input(sample["obs_raw"])[None]
-    goal_batch = to_model_input([sample["goal_raw"]])[None]
+    obs_batch, goal_batch = sample.obs_batch, sample.goal_batch
     encoding = model_lib.encode_tokens(model, obs_batch, goal_batch, device)
     return encoding.obs_tokens[0], encoding.goal_token[0]
 
@@ -162,8 +161,8 @@ def plot_token_strips(sample: dict, obs_tokens: np.ndarray, goal_token: np.ndarr
     phase exists to correct — that there is one shared encoder, or that the goal
     is encoded on its own.
     """
-    obs_raw, goal_raw = sample["obs_raw"], sample["goal_raw"]
-    obs_idxs, goal_idx = sample["obs_idxs"], sample["goal_idx"]
+    obs_raw, goal_raw = sample.obs_raw, sample.goal_raw
+    obs_idxs, goal_idx = sample.obs_idxs, sample.goal_idx
     n_obs = len(obs_tokens)
     n_rows = n_obs + 1
 
@@ -309,7 +308,7 @@ def measure_tokens(sample: dict, obs_tokens: np.ndarray, goal_token: np.ndarray)
     same token, and the goal — a different place — lands somewhere else. That is
     what "these numbers mean something" looks like without opening the network.
     """
-    numbers_per_frame = int(np.prod(sample["obs_raw"][0].shape))
+    numbers_per_frame = int(np.prod(sample.obs_raw[0].shape))
     token_dim = obs_tokens.shape[1]
     all_tokens = np.vstack([obs_tokens, goal_token[None, :]])
 
@@ -340,12 +339,13 @@ def main() -> None:
     print(f"  goal token : {goal_token.shape}")
 
     encoders = measure_encoders(model)
-    plot_token_strips(sample, obs_tokens, goal_token, encoders,
-                      cfg.out_dir / FIGURE_NAME)
+    strips = plot_token_strips(sample, obs_tokens, goal_token, encoders,
+                               cfg.out_dir / FIGURE_NAME)
 
     print("  Probing what each encoder depends on …")
     probe = occlusion.probe_dependence(model, sample, info["device"])
-    occlusion.plot_occlusion(sample, probe, cfg.out_dir / OCCLUSION_FIGURE_NAME)
+    occlusion_map = occlusion.plot_occlusion(
+        sample, probe, cfg.out_dir / OCCLUSION_FIGURE_NAME)
     print(f"  map overlap: {probe.overlap:.2f}")
 
     write_facts(
@@ -356,7 +356,7 @@ def main() -> None:
             "tokens":     measure_tokens(sample, obs_tokens, goal_token),
             "dependence": probe.facts(),
         },
-        figures=[FIGURE_NAME, OCCLUSION_FIGURE_NAME],
+        figures=[strips, occlusion_map],
     )
 
 

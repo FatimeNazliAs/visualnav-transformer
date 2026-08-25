@@ -55,7 +55,7 @@ from matplotlib.patches import Rectangle
 
 from deeper_visuals.common import denoise, measure, settings, viz
 from deeper_visuals.common.config import load_config
-from deeper_visuals.common.data import load_sample, to_model_input
+from deeper_visuals.common.data import load_sample
 from deeper_visuals.common.facts import write_facts
 from deeper_visuals.common import model as model_lib
 from deeper_visuals.common.model import load_model
@@ -100,8 +100,7 @@ def run_both_modes(model, sample: dict, device: str) -> tuple[dict, dict]:
     against. The tokens themselves are identical across modes by construction,
     and that is asserted rather than assumed.
     """
-    obs_batch  = to_model_input(sample["obs_raw"])[None]
-    goal_batch = to_model_input([sample["goal_raw"]])[None]
+    obs_batch, goal_batch = sample.obs_batch, sample.goal_batch
 
     passes, encodings = {}, {}
     for name, _sublabel, goal_mask, _colour in MODES:
@@ -443,8 +442,8 @@ def main() -> None:
           f"{attention_facts[MODES[1][0]]['goal_share']:.0%} masked  ·  "
           f"c_t moves {context_facts['relative_change']:.0%}")
 
-    plot_attention(passes, cfg.out_dir / ATTENTION_FIGURE_NAME)
-    plot_context_vector(encodings, cfg.out_dir / CONTEXT_FIGURE_NAME)
+    attention_fig = plot_attention(passes, cfg.out_dir / ATTENTION_FIGURE_NAME)
+    context_fig = plot_context_vector(encodings, cfg.out_dir / CONTEXT_FIGURE_NAME)
 
     write_facts(
         cfg,
@@ -460,7 +459,7 @@ def main() -> None:
             "context":     context_facts,
             "distance":    distance_facts,
         },
-        figures=[ATTENTION_FIGURE_NAME, CONTEXT_FIGURE_NAME],
+        figures=[attention_fig, context_fig],
     )
 
 

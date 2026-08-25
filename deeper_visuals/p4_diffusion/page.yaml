@@ -1,0 +1,123 @@
+# deeper_visuals/p4_diffusion/page.yaml
+#
+# The advisor-facing words for P4. Kept out of run_model.py so
+# `update.sh --page-only` re-renders copy in under a second, with no GPU.
+# Every {dotted.key} is substituted from facts.json, so no number here can drift
+# away from the forward pass that produced the figures.
+#
+# The page is built around one sentence: what goes in, and what comes out.
+#
+# Three facts this copy must not blur, because all three are easy to get wrong:
+#
+#   1. Diffusion is TWO processes. Training buries a real route; running the
+#      model digs one out. A page that shows only the second describes an
+#      eraser working on nothing in particular.
+#   2. The network never emits a path. It is asked which part of the current
+#      scribble is noise, and it answers with noise.
+#   3. The temporal distance is NOT a diffusion output. c_t feeds two separate
+#      heads; only one of them denoises anything.
+#
+# The words "diffusion", "denoising" and "U-Net" do not appear — the mechanism
+# is describable without them, and the terms are in Notion where they are useful.
+
+title: Rubbing Out the Noise
+phase_label: P4
+eyebrow: "{scene.description}"
+heading: Buried in training, dug out in use
+
+lead: >
+  In — the scene as {conditioning.context_dim} numbers, plus random scribble.
+  Out — {goal.frames_ahead} steps to drive, and how far off the goal is.
+
+points:
+  - >
+    Nothing so far is a path. P3 handed over <b>{conditioning.context_dim}
+    numbers</b> describing the scene, and nothing else.
+  - >
+    <b>Training buries a real route</b> the robot drove, one layer of noise at
+    a time, and learns to lift one layer back off.
+  - >
+    So the network only ever answers one question: <b>which part of this is
+    noise?</b> It never draws a path.
+  - >
+    Running it starts from <b>pure scribble</b> and asks that same question
+    {descent.n_steps} times over.
+  - >
+    A little noise is <b>put back</b> after each pass — that randomness is why
+    one scene can yield several valid paths.
+  - >
+    Out come <b>two</b> answers — the {goal.frames_ahead} steps to drive, and
+    how far off the goal is.
+
+figures:
+  - file: stage4_diffusion_pair.png
+    alt: >
+      Two rows of eleven small square panels. The top row, labelled training
+      buries the real route, runs from a grey scribble on the left to a clean
+      magenta arc on the right, boxed and titled the real route; its arrow
+      points left. The bottom row, labelled running it digs one back out, runs
+      from a grey scribble on the left to a clean blue arc on the right, boxed
+      and titled what the model made; its panels are numbered start, 1 through
+      10, and its arrow points right.
+    caption: >
+      <b>Top:</b> a route the robot really drove, buried under noise.
+      <b>Bottom:</b> the model digging one out of noise. The last column is the
+      same turn, twice.
+    details:
+      summary: How to read the two rows
+      points:
+        - >
+          <b>Columns are how buried it is</b>, not time — fully buried at the
+          left, clean at the right, the same amount in both rows.
+        - >
+          <b>The top row runs right to left.</b> That is training: take the
+          route actually driven, and add noise until nothing is left of it.
+        - >
+          <b>The bottom row runs left to right.</b> That is the model working
+          from a random start — count the panels, there are {descent.n_steps}.
+        - >
+          <b>The last column is the test.</b> The real route sits directly
+          above what the model made, and the model never saw it.
+
+  - file: stage4_outputs.png
+    alt: >
+      Two panels. On the left, a blue curve with eight dots bending right from a
+      grey dot labelled the robot now, drawn on top of a thicker faint magenta
+      curve labelled where the robot really went; a purple ring marks the far
+      end of that curve, labelled step {goal.frames_ahead}, where the goal
+      picture was taken. On the right, two horizontal bars — a grey one for the
+      true distance of {distance.actual:.0f} steps, and a longer purple one for
+      the model's guess of {distance.predicted:.0f}.
+    caption: >
+      The <b>two</b> things the scene's {conditioning.context_dim} numbers
+      become. Only the left one is dug out of noise.
+    details:
+      summary: The two answers, and how good they are
+      points:
+        - >
+          <b>The path took all {descent.n_steps} passes</b> — and lands
+          {accuracy.endpoint_cm:.0f} cm from where the robot actually went,
+          {accuracy.mean_cm:.0f} cm on average across the steps.
+        - >
+          <b>The distance is one guess, not a descent.</b> A small network reads
+          the same {conditioning.context_dim} numbers once — no scribble, no passes.
+        - >
+          <b>It means how many steps</b> until the robot reaches the spot the
+          goal picture was taken from.
+        - >
+          <b>Here it overshoots</b> — {distance.predicted:.0f} steps against the
+          {distance.actual:.0f} it really was.
+
+stats:
+  - label: In — the scene, as numbers
+    value: "{conditioning.context_dim}"
+  - label: Passes to uncover the path
+    value: "{descent.n_steps}"
+  - label: Off the real route
+    value: "{accuracy.endpoint_cm:.0f} cm"
+  - label: Its guess at the distance
+    value: "{distance.predicted:.0f} vs {distance.actual:.0f} steps"
+
+paper_note: >
+  In the NoMaD paper — the diffusion policy of Section 3, and the distance head
+  beside it: the two things one context vector is turned into.

@@ -30,7 +30,7 @@ from pathlib import Path
 
 from deeper_visuals.common import settings, viz
 from deeper_visuals.common.config import load_config
-from deeper_visuals.common.data import load_sample, to_model_input
+from deeper_visuals.common.data import load_sample
 from deeper_visuals.common.facts import write_facts
 from deeper_visuals.common.viz import plt
 
@@ -73,8 +73,8 @@ def plot_frame_strip(sample: dict, save_path):
     a vertical rule, because the two groups go to two different encoders and a
     reader who misses that reads the strip as five frames of one video.
     """
-    obs_raw, goal_raw = sample["obs_raw"], sample["goal_raw"]
-    obs_idxs, goal_idx = sample["obs_idxs"], sample["goal_idx"]
+    obs_raw, goal_raw = sample.obs_raw, sample.goal_raw
+    obs_idxs, goal_idx = sample.obs_idxs, sample.goal_idx
     n_obs = len(obs_raw)
 
     widths = [1.0] * n_obs + [GAP_RATIO, 1.0]
@@ -131,11 +131,11 @@ def measure_input(sample: dict) -> dict:
     forward(), which is why encoder phi is a 6-channel network while only three
     channels are handed in.
     """
-    obs_tensor  = to_model_input(sample["obs_raw"])
-    goal_tensor = to_model_input([sample["goal_raw"]])
+    obs_tensor  = sample.obs_input
+    goal_tensor = sample.goal_input
     height, width = obs_tensor.shape[1:]
 
-    n_obs = len(sample["obs_raw"])
+    n_obs = len(sample.obs_raw)
     channels_per_frame = obs_tensor.shape[0] // n_obs        # 12 / 4 = 3, i.e. RGB
     phi_channels = channels_per_frame + goal_tensor.shape[0]  # current frame + goal
 
@@ -164,11 +164,11 @@ def main() -> None:
     print(f"\n  P1 — Inputs\n  {cfg.summary()}\n  {cfg.description}\n")
 
     sample = load_sample(cfg)
-    plot_frame_strip(sample, cfg.out_dir / FIGURE_NAME)
+    strip = plot_frame_strip(sample, cfg.out_dir / FIGURE_NAME)
     write_facts(
         cfg,
         {"model": cfg.weights_provenance(), "input": measure_input(sample)},
-        figures=[FIGURE_NAME],
+        figures=[strip],
     )
 
 

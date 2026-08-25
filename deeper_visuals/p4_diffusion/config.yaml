@@ -1,0 +1,24 @@
+# deeper_visuals/p4_diffusion/config.yaml
+#
+# P4 — Diffusion policy. The knobs this phase has.
+#
+#   sample:     a key from common/samples.yaml, or an inline {traj: …, frame: …}
+#   checkpoint: ema (ema_99.pth, default) | latest (raw epoch-99 latest.pth)
+#   seed:       fixes the starting noise, so the figure is reproducible
+#
+# Change any of them and rerun ./deeper_visuals/p4_diffusion/update.sh.
+#
+# `seed` is this phase's own knob and it is the one worth understanding. The
+# K-step descent starts from a random draw, so a different seed is a different
+# eleven pictures — the same destination reached from a different mess. Pinning
+# it is what lets the page's numbers and its figure describe the same run, and
+# what makes "rerun it and see" produce the same picture twice. Varying it on
+# purpose is P5's subject, not this one's.
+#
+# A scene where the robot turns is worth keeping: a straight corridor gives a
+# clean path that is nearly a vertical line, and a strip converging on a
+# vertical line hides most of what converged.
+
+sample: right_turn_doors   # no11vc_9_1 @ f54 — the hero scene threaded through P1–P5
+checkpoint: ema
+seed: 0

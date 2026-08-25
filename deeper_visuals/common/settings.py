@@ -62,6 +62,17 @@ MHA_FF_DIM_FACTOR        = 4
 # metres but never in seconds.
 METRIC_WAYPOINT_SPACING = 0.12
 
+# The range the action deltas were squashed into before training, from
+# train/vint_train/data/data_config.yaml's `action_stats`. Every value the
+# diffusion head emits lives in [-1, 1] and has to be mapped back through these
+# to mean anything; see common/denoise.to_waypoints for the arithmetic.
+#
+# Order is (forward, left) — vint_dataset._compute_actions builds the waypoints
+# with to_local_coords, a yaw rotation into the robot's own frame, so +x is
+# straight ahead and +y is to its left. A negative second number is a right turn.
+ACTION_MIN = (-2.5, -4.0)   # (min_dx, min_dy), in waypoint units
+ACTION_MAX = (5.0, 4.0)     # (max_dx, max_dy), in waypoint units
+
 # ── ImageNet normalisation (must match training pre-processing) ───────────────
 IMG_MEAN = [0.485, 0.456, 0.406]
 IMG_STD  = [0.229, 0.224, 0.225]
@@ -69,8 +80,3 @@ IMG_STD  = [0.229, 0.224, 0.225]
 # ── Derived ───────────────────────────────────────────────────────────────────
 N_OBS_FRAMES = CONTEXT_SIZE + 1   # 3 past + 1 current = 4 frames into psi
 N_TOKENS     = N_OBS_FRAMES + 1   # 4 obs tokens + 1 goal token = 5
-
-# ── Preview server ────────────────────────────────────────────────────────────
-# 8000 is taken by the NWM walkthrough's http.server on this host, so the
-# deeper_visuals preview lives on 8001. Override with PORT=... if it moves.
-PREVIEW_PORT = 8001

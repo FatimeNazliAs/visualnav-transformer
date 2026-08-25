@@ -166,7 +166,10 @@ print(phase_for(os.environ["PHASE_REL"]))')"
 if [[ -f "$PHASE_DIR/config.yaml" ]]; then
   echo
   echo "  scene from $PHASE_REL/config.yaml"
-  grep -E '^(sample|checkpoint|num_seeds):' "$PHASE_DIR/config.yaml" | sed 's/^/      /' || true
+  # Every key any phase reads. It listed num_seeds — a key no phase has — while
+  # omitting seed, which P4 does read, so the one phase-specific knob in the
+  # repo was the one this echo could not show you.
+  grep -E '^(sample|checkpoint|seed|num_seeds):' "$PHASE_DIR/config.yaml" | sed 's/^/      /' || true
 fi
 
 # ── Step 1: the forward pass ──────────────────────────────────────────────────

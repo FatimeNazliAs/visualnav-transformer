@@ -231,11 +231,15 @@ def config_from_dict(raw: dict, phase: str) -> PhaseConfig:
     )
 
 
-def load_config(phase_dir: Path | str, phase: str | None = None) -> PhaseConfig:
+def read_raw(phase_dir: Path | str) -> dict:
     """
-    Read <phase_dir>/config.yaml and resolve it.
+    The phase's config.yaml, parsed and otherwise untouched.
 
-    `phase` defaults to the leading pN of the folder name, so p1_inputs -> "p1".
+    Exposed because the keys PhaseConfig does not model are read by the phase
+    that owns them — P4's `seed`, P5's `num_seeds` — and they need the same file
+    and the same "no config.yaml here" message as everything else. The
+    alternative was each phase opening the file a second time for one key, which
+    is two readers with two error messages for one config.
     """
     phase_dir = Path(phase_dir).resolve()
     cfg_path = phase_dir / "config.yaml"
@@ -245,6 +249,14 @@ def load_config(phase_dir: Path | str, phase: str | None = None) -> PhaseConfig:
     import yaml
 
     with open(cfg_path) as fh:
-        raw = yaml.safe_load(fh) or {}
+        return yaml.safe_load(fh) or {}
 
-    return config_from_dict(raw, phase or phase_for(phase_dir))
+
+def load_config(phase_dir: Path | str, phase: str | None = None) -> PhaseConfig:
+    """
+    Read <phase_dir>/config.yaml and resolve it.
+
+    `phase` defaults to the leading pN of the folder name, so p1_inputs -> "p1".
+    """
+    phase_dir = Path(phase_dir).resolve()
+    return config_from_dict(read_raw(phase_dir), phase or phase_for(phase_dir))

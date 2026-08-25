@@ -33,18 +33,23 @@ Greek letters at all; they say "camera encoder" and "goal encoder".
 
 ```
 deeper_visuals/
-  common/                  shared library — phases are thin slices over this
+  common/                  the shared library the phases compose
     settings.py            container paths + training hyperparameters
     samples.yaml           the 10 curated go_stanford scenes
     config.py              config.yaml -> PhaseConfig (scene + weights resolved)
-    data.py                frame loading + ImageNet normalisation
+    actions.py             the action space, both directions — PURE numpy
+    data.py                frame loading, ImageNet normalisation, the Scene object
     model.py               build NoMaD and load a checkpoint onto it
+    denoise.py             the K-step descent (needs torch + diffusers)
     facts.py               facts.json read/write — the run_model <-> build_page seam
     viz.py                 save_fig + the shared figure palette
+    figures.py             the path/box/row drawing vocabulary
     build_page.py          page assembly -> latest.html (never loads torch)
     smoke_test.py          prove the checkpoint + forward pass still work
     update.sh              the driver every phase's update.sh execs
     template/              shell.html + page.html + style.css, and the stubs
+  tests/                   asserts that need no GPU, checkpoint or dataset
+    run.py                 python3 -m deeper_visuals.tests.run
   pN_name/                 one folder per phase (created by that phase)
     config.yaml            sample + checkpoint
     page.yaml              the advisor-facing words
@@ -156,6 +161,25 @@ Two implementation details, so they are not rediscovered the hard way:
 2. There is **no `ema_latest.pth`** to point at. `train_eval_loop.py` builds
    that path and prints `Saved EMA model to …` but never calls `torch.save` on
    it (upstream bug). That is why `common/settings.py` names the numbered file.
+
+## Tests
+
+Two different jobs, deliberately kept apart.
+
+```bash
+# fast — no GPU, no checkpoint, no dataset. Runs in about a second.
+python3 -m deeper_visuals.tests.run
+```
+
+This covers the arithmetic and the page contract: the action-space round trip
+(including a test that fails if anyone "simplifies" `to_waypoints` by summing
+before rescaling), `build_page`'s substitution and copy caps, and `measure.py`.
+None of it can be reached from the host, which has no numpy — but it needs only
+the container, not the GPU or the mounts.
+
+The smoke test below is the other half: it proves the *checkpoint* still loads
+and a real forward pass still runs. It needs the whole rig, and it is the one
+you run after touching `model.py`, `denoise.py` or `settings.py`.
 
 ## Smoke test
 

@@ -382,10 +382,49 @@ def render_provenance(facts: dict) -> str:
 EYEBROW_FALLBACK = "{scene.description}"
 
 
+# The provenance half of facts.json. These are read by the template and the
+# footer rather than quoted by page.yaml, so they are never "unread".
+PROVENANCE_PREFIXES = ("phase", "generated", "figures", "scene.", "model.")
+
+
+def referenced_keys(node: object) -> set:
+    """Every {dotted.key} page.yaml mentions, anywhere in its structure."""
+    if isinstance(node, dict):
+        return set().union(*(referenced_keys(v) for v in node.values())) if node else set()
+    if isinstance(node, list):
+        return set().union(*(referenced_keys(v) for v in node)) if node else set()
+    return {m.group(1) for m in _REF.finditer(str(node))}
+
+
+def unread_facts(page: dict, facts_flat: dict) -> list:
+    """
+    Facts the phase measured that no page quotes.
+
+    build_page has always checked page -> facts: ask for a key that is not there
+    and you get a KeyError naming every key that is. The reverse was unchecked,
+    and it is the direction that rots quietly — a phase accumulates measurements
+    whose docstrings say the page depends on them while the page says no such
+    thing. Reported rather than raised: recording a number as evidence without
+    printing it is legitimate, and only the author can tell the two apart.
+    """
+    referenced = referenced_keys(page)
+    return sorted(
+        key for key in facts_flat
+        if key not in referenced
+        and not key.startswith(PROVENANCE_PREFIXES)
+    )
+
+
 def render_phase_body(page: dict, out_dir: Path, phase: str) -> str:
     """Fill the shared page template from page.yaml + facts.json."""
     facts = read_facts(out_dir)
     facts_flat = flatten(facts)
+
+    unread = unread_facts(page, facts_flat)
+    if unread:
+        print(f"  Note  : {len(unread)} measured fact(s) no page quotes — "
+              f"{', '.join(unread)}")
+
     template = Template((TEMPLATE_DIR / "page.html").read_text())
     return template.substitute(
         phase_label=as_text(one_line(page.get("phase_label", phase.upper()))),

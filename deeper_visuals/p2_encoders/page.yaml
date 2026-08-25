@@ -68,10 +68,11 @@ figures:
 
   - file: stage2_what_it_depends_on.png
     alt: >
-      Three panels. The first two show the same greyscale camera frame with a
+      Four panels. The first is the untouched camera frame in colour, titled the
+      frame being tested. The middle two repeat that frame in greyscale under a
       bright heat overlay marking which regions each encoder's token depends on
-      — spread widely in the first, concentrated in a small area in the second.
-      The third panel shows the goal photograph in full colour for reference.
+      — spread widely for the camera encoder, concentrated in a small area for
+      the goal encoder. The fourth shows the goal photograph in full colour.
     caption: >
       Cover part of the view, encode it again, see how far the numbers move.
       The two networks lean on <b>different regions of the same frame</b> —

@@ -51,14 +51,20 @@ def _jsonable(obj: Any) -> Any:
     raise TypeError(f"not JSON-serialisable: {type(obj).__name__}")
 
 
-def build_record(cfg, payload: dict, figures: list[str]) -> dict:
+def build_record(cfg, payload: dict, figures) -> dict:
     """
     Assemble the record without writing it.
 
     Split from write_facts so the seam's *shape* can be asserted without
     producing a file — previously there was no way to obtain the record at all
     except by writing one, which put the only structural guarantee in the
-    pipeline out of reach of any test.
+    pipeline out of reach of any test. `deeper_visuals/tests/` now does.
+
+    `figures` accepts the paths the plot functions return as well as bare
+    names, and stores the names. Each figure's filename used to be written out
+    three times per phase — a constant, this argument, and the literal in
+    page.yaml — so passing the path that was actually saved removes one of the
+    two ways they could disagree.
     """
     missing = [k for k in REQUIRED_MODEL_KEYS
                if k not in payload.get("model", {})]
@@ -79,12 +85,12 @@ def build_record(cfg, payload: dict, figures: list[str]) -> dict:
             "obs_idxs":    cfg.obs_idxs,
             "goal_idx":    cfg.goal_idx,
         },
-        "figures": figures,
+        "figures": [Path(f).name for f in figures],
         **payload,
     }
 
 
-def write_facts(cfg, payload: dict, figures: list[str]) -> Path:
+def write_facts(cfg, payload: dict, figures) -> Path:
     """
     Write cfg.out_dir/facts.json.
 

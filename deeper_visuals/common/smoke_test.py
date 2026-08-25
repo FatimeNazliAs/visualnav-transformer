@@ -23,7 +23,7 @@ import numpy as np
 
 from deeper_visuals.common import denoise, settings
 from deeper_visuals.common.config import config_from_dict
-from deeper_visuals.common.data import load_sample, to_model_input
+from deeper_visuals.common.data import load_sample
 from deeper_visuals.common.model import (
     GOAL_HIDDEN, GOAL_VISIBLE, encode_tokens, load_model)
 
@@ -55,8 +55,8 @@ def main() -> None:
 
     print("\n── Data ────────────────────────────────────────────────────────")
     sample = load_sample(cfg)
-    obs_input  = to_model_input(sample["obs_raw"])          # (12, 96, 96)
-    goal_input = to_model_input([sample["goal_raw"]])       # (3, 96, 96)
+    obs_input  = sample.obs_input                           # (12, 96, 96)
+    goal_input = sample.goal_input                          # (3, 96, 96)
     print(f"  obs tensor  : {obs_input.shape}   (3 channels x {settings.N_OBS_FRAMES} frames)")
     print(f"  goal tensor : {goal_input.shape}")
 
