@@ -1,0 +1,58 @@
+# 01-goal-conditioned-behaviour/config.yaml
+#
+# The knobs for this task. Everything here lands in provenance.json, so a result
+# can always be traced back to the settings that produced it.
+
+# ── Weights ───────────────────────────────────────────────────────────────────
+# run:        the training run folder under /outputs/nomad
+# checkpoint: ema (ema_99.pth, default) | latest (latest.pth)
+#
+# `latest` and `99.pth` are the same weights — verified by comparing the zip
+# entries inside them (649/649 identical CRCs); their differing md5 sums are an
+# artefact of torch naming the archive root after the file. `ema` is genuinely
+# different (639/649 entries differ) and is what NoMaD's own evaluate_nomad
+# uses, so it is the default here too.
+run: nomad_2026_06_13_18_04_23
+checkpoint: ema
+
+# ── Data ──────────────────────────────────────────────────────────────────────
+# Cases MUST come from the test split. common/config.load_cases enforces it and
+# refuses to run otherwise. This is not a formality: the curated scene library
+# on feature/deeper-visualization is nine parts training data, and a case drawn
+# from `train` measures memorisation while looking exactly like one that does
+# not.
+split: test
+
+# How far ahead the goal frame sits, in frames. Training sampled this uniformly
+# from 3..20 (nomad.yaml `action: min_dist_cat / max_dist_cat`), so 8 is the
+# middle of the trained range rather than a required value. It is deliberately
+# NOT tied to the prediction horizon: the head always emits 8 waypoints
+# (`len_traj_pred: 8`) however far away the goal is. A per-case override is
+# allowed in cases.yaml.
+goal_distance: 8
+
+# ── Sampling ──────────────────────────────────────────────────────────────────
+# How many diffusion samples per case per condition. Seeds are 0 … num_seeds-1,
+# so a suspicious sample can be regenerated on its own from one number.
+#
+# 32 is chosen so the endpoint cluster structure is estimable — the measurement
+# that separates genuine multimodality (two tight clusters) from instability
+# (one diffuse blob) needs enough points to tell those apart, and 6 (what P5
+# used for a picture) does not.
+num_seeds: 32
+
+# ── Conditions ────────────────────────────────────────────────────────────────
+# navigation   goal token visible in attention — the behaviour under study
+# exploration  goal token masked out of attention (NoMaD's undirected mode)
+# wrong_goal   goal token visible, but the goal image is from another trajectory
+#
+# The last two are controls. Without them there is no way to separate "the model
+# considered the goal and chose this path" from "the model produced its usual
+# path for this observation" — and that distinction is what would make a finding
+# here worth building an enhancement on.
+conditions: [navigation, exploration, wrong_goal]
+
+# ── Output ────────────────────────────────────────────────────────────────────
+# On the shared disk, not in the repo: the host root filesystem is at 99%
+# capacity. Each run gets its own timestamped directory underneath.
+results_root: /outputs/behaviour_analysis
