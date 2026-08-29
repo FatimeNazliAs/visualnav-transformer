@@ -153,3 +153,14 @@ train/logs
 
 .claude/
 CLAUDE.md
+
+# Generated output from the visualization work on feature/deeper-visualization.
+# Those folders are not part of THIS branch, but their generated artifacts stay
+# on disk across a checkout (git only removes what it tracks). Ignoring them
+# here keeps `git status` clean and stops `git add .` from committing another
+# branch's output onto this one. The sources are safe on
+# origin/feature/deeper-visualization; only these regenerable files are local.
+debug/reports/
+debug_visuals/outputs/
+debug_visuals/PRESENTATION_VISUALS.md
+deeper_visuals/out/

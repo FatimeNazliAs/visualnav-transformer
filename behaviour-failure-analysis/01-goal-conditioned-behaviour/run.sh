@@ -14,6 +14,11 @@
 # It also works unchanged from INSIDE the container: if /.dockerenv is there,
 # the script runs in place instead of shelling into anything.
 #
+# Runs in naz_nomad_deeper_viz by default. That container and the one this task
+# briefly had its own copy of are identical — same image, same four mounts — and
+# a second one stopped earning its keep once both branches lived in this one
+# folder. Override with CONTAINER=… for a different one.
+#
 # Env overrides: CONTAINER, PY
 
 set -euo pipefail
@@ -23,7 +28,7 @@ REPO_ROOT="$(cd "$TASK_DIR/../.." && pwd)"
 PROJECT_REL="behaviour-failure-analysis"
 TASK_REL="${TASK_DIR#"$REPO_ROOT"/}"
 
-CONTAINER="${CONTAINER:-naz_nomad_failure_analysis}"
+CONTAINER="${CONTAINER:-naz_nomad_deeper_viz}"
 CONTAINER_REPO="/app/visualnav-transformer"
 CONDA_ENV="vint_train"
 PY="${PY:-python}"
