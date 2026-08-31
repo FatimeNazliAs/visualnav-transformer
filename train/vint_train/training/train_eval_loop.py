@@ -166,6 +166,7 @@ def train_eval_loop_nomad(
     use_wandb: bool = True,
     eval_fraction: float = 0.25,
     eval_freq: int = 1,
+    gradient_accumulation_steps: int = 1,
 ):
     """
     Train and evaluate the model for several epochs (vint or gnm models)
@@ -191,6 +192,7 @@ def train_eval_loop_nomad(
         use_wandb: whether to log to wandb or not
         eval_fraction: fraction of training data to use for evaluation
         eval_freq: frequency of evaluation
+        gradient_accumulation_steps: microbatches per optimizer step (see train_nomad)
     """
     latest_path = os.path.join(project_folder, f"latest.pth")
     ema_model = EMAModel(model=model,power=0.75)
@@ -217,6 +219,7 @@ def train_eval_loop_nomad(
                 num_images_log=num_images_log,
                 use_wandb=use_wandb,
                 alpha=alpha,
+                gradient_accumulation_steps=gradient_accumulation_steps,
             )
             lr_scheduler.step()
 

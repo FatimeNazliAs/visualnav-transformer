@@ -35,6 +35,7 @@ class ViNT_Dataset(Dataset):
         learn_angle: bool,
         context_size: int,
         context_type: str = "temporal",
+        index_context_size: Optional[int] = None,
         end_slack: int = 0,
         goals_per_obs: int = 1,
         normalize: bool = True,
@@ -56,6 +57,11 @@ class ViNT_Dataset(Dataset):
             learn_angle (bool): Whether to learn the yaw of the robot at each predicted waypoint if this is an action dataset
             context_size (int): Number of previous observations to use as context
             context_type (str): Whether to use temporal, randomized, or randomized temporal context
+            index_context_size (int): Number of leading timesteps to skip in every trajectory when
+                building the sample index. Defaults to context_size. Setting it higher than
+                context_size makes the sample index independent of context_size, so that models
+                trained with different context lengths see the identical set of (trajectory,
+                curr_time) pairs.
             end_slack (int): Number of timesteps to ignore at the end of the trajectory
             goals_per_obs (int): Number of goals to sample per observation
             normalize (bool): Whether to normalize the distances or actions
@@ -95,6 +101,13 @@ class ViNT_Dataset(Dataset):
             "randomized_temporal",
         }, "context_type must be one of temporal, randomized, randomized_temporal"
         self.context_type = context_type
+        self.index_context_size = (
+            context_size if index_context_size is None else index_context_size
+        )
+        assert self.index_context_size >= context_size, (
+            f"index_context_size ({self.index_context_size}) must be >= "
+            f"context_size ({context_size}), otherwise samples lack enough history"
+        )
         self.end_slack = end_slack
         self.goals_per_obs = goals_per_obs
         self.normalize = normalize
@@ -179,7 +192,7 @@ class ViNT_Dataset(Dataset):
             for goal_time in range(0, traj_len):
                 goals_index.append((traj_name, goal_time))
 
-            begin_time = self.context_size * self.waypoint_spacing
+            begin_time = self.index_context_size * self.waypoint_spacing
             end_time = traj_len - self.end_slack - self.len_traj_pred * self.waypoint_spacing
             for curr_time in range(begin_time, end_time):
                 max_goal_distance = min(self.max_dist_cat * self.waypoint_spacing, traj_len - curr_time - 1)
@@ -212,7 +225,7 @@ class ViNT_Dataset(Dataset):
         """
         index_to_data_path = os.path.join(
             self.data_split_folder,
-            f"dataset_dist_{self.min_dist_cat}_to_{self.max_dist_cat}_context_{self.context_type}_n{self.context_size}_slack_{self.end_slack}.pkl",
+            f"dataset_dist_{self.min_dist_cat}_to_{self.max_dist_cat}_context_{self.context_type}_n{self.index_context_size}_slack_{self.end_slack}.pkl",
         )
         try:
             # load the index_to_data if it already exists (to save time)

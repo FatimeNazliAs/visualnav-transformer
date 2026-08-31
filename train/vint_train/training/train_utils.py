@@ -1,3 +1,4 @@
+import math
 import wandb
 import os
 import numpy as np
@@ -539,6 +540,7 @@ def train_nomad(
     image_log_freq: int = 1000,
     num_images_log: int = 8,
     use_wandb: bool = True,
+    gradient_accumulation_steps: int = 1,
 ):
     """
     Train the model for one epoch.
@@ -558,10 +560,16 @@ def train_nomad(
         image_log_freq: how often to log images
         num_images_log: number of images to log
         use_wandb: whether to use wandb
+        gradient_accumulation_steps: number of microbatches to accumulate gradients over
+            before each optimizer step. The effective batch size is
+            dataloader.batch_size * gradient_accumulation_steps. Logging frequencies and
+            the EMA update are counted in optimizer steps, not microbatches, so they are
+            unaffected by how the effective batch is split.
     """
     goal_mask_prob = torch.clip(torch.tensor(goal_mask_prob), 0, 1)
     model.train()
     num_batches = len(dataloader)
+    num_optimizer_steps = math.ceil(num_batches / gradient_accumulation_steps)
 
     uc_action_loss_logger = Logger("uc_action_loss", "train", window_size=print_log_freq)
     uc_action_waypts_cos_sim_logger = Logger(
@@ -587,6 +595,10 @@ def train_nomad(
         "gc_action_waypts_cos_sim": gc_action_waypts_cos_sim_logger,
         "gc_multi_action_waypts_cos_sim": gc_multi_action_waypts_cos_sim_logger,
     }
+
+    optimizer_step = 0
+    optimizer.zero_grad()
+
     with tqdm.tqdm(dataloader, desc="Train Batch", leave=False) as tepoch:
         for i, data in enumerate(tepoch):
             (
@@ -655,23 +667,40 @@ def train_nomad(
             # Total loss
             loss = alpha * dist_loss + (1-alpha) * diffusion_loss
 
-            # Optimize
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
+            # Fail before the optimizer step rather than after it, so a diverged batch
+            # cannot write NaNs into the weights (and from there into the EMA).
+            loss_cpu = loss.item()
+            if not math.isfinite(loss_cpu):
+                raise RuntimeError(
+                    f"Training diverged: non-finite total_loss ({loss_cpu}) at epoch "
+                    f"{epoch}, optimizer step {optimizer_step}, microbatch {i}."
+                )
 
-            # Update Exponential Moving Average of the model weights
-            ema_model.step(model)
+            # Optimize. Gradients are accumulated over gradient_accumulation_steps
+            # microbatches; scaling by 1/steps makes the accumulated gradient the mean
+            # over the effective batch rather than the sum.
+            (loss / gradient_accumulation_steps).backward()
+
+            is_last_microbatch = (i + 1) == num_batches
+            did_step = (i + 1) % gradient_accumulation_steps == 0 or is_last_microbatch
+            if did_step:
+                optimizer.step()
+                optimizer.zero_grad()
+
+                # Update Exponential Moving Average of the model weights. Stepping once
+                # per optimizer step (not per microbatch) keeps the EMA horizon fixed
+                # regardless of how the effective batch is split.
+                ema_model.step(model)
+                optimizer_step += 1
 
             # Logging
-            loss_cpu = loss.item()
             tepoch.set_postfix(loss=loss_cpu)
             wandb.log({"total_loss": loss_cpu})
             wandb.log({"dist_loss": dist_loss.item()})
             wandb.log({"diffusion_loss": diffusion_loss.item()})
 
 
-            if i % print_log_freq == 0:
+            if did_step and print_log_freq != 0 and optimizer_step % print_log_freq == 0:
                 losses = _compute_losses_nomad(
                             ema_model.averaged_model,
                             noise_scheduler,
@@ -691,13 +720,13 @@ def train_nomad(
                 data_log = {}
                 for key, logger in loggers.items():
                     data_log[logger.full_name()] = logger.latest()
-                    if i % print_log_freq == 0 and print_log_freq != 0:
-                        print(f"(epoch {epoch}) (batch {i}/{num_batches - 1}) {logger.display()}")
+                    if print_log_freq != 0:
+                        print(f"(epoch {epoch}) (step {optimizer_step}/{num_optimizer_steps}) {logger.display()}")
 
-                if use_wandb and i % wandb_log_freq == 0 and wandb_log_freq != 0:
+                if use_wandb and optimizer_step % wandb_log_freq == 0 and wandb_log_freq != 0:
                     wandb.log(data_log, commit=True)
 
-            if image_log_freq != 0 and i % image_log_freq == 0:
+            if did_step and image_log_freq != 0 and optimizer_step % image_log_freq == 0:
                 visualize_diffusion_action_distribution(
                     ema_model.averaged_model,
                     noise_scheduler,

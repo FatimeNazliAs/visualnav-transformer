@@ -79,6 +79,15 @@ def main(config):
     if "clip_goals" not in config:
         config["clip_goals"] = False
 
+    # Sample-index history offset. Defaults to context_size, which reproduces the
+    # stock behaviour. Pinning it across a context_size sweep keeps every run on the
+    # identical set of (trajectory, curr_time) pairs.
+    if "index_context_size" not in config:
+        config["index_context_size"] = config["context_size"]
+
+    if "gradient_accumulation_steps" not in config:
+        config["gradient_accumulation_steps"] = 1
+
     for dataset_name in config["datasets"]:
         data_config = config["datasets"][dataset_name]
         if "negative_mining" not in data_config:
@@ -107,6 +116,7 @@ def main(config):
                         learn_angle=config["learn_angle"],
                         context_size=config["context_size"],
                         context_type=config["context_type"],
+                        index_context_size=config["index_context_size"],
                         end_slack=data_config["end_slack"],
                         goals_per_obs=data_config["goals_per_obs"],
                         normalize=config["normalize"],
@@ -345,6 +355,7 @@ def main(config):
             use_wandb=config["use_wandb"],
             eval_fraction=config["eval_fraction"],
             eval_freq=config["eval_freq"],
+            gradient_accumulation_steps=config["gradient_accumulation_steps"],
         )
 
     print("FINISHED TRAINING")
