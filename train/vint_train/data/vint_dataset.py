@@ -35,6 +35,7 @@ class ViNT_Dataset(Dataset):
         learn_angle: bool,
         context_size: int,
         context_type: str = "temporal",
+        context_stride: int = 1,
         index_context_size: Optional[int] = None,
         end_slack: int = 0,
         goals_per_obs: int = 1,
@@ -57,6 +58,11 @@ class ViNT_Dataset(Dataset):
             learn_angle (bool): Whether to learn the yaw of the robot at each predicted waypoint if this is an action dataset
             context_size (int): Number of previous observations to use as context
             context_type (str): Whether to use temporal, randomized, or randomized temporal context
+            context_stride (int): Spacing between context frames, in units of
+                waypoint_spacing. 1 (the default) reproduces the stock behaviour, where
+                context frames sit one waypoint apart. Larger values make the same
+                context_size frames span a longer time window, leaving action and goal
+                target spacing untouched.
             index_context_size (int): Number of leading timesteps to skip in every trajectory when
                 building the sample index. Defaults to context_size. Setting it higher than
                 context_size makes the sample index independent of context_size, so that models
@@ -101,12 +107,16 @@ class ViNT_Dataset(Dataset):
             "randomized_temporal",
         }, "context_type must be one of temporal, randomized, randomized_temporal"
         self.context_type = context_type
+        self.context_stride = context_stride
         self.index_context_size = (
             context_size if index_context_size is None else index_context_size
         )
-        assert self.index_context_size >= context_size, (
+        # The deepest look-back is context_size * context_stride waypoints, so that, not
+        # context_size alone, is what the sample index has to leave room for.
+        assert self.index_context_size >= context_size * context_stride, (
             f"index_context_size ({self.index_context_size}) must be >= "
-            f"context_size ({context_size}), otherwise samples lack enough history"
+            f"context_size * context_stride ({context_size} * {context_stride} = "
+            f"{context_size * context_stride}), otherwise samples lack enough history"
         )
         self.end_slack = end_slack
         self.goals_per_obs = goals_per_obs
@@ -249,11 +259,35 @@ class ViNT_Dataset(Dataset):
         except TypeError:
             print(f"Failed to load image {image_path}")
 
+    def _context_times(self, curr_time: int) -> List[int]:
+        """Timesteps the context frames are read from.
+
+        The last context_size timesteps before curr_time, plus curr_time itself, spaced
+        context_stride waypoints apart. Stride widens the window these frames span
+        without changing how many of them there are.
+        """
+        spacing = self.waypoint_spacing * self.context_stride
+        return list(
+            range(curr_time - self.context_size * spacing, curr_time + 1, spacing)
+        )
+
+    def _action_target_slice(self, curr_time: int) -> slice:
+        """Timesteps the action targets are read from.
+
+        curr_time and the len_traj_pred waypoints after it, spaced by waypoint_spacing.
+        Deliberately independent of context_stride: widening the context window must not
+        move the prediction targets, or the stride ablation would be confounded.
+        """
+        return slice(
+            curr_time,
+            curr_time + self.len_traj_pred * self.waypoint_spacing + 1,
+            self.waypoint_spacing,
+        )
+
     def _compute_actions(self, traj_data, curr_time, goal_time):
-        start_index = curr_time
-        end_index = curr_time + self.len_traj_pred * self.waypoint_spacing + 1
-        yaw = traj_data["yaw"][start_index:end_index:self.waypoint_spacing]
-        positions = traj_data["position"][start_index:end_index:self.waypoint_spacing]
+        target_times = self._action_target_slice(curr_time)
+        yaw = traj_data["yaw"][target_times]
+        positions = traj_data["position"][target_times]
         goal_pos = traj_data["position"][min(goal_time, len(traj_data["position"]) - 1)]
 
         if len(yaw.shape) == 2:
@@ -316,17 +350,8 @@ class ViNT_Dataset(Dataset):
         f_goal, goal_time, goal_is_negative = self._sample_goal(f_curr, curr_time, max_goal_dist)
 
         # Load images
-        context = []
         if self.context_type == "temporal":
-            # sample the last self.context_size times from interval [0, curr_time)
-            context_times = list(
-                range(
-                    curr_time + -self.context_size * self.waypoint_spacing,
-                    curr_time + 1,
-                    self.waypoint_spacing,
-                )
-            )
-            context = [(f_curr, t) for t in context_times]
+            context = [(f_curr, t) for t in self._context_times(curr_time)]
         else:
             raise ValueError(f"Invalid context type {self.context_type}")
 

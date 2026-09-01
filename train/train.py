@@ -85,6 +85,12 @@ def main(config):
     if "index_context_size" not in config:
         config["index_context_size"] = config["context_size"]
 
+    # Spacing between context frames, in units of waypoint_spacing. 1 is the stock
+    # behaviour; larger values span a longer history at the same token count, without
+    # moving the action or goal targets (see Ablation A2 notes).
+    if "context_stride" not in config:
+        config["context_stride"] = 1
+
     if "gradient_accumulation_steps" not in config:
         config["gradient_accumulation_steps"] = 1
 
@@ -116,6 +122,7 @@ def main(config):
                         learn_angle=config["learn_angle"],
                         context_size=config["context_size"],
                         context_type=config["context_type"],
+                        context_stride=config["context_stride"],
                         index_context_size=config["index_context_size"],
                         end_slack=data_config["end_slack"],
                         goals_per_obs=data_config["goals_per_obs"],
