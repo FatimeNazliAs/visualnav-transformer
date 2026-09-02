@@ -175,8 +175,25 @@ class ViNT_Dataset(Dataset):
                         with open(image_path, "rb") as f:
                             txn.put(image_path.encode(), f.read())
 
-        # Reopen the cache file in read-only mode
-        self._image_cache: lmdb.Environment = lmdb.open(cache_filename, readonly=True)
+        # Reopen the cache file in read-only mode.
+        #
+        # lock=False disables LMDB's reader lock table. evaluate_sweep.py now closes each
+        # arm's Environment explicitly (see close_dataset there), which is the primary
+        # fix; this is a second, independent guard on the same failure:
+        #     lmdb.BadRslotError: mdb_txn_renew: MDB_BAD_RSLOT
+        # raised when an Environment on this file is released while a later transaction
+        # still holds its reader slot. That is GC-timing dependent, so it strikes
+        # unpredictably as the arm count grows, and Ablation B scores four arms at once.
+        #
+        # The two do not conflict. Keep this until one clean end-to-end aggregate proves
+        # the explicit close is sufficient on its own, then drop it.
+        #
+        # Safe because the cache is written once above and only ever read afterwards, so
+        # no reader/writer coordination is needed -- including for two arms training in
+        # parallel on separate GPUs, which only read.
+        self._image_cache: lmdb.Environment = lmdb.open(
+            cache_filename, readonly=True, lock=False
+        )
 
     def _build_index(self, use_tqdm: bool = False):
         """
