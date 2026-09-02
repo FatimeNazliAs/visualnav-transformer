@@ -1,4 +1,12 @@
-"""Post-hoc evaluation and comparison table for the context_size ablation.
+"""Post-hoc evaluation and comparison table for the context ablations.
+
+Scores Ablation A1 (context_size: 3 / 10 / 20) and Ablation A2 (context_stride: 1 / 2 / 3
+at context_size 3) on one axis: the *effective temporal window*, context_size *
+context_stride, which is how far back the context actually reaches. A1 widens that window
+by spending more tokens; A2 widens it by spreading the same tokens further apart. Sorting
+arms by window therefore places the two studies' comparable arms next to each other --
+notably stride3 (window 9, 4 frames) beside ctx10 (window 10, 11 frames), which is the
+comparison the pair of ablations exists to make.
 
 Why post-hoc rather than reading the training logs: the in-training eval only computes
 `_compute_losses_nomad` when `i % print_log_freq == 0` and records `logger.latest()`, so
@@ -20,7 +28,11 @@ Run inside the container:
     CUDA_VISIBLE_DEVICES=1 python ablation/evaluate_sweep.py \
         --run ctx03=/outputs/nomad_ctx_ablation/ctx03_<stamp> \
         --run ctx10=/outputs/nomad_ctx_ablation/ctx10_<stamp> \
-        --run ctx20=/outputs/nomad_ctx_ablation/ctx20_<stamp>
+        --run ctx20=/outputs/nomad_ctx_ablation/ctx20_<stamp> \
+        --run stride2=/outputs/nomad_stride_ablation/stride2_<stamp> \
+        --run stride3=/outputs/nomad_stride_ablation/stride3_<stamp>
+
+A1's ctx03 is also A2's stride-1 arm, and is scored once rather than twice.
 """
 
 import argparse
@@ -107,6 +119,10 @@ def build_test_loader(config, batch_size):
         learn_angle=config["learn_angle"],
         context_size=config["context_size"],
         context_type=config["context_type"],
+        # Absent from A1's configs, where the context frames are adjacent. Scoring a
+        # stride-trained checkpoint on stride-1 inputs would evaluate it on a history it
+        # was never trained to read, so this has to follow the arm's own config.
+        context_stride=config.get("context_stride", 1),
         index_context_size=config["index_context_size"],
         end_slack=data_config["end_slack"],
         goals_per_obs=data_config["goals_per_obs"],
@@ -190,6 +206,33 @@ def evaluate_checkpoint(checkpoint_path, config, loader, device, seed):
     return {name: np.concatenate(values) for name, values in results.items()}
 
 
+def arm_shape(config):
+    """(context_size, context_stride, effective temporal window) for one arm.
+
+    The window is how far back the context reaches, in waypoints. It is the axis the two
+    ablations share, so it -- not context_size -- is what the table is ordered by.
+    """
+    context_size = config["context_size"]
+    context_stride = config.get("context_stride", 1)
+    return context_size, context_stride, context_size * context_stride
+
+
+def format_arm_table(arms, shapes):
+    """How each arm reaches its window: by spending tokens, by spreading them, or both."""
+    header = (
+        f"{'arm':<12}{'context_size':>14}{'context_stride':>16}"
+        f"{'frames':>9}{'window':>9}"
+    )
+    lines = [header, "-" * len(header)]
+    for arm in arms:
+        context_size, context_stride, window = shapes[arm]
+        lines.append(
+            f"{arm:<12}{context_size:>14}{context_stride:>16}"
+            f"{context_size + 1:>9}{window:>9}"
+        )
+    return "\n".join(lines)
+
+
 def mean_and_standard_error(values):
     return float(values.mean()), float(values.std(ddof=1) / np.sqrt(len(values)))
 
@@ -256,18 +299,46 @@ def main():
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--config-dir", default="config")
     parser.add_argument("--baseline", default="ctx03", help="arm the paired deltas are taken against")
+    parser.add_argument(
+        "--cache-dir",
+        default="/outputs/nomad_ctx_ablation/eval_cache",
+        help="where per-sample scores are cached, so re-running the table is free",
+    )
+    parser.add_argument("--no-cache", action="store_true", help="re-evaluate even if cached")
     args = parser.parse_args()
 
     runs = dict(entry.split("=", 1) for entry in args.run)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    scores, sample_counts, contexts = {}, set(), {}
+    scores, sample_counts, shapes = {}, set(), {}
     for arm, run_dir in runs.items():
         config = load_config(run_dir, args.config_dir)
-        contexts[arm] = config["context_size"]
-        _, loader = build_test_loader(config, args.batch_size)
-        checkpoint = os.path.join(run_dir, f"ema_{args.epoch}.pth")
-        scores[arm] = evaluate_checkpoint(checkpoint, config, loader, device, args.seed)
+        shapes[arm] = arm_shape(config)
+
+        # An arm's per-sample scores are fully determined by its checkpoint, its config
+        # and the seed, so they are cached: a failure late in a sweep then costs only the
+        # arm that failed, and re-rendering the table against another baseline is free.
+        cache_path = os.path.join(args.cache_dir, f"{arm}_ema{args.epoch}.npz")
+        if os.path.exists(cache_path) and not args.no_cache:
+            print(f"{arm}: reusing cached per-sample scores from {cache_path}")
+            scores[arm] = dict(np.load(cache_path))
+        else:
+            dataset, loader = build_test_loader(config, args.batch_size)
+            checkpoint = os.path.join(run_dir, f"ema_{args.epoch}.pth")
+            try:
+                scores[arm] = evaluate_checkpoint(
+                    checkpoint, config, loader, device, args.seed
+                )
+            finally:
+                # The arms are scored one after another in this process, and each needs
+                # its own dataset because the context shape differs. LMDB reader slots
+                # are per-process, so the previous arm's cache has to be released before
+                # the next arm opens the same file.
+                dataset.close()
+            os.makedirs(args.cache_dir, exist_ok=True)
+            np.savez(cache_path, **scores[arm])
+            print(f"{arm}: cached per-sample scores to {cache_path}")
+
         sample_counts.add(len(scores[arm]["gc_action_loss"]))
 
     if len(sample_counts) != 1:
@@ -276,11 +347,14 @@ def main():
             "the paired comparison is only valid on identical inputs."
         )
 
-    arms = sorted(runs, key=lambda arm: contexts[arm])
+    # Ordered by effective temporal window, so arms that see equally far back sit
+    # together regardless of which ablation produced them.
+    arms = sorted(runs, key=lambda arm: (shapes[arm][2], shapes[arm][0]))
     print()
     print(f"Test samples per arm: {sample_counts.pop():,}   (n = 1 seed per arm)")
-    print(f"context_size: " + ", ".join(f"{arm}={contexts[arm]}" for arm in arms))
     print(f"EMA checkpoint: ema_{args.epoch}.pth")
+    print()
+    print(format_arm_table(arms, shapes))
     print()
     print(format_table(arms, scores, args.baseline))
     print()

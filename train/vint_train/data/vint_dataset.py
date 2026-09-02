@@ -188,6 +188,17 @@ class ViNT_Dataset(Dataset):
         # Reopen the cache file in read-only mode
         self._image_cache: lmdb.Environment = lmdb.open(cache_filename, readonly=True)
 
+    def close(self):
+        """Release the LMDB image cache.
+
+        LMDB reader slots are per-process, so opening a second dataset over the same
+        cache file while this one is still live raises MDB_BAD_RSLOT. Any code that
+        builds datasets for several configurations in one process -- the ablation
+        evaluation, which scores one arm after another -- must close each before
+        constructing the next.
+        """
+        self._image_cache.close()
+
     def _build_index(self, use_tqdm: bool = False):
         """
         Build an index consisting of tuples (trajectory name, time, max goal distance)

@@ -132,6 +132,136 @@ Checkpoints and logs land under `/outputs/nomad_stride_ablation/` (host:
 `/mnt/shared_disk/nazli/nomad_outputs/nomad_stride_ablation/`) — **outside the repo**, so
 nothing generated is ever committed.
 
+## Aggregation (Phase 5)
+
+`train/ablation/evaluate_sweep.py` scores both ablations in one table. It is A1's script,
+extended rather than replaced: the arms are now ordered by **effective temporal window**
+(`context_size × context_stride`) instead of by `context_size`, which is the axis A1 and
+A2 share. A1 buys window with tokens; A2 buys it with stride.
+
+Run it inside the container from `train/`, once both sweeps have finished:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 python ablation/evaluate_sweep.py \
+    --run ctx03=/outputs/nomad_ctx_ablation/ctx03_2026_08_31_17_47_18 \
+    --run ctx10=/outputs/nomad_ctx_ablation/ctx10_<stamp> \
+    --run ctx20=/outputs/nomad_ctx_ablation/ctx20_<stamp> \
+    --run stride2=/outputs/nomad_stride_ablation/stride2_<stamp> \
+    --run stride3=/outputs/nomad_stride_ablation/stride3_<stamp>
+```
+
+All five configs live in this worktree's `train/config/`, since this branch descends from
+A1's, so one container scores every arm. `ctx03` is scored once and serves as both A1's
+baseline and A2's stride-1 arm.
+
+The arms sort into this order, which is the point of the whole exercise:
+
+```
+arm           context_size  context_stride   frames   window
+------------------------------------------------------------
+ctx03                    3               1        4        3
+stride2                  3               2        4        6
+stride3                  3               3        4        9
+ctx10                   10               1       11       10
+ctx20                   20               1       21       20
+```
+
+**`stride3` and `ctx10` land adjacent** — window 9 vs 10, reached with 4 frames vs 11.
+That pair answers the question the two ablations exist to ask: *do you need the tokens,
+or just the reach?* If `stride3` matches `ctx10`, the reach was doing the work and the
+extra tokens were waste; if it does not, the density mattered.
+
+### Score caching
+
+Each arm's per-sample scores are cached to `--cache-dir`
+(`/outputs/nomad_ctx_ablation/eval_cache/<arm>_ema29.npz`, shared with A1). An arm's
+scores are fully determined by its checkpoint, its config and the seed, so a cached arm
+is reused rather than re-scored: a failure late in a sweep costs only the arm that
+failed, and re-rendering the table against a different `--baseline` is free. Pass
+`--no-cache` to force re-evaluation.
+
+The A1 arms cached by A1's own run are valid here without re-scoring, because `ctx03`,
+`ctx10` and `ctx20` are stride-1 arms under either version of the script. Verified: the
+cached `ctx03` reproduces a fresh stride-aware run to five decimals on every metric.
+
+### Two correctness fixes this required
+
+`build_test_loader` did not pass `context_stride` to the dataset — it predates the knob.
+Left alone it would have scored the stride-trained checkpoints on stride-1 inputs, i.e.
+on a history they were never trained to read, and the arms would have looked falsely bad.
+It now follows each arm's own config, defaulting to 1 so A1's stride-less configs are
+unaffected.
+
+Second, scoring several arms in one process crashed with `MDB_BAD_RSLOT`: each arm needs
+its own dataset (the observation tensor is `3 * (context_size + 1)` channels, so the arms
+cannot share one), and LMDB reader slots are per-process, so the previous arm's image
+cache has to be released first. `ViNT_Dataset.close()` does that, called from a `finally`
+block so a failure mid-arm still releases the env.
+
+### Reading the table
+
+- **Marginal block**: each arm's mean ± SE over the full test split.
+- **Paired block**: the per-sample difference against `--baseline` (default `ctx03`).
+  Inputs are bit-identical across arms — same samples, same sampled goals and negatives,
+  same denoising noise — so pairing cancels sample-to-sample variance and is far more
+  sensitive than comparing two independent means.
+- `~` means within 2 SE of the baseline; `better`/`worse` means beyond it.
+- **n = 1 seed per arm.** The SE is test-set estimation noise, *not* seed variance. A gap
+  beyond 2 SE exceeds estimation noise; it is not a seed-level significance claim.
+
+## Aggregation (Phase 5)
+
+Both ablations are scored by the same post-hoc script, `train/ablation/evaluate_sweep.py`,
+on the full test split with a pinned seed. Because every arm in both studies shares one
+sample index, `shuffle=False` and `num_workers=0` give every arm bit-identical inputs —
+same samples, same sampled goals, same negatives, same denoising noise — so the
+comparison is *paired*: the per-sample difference cancels sample-to-sample variance.
+
+Run it from this worktree's container once both sweeps have finished. All five configs
+live in this branch's `train/config/`, so one invocation covers both ablations:
+
+```bash
+docker exec -w /app/visualnav-transformer/train naz_nomad_stride_ablation bash -c '
+CUDA_VISIBLE_DEVICES=0 python ablation/evaluate_sweep.py \
+  --run ctx03=/outputs/nomad_ctx_ablation/ctx03_2026_08_31_17_47_18 \
+  --run ctx10=/outputs/nomad_ctx_ablation/ctx10_2026_08_31_20_50_56 \
+  --run ctx20=/outputs/nomad_ctx_ablation/ctx20_2026_09_01_04_35_29 \
+  --run stride2=/outputs/nomad_stride_ablation/stride2_<stamp> \
+  --run stride3=/outputs/nomad_stride_ablation/stride3_<stamp> \
+  --baseline ctx03'
+```
+
+Note `ctx03_2026_08_31_17_47_18` — A1's *completed* ctx03. The `13_12_14` directory is an
+aborted first attempt with only 7 checkpoints; scoring it would silently compare a
+2-epoch model against 30-epoch ones.
+
+The table is ordered by **effective temporal window** (`context_size × context_stride`),
+the axis the two ablations share:
+
+```
+arm           context_size  context_stride   frames   window
+------------------------------------------------------------
+ctx03                    3               1        4        3
+stride2                  3               2        4        6
+stride3                  3               3        4        9
+ctx10                   10               1       11       10
+ctx20                   20               1       21       20
+```
+
+That ordering puts **stride3 next to ctx10** on purpose. They reach back almost equally
+far (9 vs 10 waypoints) but stride3 does it with 4 frames where ctx10 needs 11, so the
+gap between those two rows is the headline of the pair of studies: *do you need the
+tokens, or just the reach?* `ctx03` is the shared baseline both are measured against.
+
+Caveats that belong with any reading of the table:
+
+- **n = 1 seed per arm.** The standard errors describe test-set estimation noise, not
+  training-seed variance. A gap beyond 2 SE exceeds estimation noise; it is not a
+  seed-level significance claim.
+- Stride arms are scored *at their own stride*. `evaluate_sweep.py` reads `context_stride`
+  from each arm's config, so a stride-trained checkpoint is never scored on the
+  adjacent-frame history it was not trained to read.
+
 ## Removing the worktree when A2 is done
 
 ```bash
