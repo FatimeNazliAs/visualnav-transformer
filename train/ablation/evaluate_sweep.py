@@ -190,6 +190,21 @@ def evaluate_checkpoint(checkpoint_path, config, loader, device, seed):
     return {name: np.concatenate(values) for name, values in results.items()}
 
 
+def close_dataset(dataset):
+    """Release the dataset's LMDB environment.
+
+    LMDB is explicit that one process must not hold the same database open twice.
+    Each arm needs its own dataset (the observation tensor has 3*(context_size+1)
+    channels), so the envs must be closed as we go rather than left to the garbage
+    collector -- otherwise the third open fails with
+    `mdb_txn_begin: Invalid argument`.
+    """
+    cache = getattr(dataset, "_image_cache", None)
+    if cache is not None:
+        cache.close()
+        dataset._image_cache = None
+
+
 def mean_and_standard_error(values):
     return float(values.mean()), float(values.std(ddof=1) / np.sqrt(len(values)))
 
@@ -256,6 +271,12 @@ def main():
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--config-dir", default="config")
     parser.add_argument("--baseline", default="ctx03", help="arm the paired deltas are taken against")
+    parser.add_argument(
+        "--cache-dir",
+        default="/outputs/nomad_ctx_ablation/eval_cache",
+        help="where per-sample scores are cached, so re-running the table is free",
+    )
+    parser.add_argument("--no-cache", action="store_true", help="re-evaluate even if cached")
     args = parser.parse_args()
 
     runs = dict(entry.split("=", 1) for entry in args.run)
@@ -265,9 +286,24 @@ def main():
     for arm, run_dir in runs.items():
         config = load_config(run_dir, args.config_dir)
         contexts[arm] = config["context_size"]
-        _, loader = build_test_loader(config, args.batch_size)
-        checkpoint = os.path.join(run_dir, f"ema_{args.epoch}.pth")
-        scores[arm] = evaluate_checkpoint(checkpoint, config, loader, device, args.seed)
+
+        cache_path = os.path.join(args.cache_dir, f"{arm}_ema{args.epoch}.npz")
+        if os.path.exists(cache_path) and not args.no_cache:
+            print(f"{arm}: reusing cached per-sample scores from {cache_path}")
+            scores[arm] = dict(np.load(cache_path))
+        else:
+            dataset, loader = build_test_loader(config, args.batch_size)
+            checkpoint = os.path.join(run_dir, f"ema_{args.epoch}.pth")
+            try:
+                scores[arm] = evaluate_checkpoint(
+                    checkpoint, config, loader, device, args.seed
+                )
+            finally:
+                close_dataset(dataset)
+            os.makedirs(args.cache_dir, exist_ok=True)
+            np.savez(cache_path, **scores[arm])
+            print(f"{arm}: cached per-sample scores to {cache_path}")
+
         sample_counts.add(len(scores[arm]["gc_action_loss"]))
 
     if len(sample_counts) != 1:
