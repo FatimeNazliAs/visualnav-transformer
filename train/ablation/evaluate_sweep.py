@@ -24,6 +24,7 @@ Run inside the container:
 """
 
 import argparse
+import csv
 import os
 
 import numpy as np
@@ -50,6 +51,11 @@ METRICS = [
     "gc_dist_loss",
 ]
 LOWER_IS_BETTER = {"gc_action_loss", "uc_action_loss", "gc_dist_loss"}
+
+# The three metrics the write-up leads with, in reporting order; the remaining
+# METRICS are still emitted, after these.
+HEADLINE_METRICS = ["gc_action_loss", "gc_action_waypts_cos_sim", "uc_action_loss"]
+REPORT_METRICS = HEADLINE_METRICS + [m for m in METRICS if m not in HEADLINE_METRICS]
 
 IMAGENET_TRANSFORM = transforms.Compose(
     [transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])]
@@ -257,6 +263,166 @@ def format_table(arms, scores, baseline):
     return "\n".join(lines)
 
 
+def config_summary(config):
+    """One-cell description of what distinguishes this arm."""
+    effective = config["batch_size"] * config.get("gradient_accumulation_steps", 1)
+    return (
+        f"context_size={config['context_size']}, "
+        f"index_context_size={config['index_context_size']}, "
+        f"image_size={config['image_size'][0]}x{config['image_size'][1]}, "
+        f"eff_batch={effective} ({config['batch_size']}x{config.get('gradient_accumulation_steps', 1)}), "
+        f"epochs={config['epochs']}, lr={config['lr']}, seed={config['seed']}"
+    )
+
+
+def one_line_finding(arms, scores, baseline, primary="gc_action_loss",
+                     subject="more context"):
+    """State the trend on the primary metric, in the direction the metric runs.
+
+    `subject` names the quantity the sweep varies, so the sentence reads correctly
+    for whichever ablation is being reported ("more context", "higher input
+    resolution", ...).
+    """
+    compared = [a for a in arms if a != baseline]
+    if not compared:
+        return "Only the baseline arm was scored; no comparison available."
+    deltas = {}
+    for arm in compared:
+        mean, se = mean_and_standard_error(scores[arm][primary] - scores[baseline][primary])
+        deltas[arm] = (mean, se)
+    lower_better = primary in LOWER_IS_BETTER
+    worse = [a for a, (m, se) in deltas.items() if abs(m) > 2 * se and ((m > 0) == lower_better)]
+    better = [a for a, (m, se) in deltas.items() if abs(m) > 2 * se and ((m < 0) == lower_better)]
+    parts = ", ".join(f"{a} {deltas[a][0]:+.5f}±{deltas[a][1]:.5f}" for a in compared)
+    if worse and not better:
+        verdict = f"{subject} HURTS"
+    elif better and not worse:
+        verdict = f"{subject} HELPS"
+    elif not better and not worse:
+        verdict = f"{subject} has NO EFFECT beyond test-set noise"
+    else:
+        verdict = f"{subject} has a MIXED effect"
+    return (
+        f"On {primary} vs {baseline}, {verdict} ({parts}); "
+        "n = 1 seed, so these SEs are test-set estimation noise, not seed variance."
+    )
+
+
+def format_contrasts(scores, contrasts):
+    """Explicit arm-vs-arm paired contrasts, beyond every-arm-vs-baseline.
+
+    A sweep whose arms differ along more than one axis cannot be read off the
+    baseline column alone: the interesting comparison is often between two
+    non-baseline arms chosen to hold one axis fixed. Each contrast is a paired
+    per-sample difference, so it carries its own standard error rather than being
+    inferred by subtracting two deltas (whose errors are correlated).
+    """
+    lines = ["## Contrasts", ""]
+    for arm, ref, why in contrasts:
+        lines += [f"**`{arm}` vs `{ref}`** — {why}", "", "| metric | paired delta ±SE | |", "|---|---|---|"]
+        for metric in REPORT_METRICS:
+            d, se = mean_and_standard_error(scores[arm][metric] - scores[ref][metric])
+            verdict = "~"
+            if abs(d) > 2 * se:
+                better = (d < 0) if metric in LOWER_IS_BETTER else (d > 0)
+                verdict = "**better**" if better else "**worse**"
+            lines.append(f"| `{metric}` | {d:+.5f} ±{se:.5f} | {verdict} ({abs(d) / se:.1f} SE) |")
+        lines.append("")
+    return lines
+
+
+def write_results_csv(path, arms, scores, configs, baseline, n_samples, epoch):
+    """One row per arm: config, marginal mean/SE, and paired delta/SE vs the baseline."""
+    header = ["arm", "config", "n_samples", "checkpoint", "baseline"]
+    for metric in REPORT_METRICS:
+        header += [f"{metric}_mean", f"{metric}_se",
+                   f"{metric}_delta_vs_{baseline}", f"{metric}_delta_se"]
+
+    with open(path, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(header)
+        for arm in arms:
+            row = [arm, config_summary(configs[arm]), n_samples, f"ema_{epoch}.pth", baseline]
+            for metric in REPORT_METRICS:
+                mean, se = mean_and_standard_error(scores[arm][metric])
+                if arm == baseline:
+                    delta, delta_se = "", ""
+                else:
+                    d, d_se = mean_and_standard_error(
+                        scores[arm][metric] - scores[baseline][metric]
+                    )
+                    delta, delta_se = f"{d:.5f}", f"{d_se:.5f}"
+                row += [f"{mean:.5f}", f"{se:.5f}", delta, delta_se]
+            writer.writerow(row)
+
+
+def write_results_md(path, arms, scores, configs, baseline, n_samples, epoch, title,
+                     subject="more context", contrasts=()):
+    compared = [a for a in arms if a != baseline]
+    lines = [
+        f"# {title}",
+        "",
+        f"- Test samples per arm: **{n_samples:,}** (identical inputs across arms, so the "
+        "paired deltas below are valid)",
+        f"- Checkpoint: `ema_{epoch}.pth` · baseline arm: `{baseline}` · **n = 1 seed per arm**",
+        "",
+        "## Arms",
+        "",
+        "| arm | config |",
+        "|---|---|",
+    ]
+    lines += [f"| `{a}` | {config_summary(configs[a])} |" for a in arms]
+
+    lines += ["", "## Marginal means ±SE", "",
+              "| metric | " + " | ".join(f"`{a}`" for a in arms) + " |",
+              "|---" * (len(arms) + 1) + "|"]
+    for metric in REPORT_METRICS:
+        arrow = "↓" if metric in LOWER_IS_BETTER else "↑"
+        cells = []
+        for arm in arms:
+            mean, se = mean_and_standard_error(scores[arm][metric])
+            cells.append(f"{mean:.5f} ±{se:.5f}")
+        lines.append(f"| `{metric}` {arrow} | " + " | ".join(cells) + " |")
+
+    lines += ["", f"## Paired per-sample difference vs `{baseline}`", "",
+              "| metric | " + " | ".join(f"`{a}`" for a in compared) + " |",
+              "|---" * (len(compared) + 1) + "|"]
+    for metric in REPORT_METRICS:
+        cells = []
+        for arm in compared:
+            d, se = mean_and_standard_error(scores[arm][metric] - scores[baseline][metric])
+            verdict = "~"
+            if abs(d) > 2 * se:
+                better = (d < 0) if metric in LOWER_IS_BETTER else (d > 0)
+                verdict = "**better**" if better else "**worse**"
+            cells.append(f"{d:+.5f} ±{se:.5f} {verdict}")
+        lines.append(f"| `{metric}` | " + " | ".join(cells) + " |")
+
+    lines += [
+        "",
+        "`~` = within 2 SE of the baseline; **better**/**worse** = beyond 2 SE.",
+        "",
+    ]
+
+    if contrasts:
+        lines += format_contrasts(scores, contrasts)
+
+    lines += [
+        "## Finding",
+        "",
+        one_line_finding(arms, scores, baseline, subject=subject),
+        "",
+        "Standard errors describe estimation noise on this test set, not training-seed",
+        "variance. With n = 1 seed per arm, a gap larger than 2 SE means it exceeds",
+        "test-set estimation noise; it is not a seed-level significance claim.",
+        "",
+        "Regenerate with `ablation/evaluate_sweep.py --write-results <dir>` "
+        "(reads the cached per-sample scores; does not re-score).",
+    ]
+    with open(path, "w") as f:
+        f.write("\n".join(lines) + "\n")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -277,15 +443,39 @@ def main():
         help="where per-sample scores are cached, so re-running the table is free",
     )
     parser.add_argument("--no-cache", action="store_true", help="re-evaluate even if cached")
+    parser.add_argument(
+        "--write-results",
+        metavar="DIR",
+        help="also write results.csv and results.md into DIR",
+    )
+    parser.add_argument(
+        "--title",
+        default="Ablation results",
+        help="heading used in results.md",
+    )
+    parser.add_argument(
+        "--contrast",
+        action="append",
+        default=[],
+        metavar="ARM=REF:WHY",
+        help="repeatable extra paired contrast between two arms, e.g. "
+             "img128x96=img112:aspect at matched pixels",
+    )
+    parser.add_argument(
+        "--finding-subject",
+        default="more context",
+        help="the quantity this sweep varies, as it should read in the one-line finding",
+    )
     args = parser.parse_args()
 
     runs = dict(entry.split("=", 1) for entry in args.run)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    scores, sample_counts, contexts = {}, set(), {}
+    scores, sample_counts, contexts, configs = {}, set(), {}, {}
     for arm, run_dir in runs.items():
         config = load_config(run_dir, args.config_dir)
         contexts[arm] = config["context_size"]
+        configs[arm] = config
 
         cache_path = os.path.join(args.cache_dir, f"{arm}_ema{args.epoch}.npz")
         if os.path.exists(cache_path) and not args.no_cache:
@@ -313,8 +503,9 @@ def main():
         )
 
     arms = sorted(runs, key=lambda arm: contexts[arm])
+    n_samples = sample_counts.pop()
     print()
-    print(f"Test samples per arm: {sample_counts.pop():,}   (n = 1 seed per arm)")
+    print(f"Test samples per arm: {n_samples:,}   (n = 1 seed per arm)")
     print(f"context_size: " + ", ".join(f"{arm}={contexts[arm]}" for arm in arms))
     print(f"EMA checkpoint: ema_{args.epoch}.pth")
     print()
@@ -325,6 +516,29 @@ def main():
         "variance. With n = 1 seed per arm a gap larger than 2 SE means it exceeds\n"
         "test-set estimation noise; it is not a seed-level significance claim."
     )
+
+    contrasts = []
+    for entry in args.contrast:
+        pair, _, why = entry.partition(":")
+        arm, _, ref = pair.partition("=")
+        if arm not in scores or ref not in scores:
+            raise SystemExit(f"FAIL: --contrast {entry} names an arm that was not scored")
+        contrasts.append((arm, ref, why))
+
+    if args.write_results:
+        os.makedirs(args.write_results, exist_ok=True)
+        csv_path = os.path.join(args.write_results, "results.csv")
+        md_path = os.path.join(args.write_results, "results.md")
+        write_results_csv(
+            csv_path, arms, scores, configs, args.baseline, n_samples, args.epoch
+        )
+        write_results_md(
+            md_path, arms, scores, configs, args.baseline, n_samples, args.epoch,
+            args.title, args.finding_subject, contrasts,
+        )
+        print()
+        print(f"wrote {csv_path}")
+        print(f"wrote {md_path}")
 
 
 if __name__ == "__main__":
