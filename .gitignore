@@ -150,3 +150,5 @@ dmypy.json
 
 
 train/logs
+# ablation per-sample score caches (live under /outputs, never in the repo)
+*.npz
