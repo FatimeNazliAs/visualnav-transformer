@@ -10,6 +10,13 @@ identical samples, carrying its own standard error. That error is much smaller t
 difference of the two marginal errors, because the sample-to-sample variance the two runs
 share cancels.
 
+That paired SE answers "could this gap be test-set sampling noise". It does **not** answer
+"would a rerun reproduce it" -- for that you need to retrain the same recipe under a
+different seed and see how far the two land apart. `--seed-group` computes that second,
+larger error bar from a set of runs that differ only in `seed`, and `--judge` measures a
+delta against it. The two must always be reported side by side: presenting the paired SE
+alone would overstate what the numbers establish, by roughly an order of magnitude.
+
 Run inside the container, from `/app/visualnav-transformer/train`:
     python ablation/report_capstone.py --scores /outputs/nomad_capstone/scores \
         --arm vanilla_ema29 --arm vanilla_ema49 --arm vanilla_ema69 --arm vanilla_ema99 \
@@ -63,6 +70,64 @@ def verdict(delta, se, metric):
     return "better" if improved else "worse"
 
 
+def seed_statistics(scores, seeds, metric):
+    """Mean, across-seed SD and range for one metric over runs of an identical recipe.
+
+    ddof=1: these seeds are a sample of the seeds that could have been drawn, not the
+    population, and with only three of them the correction is not a rounding detail.
+    """
+    values = np.array([scores[seed][metric].mean() for seed in seeds])
+    return values, float(values.mean()), float(values.std(ddof=1)), float(values.ptp())
+
+
+def format_seed_group(label, seeds, scores):
+    """The across-seed ruler: how far apart runs of the SAME recipe land."""
+    header = (
+        f"{'metric':<28}{'per-seed means':>44}{'mean':>12}"
+        f"{'across-seed SD':>18}{'range':>12}"
+    )
+    lines = [
+        f"Across-seed ruler: {label} ({len(seeds)} seeds -- identical recipe, "
+        f"differing only in `seed`)",
+        header,
+        "-" * len(header),
+    ]
+    for metric in METRICS:
+        values, mean, sd, spread = seed_statistics(scores, seeds, metric)
+        rendered = ", ".join(f"{value:.5f}" for value in values)
+        lines.append(
+            f"{metric:<28}{rendered:>44}{mean:>12.5f}{sd:>18.5f}{spread:>12.5f}"
+        )
+    return "\n".join(lines)
+
+
+def format_judgements(label, seeds, scores, metric, judgements):
+    """Measure externally-supplied deltas against the ruler.
+
+    A delta smaller than the across-seed SD is indistinguishable from having retrained
+    the same recipe with a different seed, however many standard errors it clears on the
+    test set.
+    """
+    _, _, sd, _ = seed_statistics(scores, seeds, metric)
+    header = f"{'delta':<28}{'value':>12}{'/ seed SD':>12}   verdict"
+    lines = [
+        f"Judged against the {label} across-seed SD on `{metric}` "
+        f"(SD = {sd:.5f}):",
+        header,
+        "-" * (len(header) + 24),
+    ]
+    for name, delta in judgements:
+        ratio = abs(delta) / sd if sd else float("inf")
+        if ratio >= 2.0:
+            call = "exceeds the ruler"
+        elif ratio >= 1.0:
+            call = "comparable to seed noise"
+        else:
+            call = "WITHIN seed noise"
+        lines.append(f"{name:<28}{delta:>+12.5f}{ratio:>12.1f}x   {call}")
+    return "\n".join(lines)
+
+
 def format_table(arms, scores, reference):
     metric_width, cell_width = 28, 26
     lines = []
@@ -106,7 +171,8 @@ def format_table(arms, scores, reference):
     return "\n".join(lines)
 
 
-def write_markdown(path, arms, scores, manifests, reference, title, note):
+def write_markdown(path, arms, scores, manifests, reference, title, note,
+                   seed_label=None, seed_arms=(), judgements=(), judge_metric=None):
     compared = [arm for arm in arms if arm != reference]
     n_samples = manifests[arms[0]]["n_samples"]
     lines = [
@@ -167,6 +233,53 @@ def write_markdown(path, arms, scores, manifests, reference, title, note):
             "**better**/**worse** = beyond it.",
         ]
 
+    if seed_arms:
+        _, _, sd, _ = seed_statistics(scores, seed_arms, "gc_action_loss")
+        lines += [
+            "",
+            f"## Across-seed ruler — `{seed_label}`, {len(seed_arms)} seeds",
+            "",
+            "These runs share one recipe and differ only in `seed`. How far apart they land",
+            "is how much of any effect could be a reseed rather than the knob under test.",
+            "It is a different, and usually larger, uncertainty than the paired SE above.",
+            "",
+            "| metric | per-seed means | mean | across-seed SD | range |",
+            "|---|---|---|---|---|",
+        ]
+        for metric in METRICS:
+            values, mean, metric_sd, spread = seed_statistics(scores, seed_arms, metric)
+            rendered = ", ".join(f"{value:.5f}" for value in values)
+            lines.append(
+                f"| `{metric}` | {rendered} | {mean:.5f} | **{metric_sd:.5f}** | {spread:.5f} |"
+            )
+        lines += [
+            "",
+            f"With {len(seed_arms)} seeds the SD has only {len(seed_arms) - 1} degrees of "
+            "freedom, so it is itself a rough estimate: the 95% interval for the true "
+            f"sigma spans roughly {0.52 * sd:.5f} to {6.29 * sd:.5f} on `gc_action_loss`. "
+            "Read it as an order-of-magnitude bar, and treat an effect clearing it by only "
+            "a small factor as unproven.",
+        ]
+
+    if judgements:
+        _, _, sd, _ = seed_statistics(scores, seed_arms, judge_metric)
+        lines += [
+            "",
+            f"## Effects judged against the ruler — `{judge_metric}` (SD = {sd:.5f})",
+            "",
+            "| effect | delta | / seed SD | verdict |",
+            "|---|---|---|---|",
+        ]
+        for name, delta in judgements:
+            ratio = abs(delta) / sd if sd else float("inf")
+            if ratio >= 2.0:
+                call = "exceeds the ruler"
+            elif ratio >= 1.0:
+                call = "comparable to seed noise"
+            else:
+                call = "**within seed noise**"
+            lines.append(f"| {name} | {delta:+.5f} | {ratio:.1f}x | {call} |")
+
     if note:
         lines += ["", "## Reading", "", note]
     lines += [
@@ -193,6 +306,24 @@ def main():
         "--reference",
         help="run the paired deltas are taken against (default: the last --arm)",
     )
+    parser.add_argument(
+        "--seed-group",
+        metavar="LABEL=ARM,ARM,...",
+        help="runs of one identical recipe differing only in seed; reports the "
+        "across-seed SD, the bar an effect must clear to be more than a reseed",
+    )
+    parser.add_argument(
+        "--judge",
+        action="append",
+        default=[],
+        metavar="LABEL=DELTA",
+        help="repeatable; measure an externally-computed delta against the seed ruler",
+    )
+    parser.add_argument(
+        "--judge-metric",
+        default="gc_action_loss",
+        help="metric the seed ruler judges deltas on",
+    )
     parser.add_argument("--title", default="Capstone scores")
     parser.add_argument("--note", help="a 'Reading' paragraph for the markdown output")
     parser.add_argument("--write-md", metavar="PATH", help="also write a markdown table")
@@ -203,6 +334,28 @@ def main():
     if reference not in arms:
         raise SystemExit(f"FAIL: --reference {reference!r} is not among the --arm runs")
 
+    seed_label, seed_arms = None, []
+    if args.seed_group:
+        seed_label, _, joined = args.seed_group.partition("=")
+        seed_arms = [arm for arm in joined.split(",") if arm]
+        missing = [arm for arm in seed_arms if arm not in arms]
+        if missing:
+            raise SystemExit(
+                f"FAIL: --seed-group names {missing} which are not among the --arm runs"
+            )
+        if len(seed_arms) < 2:
+            raise SystemExit("FAIL: --seed-group needs at least two runs to have a spread")
+
+    judgements = []
+    for entry in args.judge:
+        name, _, value = entry.partition("=")
+        try:
+            judgements.append((name, float(value)))
+        except ValueError:
+            raise SystemExit(f"FAIL: --judge {entry!r} is not LABEL=DELTA")
+    if judgements and not seed_arms:
+        raise SystemExit("FAIL: --judge needs a --seed-group to judge against")
+
     scores, manifests = load_scores(args.scores, arms)
     n_samples = manifests[arms[0]]["n_samples"]
 
@@ -212,10 +365,21 @@ def main():
     print()
     print(format_table(arms, scores, reference))
     print()
+    if seed_arms:
+        print(format_seed_group(seed_label, seed_arms, scores))
+        print()
+    if judgements:
+        print(
+            format_judgements(
+                seed_label, seed_arms, scores, args.judge_metric, judgements
+            )
+        )
+        print()
 
     if args.write_md:
         write_markdown(
-            args.write_md, arms, scores, manifests, reference, args.title, args.note
+            args.write_md, arms, scores, manifests, reference, args.title, args.note,
+            seed_label, seed_arms, judgements, args.judge_metric,
         )
         print(f"wrote {args.write_md}")
 
