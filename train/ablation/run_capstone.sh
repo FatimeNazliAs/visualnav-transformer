@@ -2,8 +2,14 @@
 # Launch capstone training runs. Run this from the HOST, from the repo root.
 #
 #   ./train/ablation/run_capstone.sh 0 nomad_ctx03_s1.yaml nomad_best_combined.yaml
+#   ./train/ablation/run_capstone.sh --after stock100_s0 1 nomad_ctx03_100ep_s1.yaml
 #   ./train/ablation/run_capstone.sh --status
 #   ./train/ablation/run_capstone.sh --stop
+#
+# `--after <run-tag>` queues a lane behind a run that is already in flight. A lane
+# supervisor's queue is baked in when it launches, so this is how work is added to a GPU
+# whose lane is already running: the new lane blocks on the named run's status file, and
+# abandons itself if that run fails or if its lane dies without ever producing one.
 #
 # One GPU lane per invocation. The configs given are trained SEQUENTIALLY on that GPU, in
 # the order listed, stopping the lane if one fails -- so a diverged or OOM-ing run does
@@ -56,14 +62,21 @@ show_status() {
     done
 }
 
+WAIT_FOR=""
+if [ "${1:-}" = "--after" ]; then
+    [ "$#" -ge 2 ] || { echo "--after needs a run-tag" >&2; exit 2; }
+    WAIT_FOR="$2"; shift 2
+fi
+
 case "${1:-}" in
     --status) show_status; exit 0 ;;
     --stop)
         echo "Stopping every capstone training process and lane supervisor."
         docker exec "${CONTAINER}" pkill -f "train.py -c config/" 2>/dev/null || true
-        screen -ls | grep -oE 'capstone_gpu[0-9]+' | xargs -r -n1 screen -S -X quit || true
+        screen -ls | grep -oE 'capstone_gpu[0-9]+[A-Za-z0-9_]*' | xargs -r -n1 screen -S -X quit || true
         exit 0 ;;
-    "") echo "usage: $0 <gpu> <config.yaml> [config.yaml ...] | --status | --stop" >&2; exit 2 ;;
+    "") echo "usage: $0 [--after <run-tag>] <gpu> <config.yaml>... | --status | --stop" >&2
+        exit 2 ;;
 esac
 
 GPU="$1"; shift
@@ -75,8 +88,9 @@ for config in "$@"; do
 done
 
 # Refuse to stack two lanes on one GPU: they would fit in memory and quietly halve each
-# other's throughput, turning a 19-hour run into a 38-hour one.
-if screen -ls | grep -q "capstone_gpu${GPU}\b"; then
+# other's throughput, turning a 19-hour run into a 38-hour one. A --after lane is queued
+# behind an existing run rather than started alongside it, so it is exempt.
+if [ -z "${WAIT_FOR}" ] && screen -ls | grep -q "capstone_gpu${GPU}\b"; then
     echo "A lane is already running on GPU ${GPU} (screen capstone_gpu${GPU})." >&2
     echo "Check it with: $0 --status" >&2
     exit 1
@@ -101,10 +115,30 @@ mkdir -p "${LOG_DIR}" "${STATUS_DIR}"
 
 # The supervisor is written out rather than passed as a string: it has to survive this
 # shell exiting, and quoting a loop this size through `screen -dm bash -c` is a trap.
-supervisor="${STATUS_DIR}/lane_gpu${GPU}.sh"
+LANE_NAME="capstone_gpu${GPU}${WAIT_FOR:+_after_${WAIT_FOR}}"
+supervisor="${STATUS_DIR}/${LANE_NAME}.sh"
 {
     echo '#!/usr/bin/env bash'
     echo 'set -uo pipefail'
+    if [ -n "${WAIT_FOR}" ]; then
+        cat <<WAIT
+echo "[\$(date '+%F %T')] waiting for ${WAIT_FOR} before starting on GPU ${GPU}"
+while [ ! -f "${STATUS_DIR}/${WAIT_FOR}.status" ]; do
+    # If the lane that was going to produce that status file is gone, it never will.
+    if ! screen -ls | grep -q "capstone_gpu${GPU}\\b"; then
+        echo "[\$(date '+%F %T')] GPU ${GPU} lane ended without running ${WAIT_FOR} -- abandoning." >&2
+        exit 1
+    fi
+    sleep 60
+done
+upstream="\$(cat "${STATUS_DIR}/${WAIT_FOR}.status")"
+if [ "\${upstream}" != "0" ]; then
+    echo "[\$(date '+%F %T')] ${WAIT_FOR} failed (exit \${upstream}) -- not starting." >&2
+    exit 1
+fi
+echo "[\$(date '+%F %T')] ${WAIT_FOR} finished cleanly; GPU ${GPU} is free."
+WAIT
+    fi
     for config in "$@"; do
         tag="$(run_tag "${config}")"
         [ -n "${tag}" ] || { echo "config ${config} has no run_name" >&2; exit 2; }
@@ -131,10 +165,10 @@ LANE
 } > "${supervisor}"
 chmod +x "${supervisor}"
 
-lane_log="${LOG_DIR}/lane_gpu${GPU}.log"
-screen -dmS "capstone_gpu${GPU}" bash -c "'${supervisor}' >>'${lane_log}' 2>&1"
+lane_log="${LOG_DIR}/${LANE_NAME}.log"
+screen -dmS "${LANE_NAME}" bash -c "'${supervisor}' >>'${lane_log}' 2>&1"
 
-echo "GPU ${GPU} lane launched. Queue:"
+echo "GPU ${GPU} lane launched as ${LANE_NAME}.${WAIT_FOR:+ Waits for ${WAIT_FOR} first.} Queue:"
 for config in "$@"; do echo "  ${config}  ->  $(run_tag "${config}")"; done
 echo
 echo "  Lane log : ${lane_log}"
