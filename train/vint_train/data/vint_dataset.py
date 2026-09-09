@@ -185,8 +185,22 @@ class ViNT_Dataset(Dataset):
                         with open(image_path, "rb") as f:
                             txn.put(image_path.encode(), f.read())
 
-        # Reopen the cache file in read-only mode
-        self._image_cache: lmdb.Environment = lmdb.open(cache_filename, readonly=True)
+        # Reopen the cache file in read-only mode.
+        #
+        # lock=False disables LMDB's reader lock table. close() below is the primary fix
+        # for the failure this guards against:
+        #     lmdb.BadRslotError: mdb_txn_renew: MDB_BAD_RSLOT
+        # raised when an Environment on this file is released while a later transaction
+        # still holds its reader slot. That is GC-timing dependent, so it strikes
+        # unpredictably as the number of datasets opened in one process grows -- and the
+        # capstone evaluation opens one per arm, seven of them, in a single process.
+        #
+        # Safe because the cache is written once above and only ever read afterwards, so
+        # no reader/writer coordination is needed -- including for two runs training in
+        # parallel on separate GPUs, which only read.
+        self._image_cache: lmdb.Environment = lmdb.open(
+            cache_filename, readonly=True, lock=False
+        )
 
     def close(self):
         """Release the LMDB image cache.
