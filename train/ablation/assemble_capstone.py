@@ -41,6 +41,8 @@ VANILLA100 = "vanilla_ema99"                         # stock recipe, 100 epochs,
 
 ALL_RUNS = RULER_SEEDS + STOCK100_SEEDS + [BC30, BC100, STRIDE3, IMG160, VANILLA100]
 
+UNCERTAINTY_HEADING = "## Two uncertainties, and how they are combined"
+
 # A contrast is called only when it clears its combined uncertainty by this factor.
 DECISION_SIGMAS = 2.0
 
@@ -184,6 +186,8 @@ def build_markdown(scores, manifests):
     lines = [
         "# Capstone results — best-combined recipe vs stock NoMaD",
         "",
+        "## Setup",
+        "",
         f"- Every number is scored by `eval_paired.py` on the same **{n_samples:,}** test "
         "samples (`index_context_size = 20`), each model at its own native input recipe. "
         "Scoring is deterministic: the same checkpoint scores bit-identically twice.",
@@ -192,7 +196,7 @@ def build_markdown(scores, manifests):
         "[160, 120]`. **Stock recipe** = `context_size 3`, stride 1, `[96, 96]`. Both use "
         "the pinned sample index and the 32×8 effective batch of 256 — except vanilla.",
         "",
-        "## Two uncertainties, and how they are combined",
+        UNCERTAINTY_HEADING,
         "",
         "| error bar | what it answers | value on `gc_action_loss` |",
         "|---|---|---|",
@@ -302,8 +306,11 @@ def main():
 
     if args.write_md:
         if args.reading:
+            # After Setup, so a reader knows what was measured before reading the answer,
+            # and before the uncertainty and grid sections the answer refers to.
             with open(args.reading) as f:
-                lines = lines[:1] + ["", f.read().strip()] + lines[1:]
+                at = lines.index(UNCERTAINTY_HEADING)
+                lines = lines[:at] + [f.read().strip(), ""] + lines[at:]
         with open(args.write_md, "w") as f:
             f.write("\n".join(lines) + "\n")
         print(f"\nwrote {args.write_md}")

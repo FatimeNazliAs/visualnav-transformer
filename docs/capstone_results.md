@@ -1,5 +1,11 @@
 # Capstone results — best-combined recipe vs stock NoMaD
 
+## Setup
+
+- Every number is scored by `eval_paired.py` on the same **26,648** test samples (`index_context_size = 20`), each model at its own native input recipe. Scoring is deterministic: the same checkpoint scores bit-identically twice.
+- Primary metric **`gc_action_loss`** (↓). Final EMA weights throughout.
+- **Improved recipe** = `context_size 3` + `context_stride 3` + `image_size [160, 120]`. **Stock recipe** = `context_size 3`, stride 1, `[96, 96]`. Both use the pinned sample index and the 32×8 effective batch of 256 — except vanilla.
+
 ## Answer
 
 **1. Does the improved recipe beat stock NoMaD? Yes.** At a matched 100-epoch budget, on
@@ -25,9 +31,11 @@ it keeps narrowing past 100 is not tested here.
 
 **The improved recipe reaches the stock result on about half the compute.**
 best-combined@30 (5.7 GPU-hours) vs clean-stock@100 (10.5 GPU-hours):
-**Δ = −0.029 ± 0.025**, not distinguishable. The comparison is epoch-matched, and the
-recipe costs about 1.8× per epoch (11.5 vs 6.4 min at 160×120). So at equal GPU-hours it is
-at least as good, and at equal epochs it is better.
+**Δ = −0.029 ± 0.025**, not distinguishable. This contrast compares compute, not epochs:
+it deliberately sets 30 improved-recipe epochs against 100 stock epochs, because the recipe
+costs about 1.8× per epoch (11.5 vs 6.4 min at 160×120). Only the headline is epoch-matched.
+So at about half the GPU-hours it is indistinguishable from clean-stock@100; at equal epochs
+it is better.
 
 **The vanilla confound, measured directly: 0.157, not 0.44.** Clean-stock@100 vs
 vanilla@100 share recipe and budget. They differ only in vanilla's +26% indexed data and
@@ -98,10 +106,6 @@ them.
 - The additivity check uses seed-0 runs only, so its seed noise is 2σ. It can rule out
   large interactions, not small ones.
 - Behaviour beyond 100 epochs is unknown, and the recipe advantage was still narrowing.
-
-- Every number is scored by `eval_paired.py` on the same **26,648** test samples (`index_context_size = 20`), each model at its own native input recipe. Scoring is deterministic: the same checkpoint scores bit-identically twice.
-- Primary metric **`gc_action_loss`** (↓). Final EMA weights throughout.
-- **Improved recipe** = `context_size 3` + `context_stride 3` + `image_size [160, 120]`. **Stock recipe** = `context_size 3`, stride 1, `[96, 96]`. Both use the pinned sample index and the 32×8 effective batch of 256 — except vanilla.
 
 ## Two uncertainties, and how they are combined
 
