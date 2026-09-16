@@ -4,8 +4,10 @@ Open-loop evaluation replays recorded frames: the world never reacts. This
 directory is the other thing — a simulator the model actually drives, so an
 action changes the next view. Plan: `.claude/plans/nomad-sim-evaluation.md`.
 
-**P0** stood the simulator up. **P1 (this phase) wires NoMaD's brain to the
-sim's body** — one checkpoint drives itself along a hand-made trail. Still no
+**P0** stood the simulator up. **P1** wired NoMaD's brain to the sim's body —
+one checkpoint driving itself along a hand-made trail. **P2 (this phase) makes
+the trails.** The scene's own shortest path replaces the human teleop of
+`create_topomap.sh`: plan a route, drive it, keep every Nth frame. Still no
 metrics, no episode sampling and no video overlay: those are P3 and P4.
 
 ## Layout
@@ -29,6 +31,11 @@ metrics, no episode sampling and no video overlay: those are P3 and P4.
 | `p1_0_make_topomap.py` | drive a fixed route open-loop, keep frames as a trail |
 | `p1_1_drive_test.py` | one checkpoint follows that trail; frames + GIF out |
 | `run_p1_drive_test.sh` | run the above two in the container, pinned to one GPU |
+| `configs/topomap.yaml` | every knob the trail builder has (P2) |
+| `path_follow.py` | the hand that drives the planned path — pure pursuit |
+| `topomap_builder.py` | plan a route, drive it, keep every Nth frame (P2) |
+| `p2_1_build_test.py` | build one trail; path plot + thumbnails + format check |
+| `run_p2_build_test.sh` | run the above in the container, pinned to one GPU |
 | `run_tests.sh` | the GPU-free unit tests, in the container |
 | `tests/` | GPU-free unit tests (`./sim_eval/run_tests.sh`) |
 | `outputs/` | all generated files (gitignored, numbered `pN_M_*`) |
@@ -70,6 +77,21 @@ themselves — you never need to enter the container.
 
    `--checkpoint clean_stock` runs the other headline arm instead — at its own
    96x96, automatically.
+
+6. Build a reference-path topomap.
+   ```
+   ./sim_eval/run_p2_build_test.sh
+   ```
+   It prints one line per node as the trail is captured, then a summary, then
+   writes the trail to `sim_eval/outputs/p2_1_topomap/` (`0.png`, `1.png`, ...
+   plus `metadata.json` and the `world.yaml` it was driven in), a top-down
+   `p2_1_path.png` and a `p2_1_thumbnails.png` strip. It ends by loading the
+   result back through P1's `bridge.load_topomap` — a trail the bridge cannot
+   read is not a topomap.
+
+   Which house, where the trail runs and how far apart its nodes are all live
+   in `sim_eval/configs/topomap.yaml`. Nothing about the trail is hardcoded, so
+   more houses and more trails (plan §6, §7) are edits to that file.
 
 `SIM_GPU=0 ./sim_eval/run_p0_smoke_test.sh` picks the other GPU. Default is 1,
 because GPU 0 also drives the machine's X server.
@@ -116,6 +138,32 @@ and looks fine in a replay. Keeping the arithmetic in pure functions lets
 `tests/test_localization.py` pin it without torch, a checkpoint or a GPU. The
 numbers are unchanged from `navigate.py` — verified by re-running the drive test
 and diffing all 39 ticks.
+
+## How a trail gets made (P2)
+
+`create_topomap.sh` builds a real topomap by having a person joystick the robot
+down the route while frames are saved. There is nobody to joystick a simulator,
+so the scene's own traversability graph says where the perfect route goes and
+`path_follow.py` drives it (plan §5). In order:
+
+1. sample a start/goal pair, or take the one in the config
+2. reject it unless both ends sit on the nav mesh and the geodesic path between
+   them is 3-8 m — neither trivial nor longer than the house affords
+3. plan it: iGibson's A* over the traversability graph, `entire_path=True`
+4. face the robot down the path and drive it, pure pursuit at the robot's own
+   `max_v` / `max_w` / 4 Hz — the same envelope the policy gets
+5. keep the camera frame every `spacing_ticks` ticks — the "edge length"
+6. **accept the trail only if the drive arrived, cleanly and without wedging**;
+   otherwise throw the pair back and sample another (see below)
+7. write `0.png, 1.png, ...` plus `metadata.json` and the `world.yaml` it ran in
+
+The frames are saved at the render resolution, not at any checkpoint's
+`image_size`, so one trail serves every arm — each resizes it to its own
+training resolution, which the fairness protocol (plan §7) requires.
+
+`metadata.json` is what P3 scores against: the goal pose success is measured
+from, the geodesic length SPL divides by, the spacing, the camera intrinsics,
+every node's pose and both paths (planned and driven).
 
 ## Under the hood
 
@@ -165,6 +213,31 @@ and diffing all 39 ticks.
   policy in a single process.
 - **Assets are not in the image.** `GIBSON_ASSETS_PATH` and friends point at the
   `/igibson_data` mount.
+- **Rs's traversability map is optimistic, so a trail is accepted on the drive,
+  not on the plan.** Gibson's `floor_trav_0.png` is derived from a floor plan
+  and does not know about all the furniture in the mesh: A* happily routes
+  through a patch of Rs living room that the robot physically climbs onto and
+  wedges in. There is no map to fix — so `topomap_builder` drives every
+  candidate route and keeps only the pairs that arrive, collision-free and
+  without getting stuck. About one planned path in three survives that in Rs,
+  which is why `drive_attempts` exists and why it is not 1. If P3 wants a
+  higher yield, the lever is the interactive iGibson houses, whose trav maps
+  come from actual object placement (plan §12, still open).
+- **Turning counts as progress, or the stuck detector eats the house.** A
+  differential drive spins on the spot to line up with its path, and a start
+  pose facing the wrong way needs up to `pi / max_w` = 7.9 s of pure rotation —
+  longer than the 5 s stuck window. Measured on translation alone, that healthy
+  turn is indistinguishable from a wedged robot, and the first version of this
+  rejected most of Rs for exactly that reason. `stuck_progress_rad` is the fix.
+- **`trav_map_type` does nothing for static Gibson scenes.** `env_base.load`
+  passes it to `InteractiveIndoorScene` but not to `StaticIndoorScene`, which
+  keeps its own `with_obj` default. The `no_obj` in the world configs is
+  therefore inert — worth knowing before anyone "fixes" a planning problem by
+  changing it. Rs ships only `floor_trav_0.png` anyway.
+- **The driven path is usually shorter than the geodesic, and that is correct.**
+  A* runs on an 8-connected grid, so its path zigzags between cell centres;
+  pure pursuit smooths that out. SPL divides by the geodesic (the planner's
+  number), never by what the reference drive happened to travel.
 
 ## Common errors
 
@@ -181,3 +254,7 @@ and diffing all 39 ticks.
 | `FAILED: ... has no route.json` | run `./sim_eval/run_p1_drive_test.sh --make-topomap` first |
 | `initial_pos_z_offset is too small` | a config running at 4 Hz still has P0's 0.1 |
 | the robot turns away from every subgoal | `ANGULAR_VELOCITY_SIGN` was "cleaned up" — see Under the hood |
+| `FAILED: no drivable reference path in ... after N attempts` | the nav mesh keeps planning through furniture — raise `acceptance.drive_attempts`, or widen the geodesic bounds |
+| `FAILED: no start/goal pair between X and Y m` | the geodesic bounds are wider than the house; Rs's longest path is ~7.7 m |
+| `FAILED: configured start ... is not on the nav mesh` | a hand-picked start/goal in `topomap.yaml` is inside a wall |
+| `FAILED: ... has no metadata.json` | that topomap predates P2 (the P1 trail has `route.json` instead) |
