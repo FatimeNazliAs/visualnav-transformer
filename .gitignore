@@ -150,3 +150,6 @@ dmypy.json
 
 
 train/logs
+
+# closed-loop sim evaluation: rendered frames, videos, metric logs
+sim_eval/outputs/

@@ -1,0 +1,92 @@
+# ==============================================================================
+# LoCoBot in Rs (static Gibson mesh) — the P0 smoke-test world.
+#
+# Derived from iGibson's own turtlebot_static_nav.yaml (scene block) and
+# locobot_nav.yaml (robot block). Kept deliberately close to both so that
+# differences from upstream are the ones we chose on purpose.
+#
+# Rs is the scene that ships with `--download_demo_data`: freely available, no
+# licence click-through. Whether the evaluation proper runs on static Gibson
+# meshes or on the interactive iGibson houses is still an open decision
+# (plan §12) and is NOT settled by this file.
+# ==============================================================================
+
+# --- scene -------------------------------------------------------------------
+scene: gibson            # static mesh, as opposed to `igibson` (interactive)
+scene_id: Rs
+build_graph: true        # traversability graph — needed for geodesic distance (P3 SPL)
+load_texture: true
+pybullet_load_texture: true
+trav_map_type: no_obj
+trav_map_resolution: 0.1
+trav_map_erosion: 2
+should_open_all_doors: true
+
+# --- domain randomization ----------------------------------------------------
+# Off by design: the fairness protocol (plan §7) wants an identical world for
+# every checkpoint.
+texture_randomization_freq: null
+object_randomization_freq: null
+
+# --- robot -------------------------------------------------------------------
+# The LoCoBot is the point of choosing iGibson (plan D1): it is the platform
+# NoMaD's deployment stack already targets, so the PD controller ports over.
+robot:
+  name: Locobot
+  action_type: continuous
+  action_normalize: true   # actions are [-1, 1]; P1 will switch this off to
+                           # command v/w in SI units like the real robot does
+  base_name: null
+  scale: 1.0
+  self_collision: false
+  rendering_params: null
+  controller_config:
+    base:
+      name: DifferentialDriveController
+      command_output_limits:
+        - [-0.5, -1.57]
+        - [0.5, 1.57]
+
+# --- task --------------------------------------------------------------------
+# P0 needs *a* task only because iGibsonEnv requires one to place the robot on
+# the traversable map. The real task (reference-path topomap, plan §5) arrives
+# in P2 and replaces this.
+task: point_nav_random
+target_dist_min: 1.0
+target_dist_max: 10.0
+goal_format: polar
+task_obs_dim: 4
+
+reward_type: geodesic
+success_reward: 10.0
+potential_reward_weight: 1.0
+collision_reward_weight: -0.1
+discount_factor: 0.99
+
+# --- episode termination -----------------------------------------------------
+dist_tol: 0.36
+max_step: 500
+max_collisions_allowed: 500   # collisions are counted, never terminal (plan §6)
+
+# --- misc --------------------------------------------------------------------
+initial_pos_z_offset: 0.1
+collision_ignore_link_a_ids: [1, 2, 3, 4]
+
+# --- sensors -----------------------------------------------------------------
+# Depth is rendered even though NoMaD ignores it: plan §8 asks for the channel
+# to be exposed now so a future depth-conditioned model is a config flip.
+output: [task_obs, rgb, depth]
+fisheye: false
+image_width: 640
+image_height: 480
+vertical_fov: 45
+depth_low: 0.1
+depth_high: 10.0
+depth_noise_rate: 0.0
+
+# Shadows and PBR are meaningless on a baked static mesh, and cost frame time.
+enable_shadow: false
+enable_pbr: false
+
+visible_target: false
+visible_path: false
