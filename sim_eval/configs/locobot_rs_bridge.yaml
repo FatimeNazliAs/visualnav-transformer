@@ -1,0 +1,111 @@
+# ==============================================================================
+# LoCoBot in Rs (static Gibson mesh) — the world the bridge drives in.
+#
+# P0's smoke-test config with two changes, both so the sim's body obeys the
+# same commands the real robot's body does:
+#
+#   1. `action_normalize: false` plus `command_input_limits: null`. P0 sent
+#      actions in [-1, 1] and let iGibson scale them. NoMaD's PD controller
+#      emits (v, w) in m/s and rad/s, clipped to the LoCoBot's own max_v=0.2 /
+#      max_w=0.4 (deployment/config/robot.yaml). With input limits removed,
+#      iGibson takes those numbers as they are — no rescaling, so the sim
+#      robot's speed is the real robot's speed. Both settings are needed:
+#      action_normalize only overrides the *input* limits when true, and the
+#      controller's own default input range is [-1, 1].
+#   2. The camera renders 4:3 at 640x480 still, but `vertical_fov` is the one
+#      thing the sim cannot mirror from a config file — see the note below.
+#
+# Everything else is P0's, deliberately: differences from the smoke test should
+# be the ones chosen on purpose.
+# ==============================================================================
+
+# --- scene -------------------------------------------------------------------
+scene: gibson            # static mesh, as opposed to `igibson` (interactive)
+scene_id: Rs
+build_graph: true        # traversability graph — needed for geodesic distance (P3 SPL)
+load_texture: true
+pybullet_load_texture: true
+trav_map_type: no_obj
+trav_map_resolution: 0.1
+trav_map_erosion: 2
+should_open_all_doors: true
+
+# --- domain randomization ----------------------------------------------------
+# Off by design: the fairness protocol (plan §7) wants an identical world for
+# every checkpoint.
+texture_randomization_freq: null
+object_randomization_freq: null
+
+# --- robot -------------------------------------------------------------------
+robot:
+  name: Locobot
+  action_type: continuous
+  action_normalize: false  # actions are SI (v [m/s], w [rad/s]), not [-1, 1]
+  base_name: null
+  scale: 1.0
+  self_collision: false
+  rendering_params: null
+  controller_config:
+    base:
+      name: DifferentialDriveController
+      command_input_limits: null   # take (v, w) as given; the PD controller
+                                   # has already clipped to the robot's limits
+      command_output_limits: null
+
+# --- task --------------------------------------------------------------------
+# Still point_nav_random, and still only because iGibsonEnv requires a task to
+# place the robot on the traversable map. The bridge ignores its goal entirely:
+# NoMaD's goal is the topomap. The real task arrives in P2/P3.
+task: point_nav_random
+target_dist_min: 1.0
+target_dist_max: 10.0
+goal_format: polar
+task_obs_dim: 4
+
+reward_type: geodesic
+success_reward: 10.0
+potential_reward_weight: 1.0
+collision_reward_weight: -0.1
+discount_factor: 0.99
+
+# --- episode termination -----------------------------------------------------
+# The bridge decides when an episode ends (it reached the last topomap node, or
+# it ran out of ticks), so these are set not to interfere: the point_nav goal is
+# somewhere random and reaching it means nothing here.
+dist_tol: 0.36
+max_step: 100000
+max_collisions_allowed: 100000   # collisions are counted, never terminal (plan §6)
+
+# --- misc --------------------------------------------------------------------
+# Tied to the control rate, not a free choice. iGibson spawns the robot this
+# far above the floor and asserts the offset exceeds how far gravity pulls it
+# in one action timestep: 0.5 * 9.8 * 0.25^2 = 0.31 m at 4 Hz, against 0.05 m
+# at P0's default 10 Hz. Hence 0.4 rather than P0's 0.1. It affects only the
+# drop at spawn, which `env.land` settles before the episode starts.
+initial_pos_z_offset: 0.4
+collision_ignore_link_a_ids: [1, 2, 3, 4]
+
+# --- sensors -----------------------------------------------------------------
+# Depth is rendered even though NoMaD ignores it: plan §8 asks for the channel
+# to be exposed now so a future depth-conditioned model is a config flip.
+output: [task_obs, rgb, depth]
+fisheye: false
+image_width: 640
+image_height: 480
+# 45 deg vertical FoV is iGibson's LoCoBot default and is NOT the real robot's
+# camera. GoStanford was recorded on a wide-angle lens, so the sim view is
+# narrower than anything in training. This is one concrete face of the domain
+# gap the plan already treats as a limitation (plan §10, "standing framing"):
+# left as the default here rather than tuned, because tuning it is a P5
+# question with evidence behind it, not a P1 guess.
+vertical_fov: 45
+depth_low: 0.1
+depth_high: 10.0
+depth_noise_rate: 0.0
+
+# Shadows and PBR are meaningless on a baked static mesh, and cost frame time.
+enable_shadow: false
+enable_pbr: false
+
+visible_target: false
+visible_path: false

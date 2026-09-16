@@ -1,0 +1,30 @@
+# ==============================================================================
+# The checkpoints this workstream evaluates.
+#
+# Nothing here is trained by sim_eval — these are the ablation runs from the
+# open-loop study, reused as-is (plan §2: no retraining, no fine-tuning).
+#
+# Paths are container paths: /outputs is the shared-disk mount
+# /mnt/shared_disk/nazli/nomad_outputs (see lib.sh).
+#
+# `train_log` is not decoration. train.py prints the merged config dict on
+# startup and writes no config file next to the weights, so that log line is
+# the only surviving record of what a run was trained with — and the fairness
+# protocol (plan §7) requires each arm to be evaluated at *its own*
+# image_size. checkpoints.py reads it from there rather than from a number
+# typed in by hand.
+#
+# `ema_99.pth` rather than `latest.pth`: the exponential moving average is the
+# weight set the project reports, and both runs completed all 100 epochs.
+# ==============================================================================
+
+# --- the headline pair (plan §7) ---------------------------------------------
+best_combined:
+  description: best arm of the open-loop study — 160x120, the P1/P6 default
+  weights: /outputs/nomad_capstone/bc100_s0_2026_09_09_18_39_12/ema_99.pth
+  train_log: /outputs/nomad_capstone/logs/bc100_s0_20260909_213910.log
+
+clean_stock:
+  description: matched-compute comparator — stock NoMaD at 96x96, 100 epochs
+  weights: /outputs/nomad_capstone/stock100_s0_2026_09_09_12_54_12/ema_99.pth
+  train_log: /outputs/nomad_capstone/logs/stock100_s0_20260909_155410.log

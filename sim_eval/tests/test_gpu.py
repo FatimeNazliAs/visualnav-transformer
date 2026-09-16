@@ -1,7 +1,8 @@
 """Pin down the GPU-selection rules.
 
-These run anywhere — no GPU, no iGibson, no container — which is the point of
-keeping `resolve_gpu` free of side effects. The rule being protected is
+These need no GPU, no iGibson and no renderer — which is the point of keeping
+`resolve_gpu` free of side effects — but run them in the container, which is
+where pytest lives (`./sim_eval/run_tests.sh`). The rule being protected is
 "never silently pick a GPU nobody asked for", and it is the kind of rule that
 is easy to relax by accident while making an unrelated change.
 
