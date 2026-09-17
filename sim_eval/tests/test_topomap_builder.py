@@ -26,8 +26,19 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import bridge  # noqa: E402
 import pd_control  # noqa: E402
 import topomap_builder  # noqa: E402
+from sim_scene import SimScene  # noqa: E402
 
 LIMITS = pd_control.RobotLimits.from_config()
+
+
+def fake_scene(*args, **kwargs):
+    """A `SimScene` over the raw fake below — what the builder is handed now.
+
+    The builder talks to the adapter rather than to iGibson, so the tests wrap
+    the fake exactly as `SimBody` wraps the real thing. That also means these
+    23 tests exercise `SimScene` itself for free.
+    """
+    return SimScene(FakeScene(*args, **kwargs), floor=0)
 
 
 class FakeScene:
@@ -137,32 +148,32 @@ def test_a_zero_tick_drive_is_refused():
 # --- the sampler -------------------------------------------------------------
 
 def test_sampler_rejects_pairs_that_are_too_short_or_too_long():
-    scene = FakeScene([[0.0, 0.0], [0.5, 0.0],      # 0.5 m — trivial
+    scene = fake_scene([[0.0, 0.0], [0.5, 0.0],      # 0.5 m — trivial
                        [0.0, 0.0], [20.0, 0.0],     # 20 m  — beyond the house
                        [0.0, 0.0], [4.0, 0.0]])     # 4 m   — accepted
     sampler = topomap_builder.SamplerParams(3.0, 8.0, max_attempts=10)
-    _start, goal, _path, geodesic = topomap_builder.sample_start_goal(scene, 0, sampler)
+    _start, goal, _path, geodesic = topomap_builder.sample_start_goal(scene, sampler)
     assert geodesic == pytest.approx(4.0)
     assert goal[0] == pytest.approx(4.0)
 
 
 def test_sampler_skips_endpoints_that_are_not_on_the_nav_mesh():
-    scene = FakeScene([[0.0, 0.0], [4.0, 0.0], [0.0, 0.0], [5.0, 0.0]],
+    scene = fake_scene([[0.0, 0.0], [4.0, 0.0], [0.0, 0.0], [5.0, 0.0]],
                       off_mesh=[(4.0, 0.0)])
     sampler = topomap_builder.SamplerParams(3.0, 8.0, max_attempts=10)
-    _start, goal, _path, _geodesic = topomap_builder.sample_start_goal(scene, 0, sampler)
+    _start, goal, _path, _geodesic = topomap_builder.sample_start_goal(scene, sampler)
     assert goal[0] == pytest.approx(5.0)
 
 
 def test_sampler_gives_up_with_a_message_rather_than_looping_forever():
-    scene = FakeScene([[0.0, 0.0], [0.1, 0.0]])
+    scene = fake_scene([[0.0, 0.0], [0.1, 0.0]])
     sampler = topomap_builder.SamplerParams(3.0, 8.0, max_attempts=5)
     with pytest.raises(topomap_builder.TopomapError):
-        topomap_builder.sample_start_goal(scene, 0, sampler)
+        topomap_builder.sample_start_goal(scene, sampler)
 
 
 def test_a_configured_pair_is_used_as_given_and_never_sampled():
-    scene = FakeScene([[9.0, 9.0]])
+    scene = fake_scene([[9.0, 9.0]])
     config = make_config(start=[0.0, 0.0], goal=[3.0, 0.0])
     start, goal, _path, geodesic = topomap_builder.resolve_start_goal(scene, config)
     assert list(start) == [0.0, 0.0] and list(goal) == [3.0, 0.0]
@@ -170,7 +181,7 @@ def test_a_configured_pair_is_used_as_given_and_never_sampled():
 
 
 def test_a_configured_pair_off_the_nav_mesh_is_refused():
-    scene = FakeScene([[0.0, 0.0]], off_mesh=[(3.0, 0.0)])
+    scene = fake_scene([[0.0, 0.0]], off_mesh=[(3.0, 0.0)])
     config = make_config(start=[0.0, 0.0], goal=[3.0, 0.0])
     with pytest.raises(topomap_builder.TopomapError):
         topomap_builder.resolve_start_goal(scene, config)

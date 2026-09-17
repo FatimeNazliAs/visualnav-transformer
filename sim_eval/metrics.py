@@ -36,11 +36,12 @@ import numpy as np
 # `DictWriter` uses this as its field list, so a metric added to `as_row`
 # without a column here fails loudly instead of being dropped.
 CSV_COLUMNS = (
-    # provenance — which arm ran which task, and under what seed
+    # provenance — which arm ran which task, under what seed, steered how
     "checkpoint",
     "scene",
     "task_id",
     "seed",
+    "driver",
     # the five metrics of plan §6
     "success",
     "collision_ticks",
@@ -137,7 +138,7 @@ class EpisodeMetrics:
     the CSV and any later analysis cannot disagree about what a rate meant.
     """
 
-    def __init__(self, checkpoint, task, seed, success, collision_ticks,
+    def __init__(self, checkpoint, task, seed, driver, success, collision_ticks,
                  collision_events, path_length_m, final_geodesic_distance_m,
                  final_euclidean_distance_m, ticks, seconds, timeout_ticks,
                  success_radius_m, success_metric, declared_arrival_tick,
@@ -145,6 +146,11 @@ class EpisodeMetrics:
         self.checkpoint = checkpoint
         self.task = task
         self.seed = int(seed)
+        # How the policy was steered — `nomad_policy.DriverConfig.label()`, e.g.
+        # "n8w2r4t3". In the row because those four numbers decide the action as
+        # much as the checkpoint does, and P5 is expected to move them: two
+        # tables from two tunings must not be indistinguishable.
+        self.driver = str(driver)
         self.success = bool(success)
         self.collision_ticks = int(collision_ticks)
         self.collision_events = int(collision_events)
@@ -200,6 +206,7 @@ class EpisodeMetrics:
             "scene": self.task.scene,
             "task_id": self.task.task_id,
             "seed": self.seed,
+            "driver": self.driver,
             "success": int(self.success),
             "collision_ticks": self.collision_ticks,
             "collision_events": self.collision_events,

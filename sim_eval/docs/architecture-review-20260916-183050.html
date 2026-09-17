@@ -1,0 +1,1083 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>sim_eval — Architecture Review</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script type="module">
+  import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
+  mermaid.initialize({ startOnLoad: true, theme: 'base', themeVariables: {
+    primaryColor: '#1e293b', primaryTextColor: '#e2e8f0', primaryBorderColor: '#475569',
+    lineColor: '#64748b', secondaryColor: '#0f172a', tertiaryColor: '#0f172a',
+    fontFamily: 'ui-sans-serif, system-ui, sans-serif', fontSize: '13px'
+  }});
+</script>
+<style>
+  :root { color-scheme: dark; }
+  body { background: #0b1120; }
+  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .cite { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .74rem; }
+  .card-rule { background: linear-gradient(90deg,#38bdf8,transparent); height: 2px; }
+  .mermaid { background: #0f172a; border-radius: .5rem; padding: .75rem; }
+  .box { border:1px solid #334155; border-radius:.375rem; padding:.4rem .55rem; font-size:.72rem; }
+  .arrow { color:#475569; text-align:center; font-size:.85rem; line-height:1; }
+</style>
+</head>
+<body class="text-slate-300 antialiased">
+
+<div class="max-w-6xl mx-auto px-4 py-10">
+
+  <!-- ══ HEADER ══ -->
+  <header class="mb-12">
+    <p class="text-xs uppercase tracking-[0.2em] text-sky-400 mb-3">Architecture Review</p>
+    <h1 class="text-3xl sm:text-4xl font-semibold text-white tracking-tight"><span class="mono text-sky-300">sim_eval/</span> — after P1</h1>
+    <p class="mt-4 text-slate-400 max-w-3xl leading-relaxed">
+      P1 closed the loop: NoMaD's brain now drives the simulator's body. 1,920 lines across
+      12 modules, 37 GPU-free tests, one working rollout. This review asks a narrower
+      question than "is it good" — <span class="text-slate-200">where will P2, P3 and P4 have to
+      <em>change</em> this code rather than add to it?</span> That is the signal of a missing seam.
+    </p>
+    <div class="mt-6 flex flex-wrap gap-x-6 gap-y-2 text-xs text-slate-500">
+      <span>Branch <span class="mono text-slate-400">feature/sim-eval-p1-bridge</span></span>
+      <span>Plan <span class="mono text-slate-400">.claude/plans/nomad-sim-evaluation.md</span></span>
+      <span>No <span class="mono">CONTEXT.md</span> or ADRs yet — domain terms taken from the plan &amp; CLAUDE.md</span>
+    </div>
+  </header>
+
+  <!-- ══ VOCABULARY ══ -->
+  <section class="mb-12 rounded-lg border border-slate-800 bg-slate-900/40 p-5">
+    <h2 class="text-sm font-semibold text-slate-200 mb-3">Terms used below</h2>
+    <div class="grid sm:grid-cols-2 gap-x-8 gap-y-2 text-xs text-slate-400">
+      <p><span class="text-sky-300 font-medium">Domain</span> (from the plan): <span class="mono">trail</span>/topomap ·
+      <span class="mono">node</span> · <span class="mono">subgoal</span> · <span class="mono">control tick</span> ·
+      <span class="mono">episode</span> · <span class="mono">rollout</span> · <span class="mono">arm</span> (a checkpoint under test) ·
+      <span class="mono">scorer</span> · <span class="mono">recorder</span>.</p>
+      <p><span class="text-sky-300 font-medium">Architecture</span>: <span class="mono">depth</span> (implementation ≫ interface) ·
+      <span class="mono">shallow</span> · <span class="mono">seam</span> · <span class="mono">adapter</span> ·
+      <span class="mono">locality</span> · <span class="mono">leverage</span> ·
+      <span class="mono">deletion test</span> (inline it into its caller — does complexity concentrate, or just spread?).</p>
+    </div>
+  </section>
+
+  <!-- ══ MAP ══ -->
+  <section class="mb-14">
+    <h2 class="text-xl font-semibold text-white mb-1">What exists now</h2>
+    <p class="text-sm text-slate-400 mb-5">Solid arrows are imports. The five components the plan names (§4) are colour-coded; two of them have no module at all.</p>
+    <div class="mermaid">
+flowchart TB
+  subgraph scripts["entry points (numbered outputs)"]
+    T0["p1_0_make_topomap.py<br/>166 lines"]
+    T1["p1_1_drive_test.py<br/>175 lines"]
+    S0["p0_1_smoke_test.py<br/>146 lines"]
+  end
+  subgraph modules["modules"]
+    BR["bridge.py — 288<br/>SimBody · ContextQueue<br/>NomadBridge · TickRecord<br/>load_topomap"]
+    NP["nomad_policy.py — 232<br/>the brain"]
+    PD["pd_control.py — 92<br/>the steering"]
+    CK["checkpoints.py — 146<br/>arm → weights + config"]
+    GP["gpu.py — 122<br/>pin &amp; verify"]
+  end
+  subgraph missing["named in plan §4, no module"]
+    TB["Topomap builder"]
+    SC["Scorer + recorder"]
+  end
+  T0 --> BR
+  T0 --> GP
+  T1 --> BR
+  T1 --> CK
+  T1 --> NP
+  T1 --> GP
+  S0 --> GP
+  BR --> PD
+  NP --> CK
+  TB -.->|"P2 will need it"| BR
+  SC -.->|"P3/P4 will need it"| BR
+  style TB stroke-dasharray: 5 5,stroke:#f59e0b,color:#fbbf24
+  style SC stroke-dasharray: 5 5,stroke:#f59e0b,color:#fbbf24
+  style BR stroke:#38bdf8
+    </div>
+  </section>
+
+  <!-- ══ THE CORE FINDING ══ -->
+  <section class="mb-14 rounded-lg border border-amber-700/40 bg-amber-950/20 p-6">
+    <h2 class="text-lg font-semibold text-amber-200 mb-3">The pattern behind every candidate</h2>
+    <p class="text-sm text-slate-300 leading-relaxed max-w-4xl">
+      P1's three <em>brain-side</em> seams are clean and deep:
+      <span class="mono text-sky-300">nomad_policy</span> (the network),
+      <span class="mono text-sky-300">pd_control</span> (the steering),
+      <span class="mono text-sky-300">checkpoints</span> (which arm, at what resolution).
+      Each hides a lot behind a small interface, and each is tested through that interface.
+    </p>
+    <p class="mt-3 text-sm text-slate-300 leading-relaxed max-w-4xl">
+      The friction is all on the <em>harness</em> side. Two of the five components the plan
+      names — the <span class="text-amber-200">topomap builder</span> and the
+      <span class="text-amber-200">scorer/recorder</span> — have no module, so their
+      responsibilities are currently spread thin across
+      <span class="mono">bridge.py</span> and the two entry-point scripts. That is fine for
+      P1, which only had to prove one rollout works. It stops being fine at P2, which
+      rewrites the trail producer, and at P3, which owns episode rules.
+    </p>
+  </section>
+
+  <h2 class="text-2xl font-semibold text-white mb-2">Candidates</h2>
+  <p class="text-sm text-slate-400 mb-8">Eight. G comes first because it is the only one that can make the
+  final numbers wrong rather than merely make the next phase awkward.</p>
+
+  <!-- ══════════════ CANDIDATE G ══════════════ -->
+  <article class="mb-12 rounded-xl border border-amber-700/50 bg-amber-950/10 overflow-hidden ring-1 ring-amber-600/20">
+    <div style="background:linear-gradient(90deg,#f59e0b,transparent);height:2px"></div>
+    <div class="p-6">
+      <div class="flex items-start justify-between gap-4 flex-wrap mb-4">
+        <div>
+          <p class="text-xs uppercase tracking-widest text-amber-500 mb-1">Candidate G · top recommendation</p>
+          <h3 class="text-xl font-semibold text-white">The localization window is a proven bug site with zero tests</h3>
+        </div>
+        <span class="shrink-0 px-3 py-1 rounded-full text-xs font-semibold bg-amber-500/20 text-amber-200 border border-amber-500/50">Strong</span>
+      </div>
+
+      <div class="grid lg:grid-cols-2 gap-8">
+        <div class="space-y-5 text-sm leading-relaxed">
+          <div>
+            <p class="text-xs uppercase tracking-wider text-slate-500 mb-1.5">Files</p>
+            <p class="cite text-slate-400">
+              nomad_policy.py:173–188 <span class="text-slate-600">the window math</span><br>
+              nomad_policy.py:139 <span class="text-slate-600">load_model inside __init__</span><br>
+              <span class="text-slate-600">232 lines, 0 tests — the largest untested block in the package</span>
+            </p>
+          </div>
+          <div>
+            <p class="text-xs uppercase tracking-wider text-slate-500 mb-1.5">Problem</p>
+            <p class="text-slate-300">Five lines decide which topomap node the robot steers toward:</p>
+            <pre class="mt-2 mb-2 p-3 rounded bg-slate-950/80 border border-slate-800 text-[11px] mono text-slate-300 overflow-x-auto">start = max(closest_node - radius, 0)
+end   = min(closest_node + radius + 1, goal_node)
+min_idx      = argmin(dists)
+closest_node = min_idx + start
+sg_idx = min(min_idx + (dists[min_idx] &lt; thresh), len-1)</pre>
+            <p class="text-slate-300">Pure index arithmetic over a numpy array, and
+            <span class="text-amber-200">upstream has already shipped this bug once</span>: commit
+            <span class="mono">7b5b24c</span> "Fix closest node update for topomap localization" replaced
+            <span class="mono">closest_node = np.argmin(distances)</span> with
+            <span class="mono">start + min_dist_idx</span> — a window-relative index used as an absolute
+            one. My port has it right. <span class="text-slate-100">Nothing proves it stays right.</span></p>
+            <p class="text-slate-300 mt-2">The failure mode is the nasty one: an off-by-one here produces a
+            robot that drives <em>plausibly</em>, toward the wrong node. You cannot see it in a GIF, and
+            it would silently corrupt every number in P6's table.</p>
+          </div>
+          <div>
+            <p class="text-xs uppercase tracking-wider text-slate-500 mb-1.5">Why it isn't tested</p>
+            <p class="text-slate-300"><span class="mono">NomadPolicy.__init__:139</span> calls
+            <span class="mono">load_model</span> → <span class="mono">torch.load</span> → <span class="mono">.to(device)</span>.
+            The object cannot exist without real weights and a GPU. To reach five lines of arithmetic
+            you would have to stub the whole model protocol — a string-dispatching callable answering
+            three different call shapes, plus <span class="mono">DDPMScheduler</span> and
+            <span class="mono">get_action</span>.</p>
+          </div>
+          <div>
+            <p class="text-xs uppercase tracking-wider text-slate-500 mb-1.5">Solution — cheaper than injection</p>
+            <p class="text-slate-300">Don't build a model-injection seam. Just <span class="text-slate-100">name the
+            arithmetic</span>: lift those lines into a pure
+            <span class="mono text-sky-300">localize(dists, closest_node, radius, goal_node, close_threshold)</span>
+            → <span class="mono">(start, closest_node, sg_idx)</span>, called by <span class="mono">act()</span>.
+            The numbers are unchanged, so fidelity to <span class="mono">navigate.py</span> is preserved and
+            still diff-able — but it becomes testable with a hand-written list of distances, no torch,
+            no GPU, no weights.</p>
+          </div>
+          <div>
+            <p class="text-xs uppercase tracking-wider text-slate-500 mb-1.5">Benefits</p>
+            <ul class="text-slate-300 space-y-1.5 list-disc list-inside">
+              <li><span class="text-slate-100">The asymmetry is the argument:</span> the <em>other</em> verbatim
+              port, <span class="mono">pd_control.py</span>, has 10 tests and is the best-pinned module here.
+              The policy port — longer, and the one with a real bug in its history — has none.</li>
+              <li><span class="text-slate-100">Leverage:</span> the deletion test inverts here. Extracting
+              <em>concentrates</em> the risky logic into a named, tested unit, and leaves
+              <span class="mono">act()</span> as plumbing.</li>
+              <li><span class="text-slate-100">Tests:</span> window clamping at both ends, the
+              <span class="mono">start</span> offset, and the close-threshold step become ~8 assertions
+              costing nothing to run.</li>
+            </ul>
+          </div>
+        </div>
+
+        <div>
+          <p class="text-xs uppercase tracking-wider text-slate-500 mb-3">Before / after — what it takes to test 5 lines</p>
+          <div class="rounded-lg border border-rose-800/40 bg-rose-950/10 p-4 mb-3">
+            <p class="text-[11px] font-semibold text-rose-300 mb-2.5 text-center">Before — must fake the whole model</p>
+            <div class="space-y-1.5">
+              <div class="box border-rose-800/50 text-center text-[10px] text-rose-200">test wants: <span class="mono">closest_node = min_idx + start</span></div>
+              <p class="arrow">↓ but must first construct…</p>
+              <div class="box border-slate-700 text-center text-[10px]">NomadPolicy(spec, device)</div>
+              <p class="arrow">↓ which needs</p>
+              <div class="grid grid-cols-2 gap-1.5">
+                <div class="box border-rose-800/50 text-[9px] text-center">real <span class="mono">.pth</span> weights</div>
+                <div class="box border-rose-800/50 text-[9px] text-center">a GPU</div>
+                <div class="box border-rose-800/50 text-[9px] text-center">3-shape model stub</div>
+                <div class="box border-rose-800/50 text-[9px] text-center">DDPMScheduler + get_action</div>
+              </div>
+            </div>
+            <p class="mt-3 text-[10px] text-rose-300/70 text-center">Cost so high nobody wrote the test.</p>
+          </div>
+          <div class="rounded-lg border border-emerald-800/40 bg-emerald-950/10 p-4">
+            <p class="text-[11px] font-semibold text-emerald-300 mb-2.5 text-center">After — arithmetic has a name</p>
+            <div class="space-y-1.5">
+              <div class="box border-emerald-700/60 text-center text-[10px] text-emerald-200 font-semibold">localize(dists, node, radius, goal, thresh)
+                <div class="text-[9px] text-slate-500 font-normal mono">pure · numpy only</div></div>
+              <p class="arrow">↑ called by</p>
+              <div class="box border-slate-700 text-center text-[10px]">act() — unchanged plumbing</div>
+            </div>
+            <p class="mt-3 text-[10px] text-emerald-300/70 text-center">Test input: <span class="mono">[3.1, 0.4, 2.8]</span>.
+            No torch, no GPU, no weights.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </article>
+
+  <!-- ══════════════ CANDIDATE A ══════════════ -->
+  <article class="mb-12 rounded-xl border border-slate-800 bg-slate-900/30 overflow-hidden">
+    <div class="card-rule"></div>
+    <div class="p-6">
+      <div class="flex items-start justify-between gap-4 flex-wrap mb-4">
+        <div>
+          <p class="text-xs uppercase tracking-widest text-slate-500 mb-1">Candidate A</p>
+          <h3 class="text-xl font-semibold text-white">The <span class="mono text-sky-300">trail</span> is a concept with no module</h3>
+        </div>
+        <span class="shrink-0 px-3 py-1 rounded-full text-xs font-semibold bg-emerald-500/15 text-emerald-300 border border-emerald-600/40">Strong</span>
+      </div>
+
+      <div class="grid lg:grid-cols-2 gap-8">
+        <div class="space-y-5 text-sm leading-relaxed">
+          <div>
+            <p class="text-xs uppercase tracking-wider text-slate-500 mb-1.5">Files</p>
+            <p class="cite text-slate-400">
+              p1_0_make_topomap.py:101,144–148 (writes)<br>
+              bridge.py:57 <span class="text-slate-600">load_topomap</span> (reads the images)<br>
+              p1_1_drive_test.py:63–75,137–139 (reads the poses)
+            </p>
+          </div>
+          <div>
+            <p class="text-xs uppercase tracking-wider text-slate-500 mb-1.5">Problem</p>
+            <p class="text-slate-300">A trail is one thing: <em>numbered node images, the pose each was
+            taken from, and the start pose</em>. Right now its format is invented in one file, its
+            images are loaded in a second, and its poses are dug out of a raw dict in a third —
+            <span class="mono text-slate-400">route["nodes"][-1]["pose"]</span> at
+            p1_1_drive_test.py:139. Nothing owns the contract, so nothing can validate it and
+            nothing can be tested against it.</p>
+          </div>
+          <div>
+            <p class="text-xs uppercase tracking-wider text-slate-500 mb-1.5">Solution</p>
+            <p class="text-slate-300">A <span class="mono text-sky-300">trail.py</span> module that reads and
+            writes its own format: <span class="mono">Trail.save(dir)</span>,
+            <span class="mono">Trail.load(dir)</span>, with <span class="mono">.nodes</span> (image + pose),
+            <span class="mono">.start_pose</span>, <span class="mono">.goal_pose</span>,
+            <span class="mono">.reference_path_length</span>. <span class="mono">load_topomap</span> moves out of
+            <span class="mono">bridge.py</span>; <span class="mono">read_start_pose</span> disappears from the script.</p>
+          </div>
+          <div>
+            <p class="text-xs uppercase tracking-wider text-slate-500 mb-1.5">Benefits</p>
+            <ul class="text-slate-300 space-y-1.5 list-disc list-inside">
+              <li><span class="text-slate-100">Locality:</span> one file answers "what is a trail and what
+              can I ask it". Today that needs three.</li>
+              <li><span class="text-slate-100">Leverage:</span> P2 replaces only the <em>producer</em> (scripted
+              route → the sim's own planner) and inherits the reader unchanged. P3 gets
+              <span class="mono">reference_path_length</span> — which it needs for the timeout <em>and</em> for
+              SPL's denominator — from the module that already knows the node poses.</li>
+              <li><span class="text-slate-100">Tests:</span> round-tripping a fabricated trail through
+              save/load needs no GPU and no iGibson, so the format becomes the test surface.
+              Today it is untestable without driving the simulator.</li>
+            </ul>
+          </div>
+        </div>
+
+        <div>
+          <p class="text-xs uppercase tracking-wider text-slate-500 mb-3">Before / after</p>
+          <div class="grid grid-cols-2 gap-3">
+            <div class="rounded-lg border border-rose-800/40 bg-rose-950/10 p-3">
+              <p class="text-[11px] font-semibold text-rose-300 mb-2.5 text-center">Before — contract in 3 files</p>
+              <div class="space-y-1.5">
+                <div class="box border-rose-800/50 text-rose-200">p1_0_make_topomap<div class="text-[10px] text-slate-500 mono">invents route.json</div></div>
+                <p class="arrow">↓ <span class="text-[10px]">on-disk, unchecked</span></p>
+                <div class="box border-slate-700">0.png … 14.png + route.json</div>
+                <div class="grid grid-cols-2 gap-1.5 mt-1.5">
+                  <p class="arrow">↙</p><p class="arrow">↘</p>
+                </div>
+                <div class="grid grid-cols-2 gap-1.5">
+                  <div class="box border-rose-800/50 text-rose-200 text-[10px]">bridge<br><span class="mono text-slate-500">images</span></div>
+                  <div class="box border-rose-800/50 text-rose-200 text-[10px]">drive_test<br><span class="mono text-slate-500">poses</span></div>
+                </div>
+              </div>
+              <p class="mt-3 text-[10px] text-rose-300/70 leading-snug">Change the format and two unrelated
+              files break — silently, at runtime.</p>
+            </div>
+            <div class="rounded-lg border border-emerald-800/40 bg-emerald-950/10 p-3">
+              <p class="text-[11px] font-semibold text-emerald-300 mb-2.5 text-center">After — one owner</p>
+              <div class="space-y-1.5">
+                <div class="box border-slate-700 text-[10px]">P1 scripted route<br><span class="text-slate-500">(P2: sim planner)</span></div>
+                <p class="arrow">↓</p>
+                <div class="box border-emerald-700/60 text-emerald-200 font-semibold">trail.py<div class="text-[10px] text-slate-500 mono">save / load / validate</div></div>
+                <p class="arrow">↓ <span class="text-[10px]">Trail object</span></p>
+                <div class="grid grid-cols-2 gap-1.5">
+                  <div class="box border-slate-700 text-[10px]">bridge</div>
+                  <div class="box border-slate-700 text-[10px]">P3 scorer</div>
+                </div>
+              </div>
+              <p class="mt-3 text-[10px] text-emerald-300/70 leading-snug">One seam. P2 swaps the producer
+              behind it; the format is round-trip tested with no GPU.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </article>
+
+  <!-- ══════════════ CANDIDATE B ══════════════ -->
+  <article class="mb-12 rounded-xl border border-slate-800 bg-slate-900/30 overflow-hidden">
+    <div class="card-rule"></div>
+    <div class="p-6">
+      <div class="flex items-start justify-between gap-4 flex-wrap mb-4">
+        <div>
+          <p class="text-xs uppercase tracking-widest text-slate-500 mb-1">Candidate B</p>
+          <h3 class="text-xl font-semibold text-white">Episode rules are scattered across four places</h3>
+        </div>
+        <span class="shrink-0 px-3 py-1 rounded-full text-xs font-semibold bg-emerald-500/15 text-emerald-300 border border-emerald-600/40">Strong</span>
+      </div>
+
+      <div class="grid lg:grid-cols-2 gap-8">
+        <div class="space-y-5 text-sm leading-relaxed">
+          <div>
+            <p class="text-xs uppercase tracking-wider text-slate-500 mb-1.5">Files</p>
+            <p class="cite text-slate-400">
+              bridge.py:234 <span class="text-slate-600">reached_goal</span> · bridge.py:273–292 <span class="text-slate-600">run</span><br>
+              bridge.py:137,146,165 <span class="text-slate-600">collision_ticks on SimBody</span><br>
+              p1_1_drive_test.py:35 <span class="text-slate-600">DEFAULT_MAX_TICKS</span> · :96–120 <span class="text-slate-600">report</span>
+            </p>
+          </div>
+          <div>
+            <p class="text-xs uppercase tracking-wider text-slate-500 mb-1.5">Problem</p>
+            <p class="text-slate-300">"When does an episode end, and how did it go" is currently
+            four fragments: the stopping rule lives on <span class="mono">NomadBridge</span>, the tick budget is a
+            constant in a script, the collision count is a mutable counter on
+            <span class="mono">SimBody</span> (the <em>body</em> has no business scoring), and the outcome is
+            computed inside the script's <span class="mono">report()</span> — as print statements, not a value.
+            Plan §6 defines five metrics and two termination conditions; <span class="text-slate-100">P3 cannot
+            add any of them without editing <span class="mono">run()</span></span>.</p>
+            <div class="mt-3 rounded border border-slate-700 bg-slate-950/50 p-3 text-xs space-y-1.5">
+              <p class="text-slate-400 font-semibold">Three sharper points found on a second pass:</p>
+              <p class="text-slate-400">· <span class="mono text-slate-300">reached_goal</span> (bridge.py:234) is
+              <em>topomap localization</em>, not geometry — plan §5 defines success as within ≈1 m of the goal
+              <em>pose</em>, and <span class="text-slate-300">the bridge holds no goal pose at all</span>
+              (<span class="mono">start_episode</span> takes only a start pose). This property must change, not extend.</p>
+              <p class="text-slate-400">· <span class="mono text-slate-300">collision_ticks</span> counts
+              <em>ticks with any contact</em>, not collision events, and has no per-metre normalisation —
+              plan §6 asks for "collisions per episode / per meter". It is also reset by
+              <span class="mono">SimBody.reset</span>, so the <em>body</em> controls when the <em>score</em> resets.</p>
+              <p class="text-slate-400">· <span class="mono text-slate-300">report()</span> at p1_1:100–107 already
+              computes two of §6's five metrics (final distance-to-goal, path length) —
+              <span class="text-slate-300">inside a print function, in a phase-numbered script</span>. P3 must
+              lift or duplicate them.</p>
+            </div>
+          </div>
+          <div>
+            <p class="text-xs uppercase tracking-wider text-slate-500 mb-1.5">Solution</p>
+            <p class="text-slate-300">An <span class="mono text-sky-300">episode.py</span> owning termination and
+            outcome. <span class="mono">NomadBridge</span> narrows to one job — produce the next
+            <span class="mono">TickRecord</span> — and the episode decides whether to ask for another. Success
+            radius, timeout-from-reference-length, collision tally and distance-to-goal become
+            fields on an <span class="mono">EpisodeOutcome</span> that P3 writes to CSV and P1's script prints.</p>
+          </div>
+          <div>
+            <p class="text-xs uppercase tracking-wider text-slate-500 mb-1.5">Benefits</p>
+            <ul class="text-slate-300 space-y-1.5 list-disc list-inside">
+              <li><span class="text-slate-100">Leverage:</span> P3 becomes additive. Today it is a rewrite of
+              the loop that P1 just validated — the riskiest possible change.</li>
+              <li><span class="text-slate-100">Locality:</span> §6's rules read as one file instead of being
+              inferred from a loop, a constant and a print block.</li>
+              <li><span class="text-slate-100">Tests:</span> termination is pure logic over poses and counters.
+              Fed a fake tick stream it tests with no GPU, no iGibson and no model — which is
+              exactly the logic that decides every number in the final table, and is 0% covered today.</li>
+            </ul>
+          </div>
+        </div>
+
+        <div>
+          <p class="text-xs uppercase tracking-wider text-slate-500 mb-3">Before / after</p>
+          <div class="rounded-lg border border-rose-800/40 bg-rose-950/10 p-3 mb-3">
+            <p class="text-[11px] font-semibold text-rose-300 mb-2 text-center">Before — one concept, four owners</p>
+            <div class="grid grid-cols-4 gap-1.5 text-center">
+              <div class="box border-rose-800/50"><div class="text-[10px] text-slate-400">stop rule</div><div class="mono text-[9px] text-rose-300">NomadBridge</div></div>
+              <div class="box border-rose-800/50"><div class="text-[10px] text-slate-400">budget</div><div class="mono text-[9px] text-rose-300">script const</div></div>
+              <div class="box border-rose-800/50"><div class="text-[10px] text-slate-400">collisions</div><div class="mono text-[9px] text-rose-300">SimBody</div></div>
+              <div class="box border-rose-800/50"><div class="text-[10px] text-slate-400">outcome</div><div class="mono text-[9px] text-rose-300">print()</div></div>
+            </div>
+            <p class="mt-2.5 text-[10px] text-rose-300/70 text-center">P3 must edit all four.</p>
+          </div>
+          <div class="rounded-lg border border-emerald-800/40 bg-emerald-950/10 p-3">
+            <p class="text-[11px] font-semibold text-emerald-300 mb-2 text-center">After — episode owns the rules</p>
+            <div class="space-y-1.5">
+              <div class="box border-emerald-700/60 text-emerald-200 font-semibold text-center">episode.py
+                <div class="text-[10px] mono text-slate-500 font-normal">termination · EpisodeOutcome</div></div>
+              <p class="arrow">↓ asks for a tick</p>
+              <div class="box border-slate-700 text-center text-[10px]">NomadBridge.tick() → TickRecord
+                <div class="text-[9px] text-slate-500">one job: brain → body</div></div>
+              <div class="grid grid-cols-2 gap-1.5 mt-1.5">
+                <div class="box border-slate-700 text-[10px] text-center">P1 script<br><span class="text-slate-500">prints it</span></div>
+                <div class="box border-slate-700 text-[10px] text-center">P3 scorer<br><span class="text-slate-500">logs it</span></div>
+              </div>
+            </div>
+            <p class="mt-2.5 text-[10px] text-emerald-300/70 text-center">Two real consumers → a real seam, not a hypothetical one.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </article>
+
+  <!-- ══════════════ CANDIDATE C ══════════════ -->
+  <article class="mb-12 rounded-xl border border-slate-800 bg-slate-900/30 overflow-hidden">
+    <div class="card-rule"></div>
+    <div class="p-6">
+      <div class="flex items-start justify-between gap-4 flex-wrap mb-4">
+        <div>
+          <p class="text-xs uppercase tracking-widest text-slate-500 mb-1">Candidate C</p>
+          <h3 class="text-xl font-semibold text-white"><span class="mono text-sky-300">run()</span> holds every frame of the episode in memory</h3>
+        </div>
+        <span class="shrink-0 px-3 py-1 rounded-full text-xs font-semibold bg-emerald-500/15 text-emerald-300 border border-emerald-600/40">Strong</span>
+      </div>
+
+      <div class="grid lg:grid-cols-2 gap-8">
+        <div class="space-y-5 text-sm leading-relaxed">
+          <div>
+            <p class="text-xs uppercase tracking-wider text-slate-500 mb-1.5">Files</p>
+            <p class="cite text-slate-400">
+              bridge.py:273–292 <span class="text-slate-600">run() → list[TickRecord]</span><br>
+              bridge.py:206 <span class="text-slate-600">TickRecord.frame — a full PIL image</span><br>
+              p1_1_drive_test.py:84–94 <span class="text-slate-600">write_frames, after the run finishes</span>
+            </p>
+          </div>
+          <div>
+            <p class="text-xs uppercase tracking-wider text-slate-500 mb-1.5">Problem</p>
+            <p class="text-slate-300">
+              <span class="mono">run()</span> returns a list, and every element pins a decoded
+              640×480 frame. Measured: <span class="text-slate-100">0.92 MB per frame in RAM</span>, so P1's
+              39-tick run held 36 MB and a 200-tick episode would hold
+              <span class="text-slate-100">184 MB</span> before a single byte is written. Worse, the frames are
+              only written <em>after</em> the loop — so a crash or a timeout at tick 199 loses the
+              whole recording, which is the one artefact you wanted from a failed episode.
+              On disk P1 measured 0.51 MB/frame; P6's 40 rollouts at 200 ticks project to
+              <span class="text-slate-100">~4 GB of PNGs</span>.
+            </p>
+            <div class="mt-3 rounded border border-slate-700 bg-slate-950/50 p-3 text-xs space-y-1.5">
+              <p class="text-slate-400 font-semibold">Two real bugs in the writer, found on a second pass:</p>
+              <p class="text-slate-400">· <span class="mono text-slate-300">write_frames</span> raises
+              <span class="mono">IndexError</span> at p1_1:92 (<span class="mono">frames[0]</span>) on an empty
+              record list — reachable with <span class="mono">--max-ticks 0</span>, or any run that stops
+              before its first tick.</p>
+              <p class="text-slate-400">· It <span class="text-slate-300">deletes every <span class="mono">*.png</span>
+              in the output directory</span> (p1_1:84–85) before writing. Harmless for one flat run;
+              actively destructive once P4 puts per-episode subdirectories under there.</p>
+            </div>
+          </div>
+          <div>
+            <p class="text-xs uppercase tracking-wider text-slate-500 mb-1.5">Solution</p>
+            <p class="text-slate-300">Invert it. The <span class="mono">on_tick</span> callback already exists at
+            bridge.py:280 — promote it from a progress hook to <em>the</em> interface, make the tick
+            loop a generator, and stop returning the list. A consumer that wants the frames
+            (P4's recorder) encodes each one as it arrives; a consumer that only wants numbers
+            (P3's scorer) never holds a frame at all.</p>
+          </div>
+          <div>
+            <p class="text-xs uppercase tracking-wider text-slate-500 mb-1.5">Benefits</p>
+            <ul class="text-slate-300 space-y-1.5 list-disc list-inside">
+              <li><span class="text-slate-100">Leverage:</span> P4's recorder becomes a sink you plug in,
+              not a post-processing pass over an accumulated list. P6's memory stops scaling
+              with episode length.</li>
+              <li><span class="text-slate-100">Locality:</span> "what happens to a frame" is answered in one
+              place instead of being split between the loop that keeps it and the function that
+              writes it 90 lines later.</li>
+              <li><span class="text-slate-100">Tests:</span> a sink is trivially fakeable — collect into a list
+              in a test and assert on it — so the loop's behaviour becomes testable without
+              writing 20 MB to disk.</li>
+            </ul>
+          </div>
+        </div>
+
+        <div>
+          <p class="text-xs uppercase tracking-wider text-slate-500 mb-3">Before / after — memory over an episode</p>
+          <svg viewBox="0 0 320 210" class="w-full rounded-lg border border-slate-800 bg-slate-950/60">
+            <line x1="38" y1="170" x2="308" y2="170" stroke="#334155"/>
+            <line x1="38" y1="170" x2="38" y2="20" stroke="#334155"/>
+            <text x="18" y="26" fill="#64748b" font-size="7" font-family="monospace">MB</text>
+            <text x="170" y="192" fill="#64748b" font-size="7" font-family="monospace" text-anchor="middle">control ticks →</text>
+            <text x="30" y="30" fill="#64748b" font-size="6.5" font-family="monospace" text-anchor="end">184</text>
+            <text x="30" y="173" fill="#64748b" font-size="6.5" font-family="monospace" text-anchor="end">0</text>
+            <text x="38" y="182" fill="#64748b" font-size="6.5" font-family="monospace" text-anchor="middle">0</text>
+            <text x="308" y="182" fill="#64748b" font-size="6.5" font-family="monospace" text-anchor="middle">200</text>
+            <!-- before: linear growth -->
+            <polygon points="38,170 308,27 308,170" fill="#f43f5e" fill-opacity="0.16"/>
+            <line x1="38" y1="170" x2="308" y2="27" stroke="#f43f5e" stroke-width="1.8"/>
+            <circle cx="308" cy="27" r="2.6" fill="#f43f5e"/>
+            <text x="300" y="20" fill="#fb7185" font-size="7.5" font-family="monospace" text-anchor="end">run() → list · 184 MB</text>
+            <!-- marker at p1's actual run -->
+            <line x1="90.6" y1="170" x2="90.6" y2="142" stroke="#475569" stroke-dasharray="2 2"/>
+            <text x="93" y="140" fill="#64748b" font-size="6.5" font-family="monospace">P1 ran 39 ticks (36 MB)</text>
+            <!-- after: flat -->
+            <line x1="38" y1="163" x2="308" y2="163" stroke="#34d399" stroke-width="1.8"/>
+            <circle cx="308" cy="163" r="2.6" fill="#34d399"/>
+            <text x="300" y="157" fill="#6ee7b7" font-size="7.5" font-family="monospace" text-anchor="end">streamed to a sink · ~1 frame</text>
+          </svg>
+          <p class="mt-2.5 text-[11px] text-slate-500 leading-snug">Measured, not estimated: 640×480×3 bytes
+          per decoded frame, and 20.5 MB on disk for P1's 39 frames. The flat line is the same
+          loop with the frame handed to a sink instead of retained.</p>
+        </div>
+      </div>
+    </div>
+  </article>
+
+  <!-- ══════════════ CANDIDATE D ══════════════ -->
+  <article class="mb-12 rounded-xl border border-slate-800 bg-slate-900/30 overflow-hidden">
+    <div class="card-rule"></div>
+    <div class="p-6">
+      <div class="flex items-start justify-between gap-4 flex-wrap mb-4">
+        <div>
+          <p class="text-xs uppercase tracking-widest text-slate-500 mb-1">Candidate D</p>
+          <h3 class="text-xl font-semibold text-white"><span class="mono text-sky-300">SimBody</span>'s seam already leaks — callers reach through <span class="mono">.env</span></h3>
+        </div>
+        <span class="shrink-0 px-3 py-1 rounded-full text-xs font-semibold bg-sky-500/15 text-sky-300 border border-sky-600/40">Worth exploring</span>
+      </div>
+
+      <div class="grid lg:grid-cols-2 gap-8">
+        <div class="space-y-5 text-sm leading-relaxed">
+          <div>
+            <p class="text-xs uppercase tracking-wider text-slate-500 mb-1.5">Files</p>
+            <p class="cite text-slate-400">
+              bridge.py:112–190 <span class="text-slate-600">SimBody</span><br>
+              p1_0_make_topomap.py:121 <span class="text-slate-600">body.env.simulator.renderer</span> · :126–127 <span class="text-slate-600">body.env.task.initial_pos/orn</span><br>
+              p1_1_drive_test.py:149 <span class="text-slate-600">body.env.simulator.renderer</span>
+            </p>
+          </div>
+          <div>
+            <p class="text-xs uppercase tracking-wider text-slate-500 mb-1.5">Problem</p>
+            <p class="text-slate-300">This is not a prediction — it is already happening.
+            <span class="mono">SimBody</span> is meant to be the adapter over iGibson, but three call sites in
+            two scripts reach past it into <span class="mono">.env.simulator.renderer</span> and
+            <span class="mono">.env.task</span>. The interface does not cover what its callers need, so they
+            bypass it. The reason is a conflation: <span class="mono">SimBody</span> mixes
+            <em>robot</em> questions (observe, command, pose) with <em>world</em> questions (which GPU is
+            rendering, where may the robot start). Plan §6 and §4 pile more world questions on:
+            P3 needs geodesic distance and start/goal sampling for SPL, P4 needs the
+            traversability map for the top-down view. All of those would leak the same way.</p>
+          </div>
+          <div>
+            <p class="text-xs uppercase tracking-wider text-slate-500 mb-1.5">Solution</p>
+            <p class="text-slate-300">Split along the conflation: <span class="mono text-sky-300">SimBody</span>
+            keeps <span class="mono">observe / command / pose / place</span>; a
+            <span class="mono text-sky-300">SimScene</span> answers world questions —
+            <span class="mono">sample_pose</span>, <span class="mono">geodesic_distance</span>,
+            <span class="mono">trav_map</span>, <span class="mono">verify_gpu</span> — and
+            <span class="mono">.env</span> stops being public. Lighter alternative: keep one class and just
+            widen it until nothing reaches through.</p>
+          </div>
+          <div>
+            <p class="text-xs uppercase tracking-wider text-slate-500 mb-1.5">Benefits</p>
+            <ul class="text-slate-300 space-y-1.5 list-disc list-inside">
+              <li><span class="text-slate-100">Leverage:</span> the iGibson version and its API quirks stay
+              behind one seam. That matters here — P1 already found one (the LoCoBot's inverted
+              angular velocity, bridge.py:117–130); the next will want the same single home.</li>
+              <li><span class="text-slate-100">Locality:</span> "everything we ask the simulator" in two files
+              instead of two files plus three reach-throughs.</li>
+              <li><span class="text-slate-100">Tests:</span> a named world interface can be faked. Today
+              nothing that touches <span class="mono">SimBody</span> is testable at all — 0 of the 37 tests cover
+              it, because faking it means faking <span class="mono">env.simulator.renderer</span> and
+              <span class="mono">env.task</span> too.</li>
+            </ul>
+          </div>
+        </div>
+
+        <div>
+          <p class="text-xs uppercase tracking-wider text-slate-500 mb-3">Before / after</p>
+          <div class="mermaid">
+flowchart LR
+  subgraph B["Before — leaking seam"]
+    direction TB
+    s1["p1_0 / p1_1<br/>scripts"]
+    sb1["SimBody"]
+    ig1[("iGibson env")]
+    s1 --> sb1
+    sb1 --> ig1
+    s1 -.->|"3 reach-throughs<br/>.env.task<br/>.env.simulator"| ig1
+  end
+  style s1 stroke:#f43f5e
+  style ig1 stroke:#f43f5e
+          </div>
+          <div class="mermaid mt-3">
+flowchart LR
+  subgraph A["After — closed seam"]
+    direction TB
+    s2["scripts · P3 scorer · P4 recorder"]
+    sb2["SimBody<br/><small>observe · command · pose</small>"]
+    sc2["SimScene<br/><small>sample · geodesic · trav_map · gpu</small>"]
+    ig2[("iGibson env")]
+    s2 --> sb2
+    s2 --> sc2
+    sb2 --> ig2
+    sc2 --> ig2
+  end
+  style sb2 stroke:#34d399
+  style sc2 stroke:#34d399
+          </div>
+          <p class="mt-2.5 text-[11px] text-slate-500 leading-snug">The dashed arrows are real lines of code
+          today, not a hypothetical. That is what makes this a real seam rather than a
+          speculative one — though only <em>one</em> of the two future consumers exists yet, which is
+          why it is "worth exploring" and not "strong".</p>
+          <div class="mt-3 rounded border border-slate-700 bg-slate-950/50 p-3 text-xs space-y-1.5">
+            <p class="text-slate-400 font-semibold">A fourth bypass, and a repeated ritual:</p>
+            <p class="text-slate-400">· <span class="mono text-slate-300">p0_1_smoke_test.py:97,102</span>
+            constructs <span class="mono">iGibsonEnv</span> directly — P0 was never migrated onto
+            <span class="mono">SimBody</span>. So there are <span class="text-slate-300">two ways to open the
+            simulator</span>, and a change to how it opens must be made twice.</p>
+            <p class="text-slate-400">· <span class="mono text-slate-300">gpu.verify_renderer(body.env.simulator.renderer, …)</span>
+            is repeated verbatim at three call sites, each reaching three levels into
+            <span class="mono">SimBody</span>'s env. <span class="mono">SimBody.__init__</span> could own the
+            whole ritual and the callers would never see <span class="mono">.env</span>.</p>
+            <p class="text-slate-400">· <span class="mono text-slate-300">ANGULAR_VELOCITY_SIGN</span> — the line
+            the README itself names as the most breakable in the package — <span class="text-slate-300">has no
+            test</span>, because <span class="mono">SimBody</span> is untestable by construction. A fake env
+            would pin both the sign and the collision count in four lines.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </article>
+
+  <!-- ══════════════ CANDIDATE E ══════════════ -->
+  <article class="mb-12 rounded-xl border border-slate-800 bg-slate-900/30 overflow-hidden">
+    <div class="card-rule"></div>
+    <div class="p-6">
+      <div class="flex items-start justify-between gap-4 flex-wrap mb-4">
+        <div>
+          <p class="text-xs uppercase tracking-widest text-slate-500 mb-1">Candidate E</p>
+          <h3 class="text-xl font-semibold text-white">Two scene configs share 38 of 51 substantive lines</h3>
+        </div>
+        <span class="shrink-0 px-3 py-1 rounded-full text-xs font-semibold bg-sky-500/15 text-sky-300 border border-sky-600/40">Worth exploring</span>
+      </div>
+
+      <div class="grid lg:grid-cols-2 gap-8">
+        <div class="space-y-5 text-sm leading-relaxed">
+          <div>
+            <p class="text-xs uppercase tracking-wider text-slate-500 mb-1.5">Files</p>
+            <p class="cite text-slate-400">
+              configs/locobot_rs_static.yaml (92 lines, 51 substantive)<br>
+              configs/locobot_rs_bridge.yaml (111 lines, 51 substantive)<br>
+              <span class="text-slate-600">measured: 13 substantive lines differ</span>
+            </p>
+          </div>
+          <div>
+            <p class="text-xs uppercase tracking-wider text-slate-500 mb-1.5">Problem</p>
+            <p class="text-slate-300">The bridge config is the smoke-test config with six settings
+            changed. The other 38 lines — camera, traversability, rewards, sensors — are
+            duplicated, and they are exactly the settings that define <em>what world is being
+            rendered</em>. If <span class="mono">vertical_fov</span> or <span class="mono">image_width</span> is
+            tuned in one (and P5 is explicitly expected to revisit FoV), P0's smoke test quietly
+            starts describing a different world than the bridge drives. Plan §B scales to 2 then
+            3 houses, so <span class="mono">scene_id</span> must vary — today that means more whole-file copies.</p>
+          </div>
+          <div>
+            <p class="text-xs uppercase tracking-wider text-slate-500 mb-1.5">Solution</p>
+            <p class="text-slate-300">One base config plus small named overlays, merged in Python.
+            Verified feasible: iGibson's <span class="mono">parse_config</span> accepts a Mapping as well as a
+            path (<span class="cite">igibson/utils/utils.py:29</span>), so
+            <span class="mono">iGibsonEnv(config_file=&lt;dict&gt;)</span> works — no temp files needed. Each
+            overlay then <em>documents itself</em>: the bridge overlay is six lines that are exactly the
+            six deliberate differences.</p>
+          </div>
+          <div>
+            <p class="text-xs uppercase tracking-wider text-slate-500 mb-1.5">Benefits</p>
+            <ul class="text-slate-300 space-y-1.5 list-disc list-inside">
+              <li><span class="text-slate-100">Leverage:</span> a new house is one line, not a 92-line copy.
+              Plan §7's identical-world requirement becomes structural rather than a promise.</li>
+              <li><span class="text-slate-100">Locality:</span> the diff between P0's world and P1's world is
+              readable in one place — currently you must diff two files to find it.</li>
+              <li><span class="text-slate-100">Tests:</span> the merge is pure dict logic; a test can assert the
+              overlay changes exactly the intended keys and nothing else.</li>
+            </ul>
+          </div>
+        </div>
+
+        <div>
+          <p class="text-xs uppercase tracking-wider text-slate-500 mb-3">Before / after — where the lines live</p>
+          <div class="grid grid-cols-2 gap-3">
+            <div class="rounded-lg border border-rose-800/40 bg-rose-950/10 p-3">
+              <p class="text-[11px] font-semibold text-rose-300 mb-2 text-center">Before</p>
+              <div class="space-y-2">
+                <div>
+                  <p class="text-[10px] text-slate-400 mb-1 mono">rs_static.yaml</p>
+                  <div class="flex h-5 rounded overflow-hidden">
+                    <div class="bg-rose-500/40 flex-[38] flex items-center justify-center text-[8px] text-rose-100">38 shared</div>
+                    <div class="bg-slate-600/60 flex-[13] flex items-center justify-center text-[8px]">13</div>
+                  </div>
+                </div>
+                <div>
+                  <p class="text-[10px] text-slate-400 mb-1 mono">rs_bridge.yaml</p>
+                  <div class="flex h-5 rounded overflow-hidden">
+                    <div class="bg-rose-500/40 flex-[38] flex items-center justify-center text-[8px] text-rose-100">38 copied</div>
+                    <div class="bg-slate-600/60 flex-[13] flex items-center justify-center text-[8px]">13</div>
+                  </div>
+                </div>
+                <div class="opacity-40">
+                  <p class="text-[10px] text-slate-500 mb-1 mono">P2: house #2, #3 …</p>
+                  <div class="flex h-5 rounded overflow-hidden">
+                    <div class="bg-rose-500/40 flex-[38]"></div><div class="bg-slate-600/60 flex-[13]"></div>
+                  </div>
+                </div>
+              </div>
+              <p class="mt-3 text-[10px] text-rose-300/70 leading-snug">Every new world copies the camera
+              settings again. Drift is silent.</p>
+            </div>
+            <div class="rounded-lg border border-emerald-800/40 bg-emerald-950/10 p-3">
+              <p class="text-[11px] font-semibold text-emerald-300 mb-2 text-center">After</p>
+              <div class="space-y-2">
+                <div>
+                  <p class="text-[10px] text-slate-400 mb-1 mono">base.yaml</p>
+                  <div class="flex h-5 rounded overflow-hidden">
+                    <div class="bg-emerald-500/40 flex-[38] flex items-center justify-center text-[8px] text-emerald-100">38 — stated once</div>
+                  </div>
+                </div>
+                <div>
+                  <p class="text-[10px] text-slate-400 mb-1 mono">overlays</p>
+                  <div class="flex gap-1 h-5">
+                    <div class="bg-slate-600/60 rounded flex-1 flex items-center justify-center text-[8px]">smoke: 4</div>
+                    <div class="bg-slate-600/60 rounded flex-1 flex items-center justify-center text-[8px]">bridge: 6</div>
+                    <div class="bg-slate-600/60 rounded flex-1 flex items-center justify-center text-[8px]">house: 1</div>
+                  </div>
+                </div>
+              </div>
+              <p class="mt-3 text-[10px] text-emerald-300/70 leading-snug">Each overlay <em>is</em> the list of
+              deliberate differences. Nothing to keep in sync.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </article>
+
+  <!-- ══════════════ CANDIDATE F ══════════════ -->
+  <article class="mb-12 rounded-xl border border-slate-800 bg-slate-900/30 overflow-hidden">
+    <div class="card-rule"></div>
+    <div class="p-6">
+      <div class="flex items-start justify-between gap-4 flex-wrap mb-4">
+        <div>
+          <p class="text-xs uppercase tracking-widest text-slate-500 mb-1">Candidate F</p>
+          <h3 class="text-xl font-semibold text-white">The config validator and its consumer disagree about what's required</h3>
+        </div>
+        <span class="shrink-0 px-3 py-1 rounded-full text-xs font-semibold bg-sky-500/15 text-sky-300 border border-sky-600/40">Worth exploring</span>
+      </div>
+
+      <div class="grid lg:grid-cols-2 gap-8">
+        <div class="space-y-5 text-sm leading-relaxed">
+          <div>
+            <p class="text-xs uppercase tracking-wider text-slate-500 mb-1.5">Files</p>
+            <p class="cite text-slate-400">
+              checkpoints.py:27–37 <span class="text-slate-600">REQUIRED_PARAMS</span> · :104–117 <span class="text-slate-600">validate_params</span><br>
+              nomad_policy.py:66–98 <span class="text-slate-600">build_model — the actual consumer</span>
+            </p>
+          </div>
+          <div>
+            <p class="text-xs uppercase tracking-wider text-slate-500 mb-1.5">Problem</p>
+            <p class="text-slate-300"><span class="mono">checkpoints.py</span> promises to fail loudly rather than
+            guess — that is its whole reason to exist, because a wrong
+            <span class="mono">image_size</span> would silently invalidate the fairness protocol. But its
+            <span class="mono">REQUIRED_PARAMS</span> list omits five keys that
+            <span class="mono">build_model</span> actually reads:
+            <span class="mono text-amber-300">mha_num_attention_heads</span>,
+            <span class="mono text-amber-300">mha_num_attention_layers</span>,
+            <span class="mono text-amber-300">mha_ff_dim_factor</span>,
+            <span class="mono text-amber-300">down_dims</span>,
+            <span class="mono text-amber-300">cond_predict_scale</span>. A log missing any of them passes
+            validation and then dies with a bare <span class="mono">KeyError</span> deep inside model
+            construction — the exact failure mode the module was written to prevent. The two
+            lists are in different files and nothing keeps them honest.</p>
+          </div>
+          <div>
+            <p class="text-xs uppercase tracking-wider text-slate-500 mb-1.5">Solution</p>
+            <p class="text-slate-300">Let the consumer declare its own needs — the model builder exports
+            the keys it reads, and <span class="mono">checkpoints</span> validates against that rather than
+            against a hand-maintained copy. Cheapest version: one test that asserts every key
+            <span class="mono">build_model</span> reads appears in <span class="mono">REQUIRED_PARAMS</span>.</p>
+          </div>
+          <div>
+            <p class="text-xs uppercase tracking-wider text-slate-500 mb-1.5">Benefits</p>
+            <ul class="text-slate-300 space-y-1.5 list-disc list-inside">
+              <li><span class="text-slate-100">Leverage:</span> small, but it protects the module the whole
+              fairness protocol rests on. P7 adds the ctx3/stride3/160×120 arms — more logs, more
+              chances for one to be incomplete.</li>
+              <li><span class="text-slate-100">Locality:</span> "what a checkpoint config must contain" answered
+              once, next to the code that consumes it.</li>
+              <li><span class="text-slate-100">Tests:</span> becomes a single assertion that cannot drift, versus
+              today's list which is already wrong.</li>
+            </ul>
+          </div>
+        </div>
+
+        <div>
+          <p class="text-xs uppercase tracking-wider text-slate-500 mb-3">Before / after — the two lists</p>
+          <div class="rounded-lg border border-slate-800 bg-slate-950/60 p-4">
+            <div class="grid grid-cols-2 gap-4 text-[10px] mono">
+              <div>
+                <p class="text-slate-400 mb-2 font-sans font-semibold">validated (8)</p>
+                <div class="space-y-0.5">
+                  <p class="text-emerald-300">model_type</p><p class="text-emerald-300">image_size</p>
+                  <p class="text-emerald-300">context_size</p><p class="text-emerald-300">len_traj_pred</p>
+                  <p class="text-emerald-300">num_diffusion_iters</p><p class="text-emerald-300">normalize</p>
+                  <p class="text-emerald-300">vision_encoder</p><p class="text-emerald-300">encoding_size</p>
+                </div>
+              </div>
+              <div>
+                <p class="text-slate-400 mb-2 font-sans font-semibold">read by build_model (8)</p>
+                <div class="space-y-0.5">
+                  <p class="text-emerald-300">vision_encoder</p><p class="text-emerald-300">encoding_size</p>
+                  <p class="text-emerald-300">context_size</p>
+                  <p class="text-amber-300">mha_num_attention_heads ⚠</p>
+                  <p class="text-amber-300">mha_num_attention_layers ⚠</p>
+                  <p class="text-amber-300">mha_ff_dim_factor ⚠</p>
+                  <p class="text-amber-300">down_dims ⚠</p>
+                  <p class="text-amber-300">cond_predict_scale ⚠</p>
+                </div>
+              </div>
+            </div>
+            <div class="mt-4 pt-3 border-t border-slate-800">
+              <p class="text-[11px] text-amber-300/90 leading-snug"><span class="font-semibold">5 keys are read but never
+              validated.</span> The guard rail has a gap exactly where it claims to be solid.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </article>
+
+  <!-- ══════════════ CANDIDATE H ══════════════ -->
+  <article class="mb-12 rounded-xl border border-slate-800 bg-slate-900/30 overflow-hidden">
+    <div class="card-rule"></div>
+    <div class="p-6">
+      <div class="flex items-start justify-between gap-4 flex-wrap mb-4">
+        <div>
+          <p class="text-xs uppercase tracking-widest text-slate-500 mb-1">Candidate H</p>
+          <h3 class="text-xl font-semibold text-white">The package has no packaging — six small duplications, and tests that can't run where they claim</h3>
+        </div>
+        <span class="shrink-0 px-3 py-1 rounded-full text-xs font-semibold bg-sky-500/15 text-sky-300 border border-sky-600/40">Worth exploring</span>
+      </div>
+
+      <div class="grid lg:grid-cols-2 gap-8">
+        <div class="space-y-5 text-sm leading-relaxed">
+          <div>
+            <p class="text-xs uppercase tracking-wider text-slate-500 mb-1.5">Problem</p>
+            <p class="text-slate-300">Individually trivial, collectively a pattern:
+            <span class="mono">sim_eval/</span> has no <span class="mono">__init__.py</span>, no
+            <span class="mono">conftest.py</span> and no test runner, so every module and every test
+            re-derives its own environment. Each item below is verified.</p>
+            <ul class="mt-2 space-y-1.5 text-xs text-slate-400">
+              <li>· <span class="mono text-slate-300">save_rgb</span> (p0_1:80–86) and
+              <span class="mono text-slate-300">frame_to_pil</span> (bridge.py:46–54) are the same
+              float→uint8→PIL conversion, twice.</li>
+              <li>· The arg re-quoting loop in <span class="mono">run_p0_smoke_test.sh:22–25</span> and
+              <span class="mono">run_p1_drive_test.sh:33–36</span> is <span class="text-slate-300">byte-identical,
+              comment included</span> (diffed: no output). Same for the <span class="mono">chown</span> line.
+              <span class="mono">lib.sh</span> is the obvious home and has neither.</li>
+              <li>· <span class="mono text-slate-300">SIM_EVAL_DIR = Path(__file__)…</span> appears in 5 modules.</li>
+              <li>· <span class="mono text-slate-300">sys.path.insert(0, parents[1])</span> appears in all 4 test
+              files — what a <span class="mono">conftest.py</span> exists to remove.</li>
+              <li>· Stale-PNG clearing is written twice (p1_0:68–76, p1_1:83–85).</li>
+              <li>· Every other entry point has a <span class="mono">run_*.sh</span>; the tests do not,
+              so the one thing you run most often is the one thing with no wrapper.</li>
+            </ul>
+          </div>
+          <div>
+            <p class="text-xs uppercase tracking-wider text-slate-500 mb-1.5">And the docstrings overclaim</p>
+            <p class="text-slate-300">Three test files say <em>"Runs anywhere: no GPU, no iGibson, no
+            container."</em> Verified false: the host has no <span class="mono">python</span> on
+            <span class="mono">PATH</span> (only <span class="mono">python3</span>) and no
+            <span class="mono">pytest</span>. Worse, <span class="mono">bridge.py:33</span> imports
+            <span class="mono">pybullet</span> at <em>module</em> scope while importing iGibson lazily — so
+            <span class="mono">test_context_queue.py</span> needs the container, directly contradicting its own
+            docstring. <span class="text-slate-100">A comment that claims a property nothing enforces is worse
+            than no comment</span>: it is the kind of thing a future reader trusts.</p>
+          </div>
+          <div>
+            <p class="text-xs uppercase tracking-wider text-slate-500 mb-1.5">Solution</p>
+            <p class="text-slate-300">A <span class="mono">conftest.py</span> (kills 4 copies), a
+            <span class="mono">paths.py</span> or package <span class="mono">__init__</span> (kills 5),
+            <span class="mono">sim_exec</span> gaining the arg-quoting and <span class="mono">chown</span>
+            (kills 2 shell copies), <span class="mono">frame_to_pil</span> used by P0 (kills 1), a
+            <span class="mono">run_tests.sh</span>, and <span class="mono">pybullet</span> moved into the
+            function that uses it — which makes the docstrings true instead of aspirational.</p>
+          </div>
+        </div>
+
+        <div>
+          <p class="text-xs uppercase tracking-wider text-slate-500 mb-3">Duplication census</p>
+          <div class="rounded-lg border border-slate-800 bg-slate-950/60 p-4 space-y-2.5">
+            <div class="flex items-center gap-2 text-[11px]">
+              <span class="w-40 text-slate-400 mono shrink-0">sys.path.insert</span>
+              <div class="flex gap-1">
+                <span class="w-4 h-4 rounded bg-rose-500/50"></span><span class="w-4 h-4 rounded bg-rose-500/50"></span>
+                <span class="w-4 h-4 rounded bg-rose-500/50"></span><span class="w-4 h-4 rounded bg-rose-500/50"></span>
+              </div><span class="text-slate-500">×4 → conftest.py</span>
+            </div>
+            <div class="flex items-center gap-2 text-[11px]">
+              <span class="w-40 text-slate-400 mono shrink-0">SIM_EVAL_DIR</span>
+              <div class="flex gap-1">
+                <span class="w-4 h-4 rounded bg-rose-500/50"></span><span class="w-4 h-4 rounded bg-rose-500/50"></span>
+                <span class="w-4 h-4 rounded bg-rose-500/50"></span><span class="w-4 h-4 rounded bg-rose-500/50"></span>
+                <span class="w-4 h-4 rounded bg-rose-500/50"></span>
+              </div><span class="text-slate-500">×5 → paths.py</span>
+            </div>
+            <div class="flex items-center gap-2 text-[11px]">
+              <span class="w-40 text-slate-400 mono shrink-0">arg quoting + chown</span>
+              <div class="flex gap-1">
+                <span class="w-4 h-4 rounded bg-rose-500/50"></span><span class="w-4 h-4 rounded bg-rose-500/50"></span>
+              </div><span class="text-slate-500">×2 identical → lib.sh</span>
+            </div>
+            <div class="flex items-center gap-2 text-[11px]">
+              <span class="w-40 text-slate-400 mono shrink-0">rgb→PIL conversion</span>
+              <div class="flex gap-1">
+                <span class="w-4 h-4 rounded bg-rose-500/50"></span><span class="w-4 h-4 rounded bg-rose-500/50"></span>
+              </div><span class="text-slate-500">×2 → frame_to_pil</span>
+            </div>
+            <div class="flex items-center gap-2 text-[11px]">
+              <span class="w-40 text-slate-400 mono shrink-0">clear stale PNGs</span>
+              <div class="flex gap-1">
+                <span class="w-4 h-4 rounded bg-rose-500/50"></span><span class="w-4 h-4 rounded bg-rose-500/50"></span>
+              </div><span class="text-slate-500">×2</span>
+            </div>
+            <div class="flex items-center gap-2 text-[11px]">
+              <span class="w-40 text-slate-400 mono shrink-0">open iGibsonEnv</span>
+              <div class="flex gap-1">
+                <span class="w-4 h-4 rounded bg-rose-500/50"></span><span class="w-4 h-4 rounded bg-rose-500/50"></span>
+              </div><span class="text-slate-500">×2 (P0 not on SimBody)</span>
+            </div>
+            <div class="pt-2.5 mt-1 border-t border-slate-800 text-[11px] text-slate-500">
+              None of these is worth a phase. All of them together are about 40 lines removed and
+              one honest set of docstrings.
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </article>
+
+  <!-- ══ DELETION TEST SURVIVORS ══ -->
+  <section class="mb-14 rounded-xl border border-slate-800 bg-slate-900/20 p-6">
+    <h2 class="text-lg font-semibold text-white mb-1">Applied the deletion test, left them alone</h2>
+    <p class="text-sm text-slate-400 mb-5">Four things looked shallow and are not. Recording them so a
+    later review doesn't re-litigate.</p>
+    <div class="grid sm:grid-cols-2 gap-4 text-sm">
+      <div class="rounded-lg border border-slate-800 p-4">
+        <p class="mono text-sky-300 text-xs mb-1.5">ContextQueue <span class="text-slate-600">bridge.py:74–110</span></p>
+        <p class="text-slate-400 text-xs leading-relaxed">37 lines behind a 4-method interface — suspiciously
+        thin. But inlining it into <span class="mono">NomadBridge</span> would put an off-by-one that silently
+        feeds the encoder the wrong frame count back into the tick loop, where it is untestable.
+        Complexity would <span class="text-rose-300">spread</span>. Keep.</p>
+      </div>
+      <div class="rounded-lg border border-amber-800/40 bg-amber-950/10 p-4">
+        <p class="mono text-amber-300 text-xs mb-1.5">TickRecord <span class="text-slate-600">bridge.py:196–220</span> — revised</p>
+        <p class="text-slate-400 text-xs leading-relaxed">I first passed this as a fine value object. On a
+        second look it is the <em>clearest</em> shallow class here: 9 positional params → 9 identical
+        attributes, and it is an <span class="text-amber-200">exhaustive copy that already drops the two
+        fields P4 needs</span> — <span class="mono">PolicyStep.distances</span> and
+        <span class="mono">.samples</span> are set at nomad_policy.py:195–196 and
+        <span class="text-amber-200">never read anywhere in the repo</span> (verified by grep). So every
+        future phase pays a 3-site edit: constructor, construction site, consumers. Fold into
+        candidate B rather than keeping as-is.</p>
+      </div>
+      <div class="rounded-lg border border-slate-800 p-4">
+        <p class="mono text-sky-300 text-xs mb-1.5">pd_control.py <span class="text-slate-600">92 lines</span></p>
+        <p class="text-slate-400 text-xs leading-relaxed">Two functions and a small value class. Deleting it
+        concentrates nothing — it would just move the verbatim port into <span class="mono">bridge.py</span> and
+        cost the 10 tests that pin decision E. It is the best-tested module in the package.
+        Keep, untouched.</p>
+      </div>
+      <div class="rounded-lg border border-slate-800 p-4">
+        <p class="mono text-sky-300 text-xs mb-1.5">the training-log parse <span class="text-slate-600">checkpoints.py:78–101</span></p>
+        <p class="text-slate-400 text-xs leading-relaxed">Parsing a repr'd dict out of a 590 KB log looks like
+        a hack worth removing. It is not: it is the only surviving record of what each arm was
+        trained with, and it is correctly isolated behind one small interface. Keep the seam;
+        candidate F only tightens what it checks.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ══ NOT PROPOSED ══ -->
+  <section class="mb-14 rounded-lg border border-slate-800 bg-slate-900/20 p-5">
+    <h2 class="text-sm font-semibold text-slate-200 mb-2">Deliberately not proposed</h2>
+    <p class="text-xs text-slate-400 leading-relaxed max-w-4xl">
+      Nothing here touches the ported control logic. The diffusion loop
+      (<span class="mono">nomad_policy.py:198–232</span>), the localization window
+      (<span class="mono">:170–186</span>), the PD mapping (<span class="mono">pd_control.py:70–92</span>) and the
+      retained no-op <span class="mono">split/cat</span> at <span class="mono">nomad_policy.py:152–155</span> are all
+      verbatim from <span class="mono">deployment/src/</span> by requirement (plan decision E, CLAUDE.md
+      "reuse by copy"). Fidelity beats elegance there, and the fact that it <em>looks</em> improvable is
+      the point — a future reader must be able to diff it against the deployment stack.
+      Likewise <span class="mono">SimBody.ANGULAR_VELOCITY_SIGN</span> is not a magic constant to clean up;
+      it is a measured correction for an iGibson bug.
+    </p>
+  </section>
+
+  <!-- ══ CONVENTIONS GAP ══ -->
+  <section class="mb-14 rounded-lg border border-amber-800/40 bg-amber-950/10 p-5">
+    <h2 class="text-sm font-semibold text-amber-200 mb-2">Outside the code: this workstream has no conventions file of its own</h2>
+    <div class="text-xs text-slate-400 leading-relaxed max-w-4xl space-y-2">
+      <p>The auto-loaded <span class="mono">CLAUDE.md</span> documents a <em>different</em> workstream —
+      <span class="mono">deeper_visuals/</span>, container <span class="mono">naz_nomad_deeper_viz</span>, the
+      visualization plan. It never mentions <span class="mono">sim_eval</span>. So sim_eval's real
+      conventions live only in plan §3b/§3c, and the two sources already conflict where they
+      overlap: <span class="mono">CLAUDE.md</span> makes this architecture pass mandatory at the end of
+      <em>every</em> phase, while plan §3b makes it explicitly optional. The
+      "reuse by copy, not import" rule is scoped to <span class="mono">debug_visuals/</span> there, yet
+      <span class="mono">sim_eval</span> is the code actually relying on it.</p>
+      <p>There is also no <span class="mono">CONTEXT.md</span> and no <span class="mono">docs/adr/</span>, which is
+      why this review had to take its domain vocabulary from a plan file. Worth fixing before P3
+      multiplies the number of terms (<em>episode</em>, <em>rollout</em>, <em>arm</em>, <em>trail</em>,
+      <em>scorer</em>) that currently have no written definition. Not a code candidate — flagging it
+      because it is friction a future reader (human or model) will hit first.</p>
+    </div>
+  </section>
+
+  <!-- ══ TOP RECOMMENDATION ══ -->
+  <section class="rounded-xl border border-amber-700/50 bg-gradient-to-br from-amber-950/30 to-slate-900/40 p-7">
+    <p class="text-xs uppercase tracking-[0.2em] text-amber-400 mb-3">Top recommendation</p>
+    <h2 class="text-2xl font-semibold text-white mb-4">Candidate G — name and pin the localization math. Then A.</h2>
+    <div class="space-y-3 text-sm text-slate-300 leading-relaxed max-w-4xl">
+      <p><span class="text-white font-medium">Because it is the only candidate that can make the final
+      numbers wrong.</span> Everything else on this page makes a future phase awkward. G is five lines
+      of index arithmetic that decide which node the robot steers toward, in a 232-line module with
+      zero tests, and <span class="text-amber-200">upstream has already shipped this exact bug once</span>
+      (<span class="mono">7b5b24c</span>). The failure mode is a robot that drives plausibly toward the
+      wrong node — invisible in a GIF, fatal to a ranking of arms. The whole justification for
+      building this harness is that the open-loop "best" rested on a proxy; a silent off-by-one here
+      would replace one untrustworthy ruler with another.</p>
+      <p>It is also cheaper than it looks. <span class="text-white font-medium">Don't build a model-injection
+      seam</span> — just lift the arithmetic into a pure <span class="mono">localize()</span> and test it with
+      a hand-written list of distances. The numbers don't change, so fidelity to
+      <span class="mono">navigate.py</span> survives, and the module that is currently the least-tested port
+      gets the same treatment as <span class="mono">pd_control.py</span>, which is the best-tested thing here.
+      <span class="text-slate-400">Cost: an hour. Blast radius: one function. Do it before committing P1.</span></p>
+      <p><span class="text-white font-medium">Then A, before P2 starts</span> — P2 <em>is</em> the trail builder,
+      and if the seam goes in first P2 adds a producer behind an existing interface instead of
+      rewriting three files while P1's only validated rollout is unreproducible.</p>
+      <p><span class="text-white font-medium">B and C together, at the start of P3.</span> Both reshape
+      <span class="mono">run()</span>, so doing them separately means touching it twice; B also absorbs the
+      <span class="mono">TickRecord</span> revision. That is what makes P3 additive rather than a rewrite of
+      the loop P1 just proved.</p>
+      <p class="text-slate-400 pt-1">D, E, F, H are real and none is urgent. F and the
+      <span class="mono">write_frames</span> crash are ~20-minute fixes that can ride along with anything.
+      E pays off the moment P2 adds a second house. H is worth one cleanup sitting, mostly so the
+      test docstrings stop claiming something untrue. D deserves a revisit once P3 exists and its
+      second consumer makes the seam fully real.</p>
+    </div>
+  </section>
+
+  <footer class="mt-12 pt-6 border-t border-slate-800 text-xs text-slate-600">
+    <p>Generated for <span class="mono">sim_eval/</span> at commit-in-progress on
+    <span class="mono">feature/sim-eval-p1-bridge</span> · no files in the repo were changed by this review.</p>
+  </footer>
+</div>
+</body>
+</html>

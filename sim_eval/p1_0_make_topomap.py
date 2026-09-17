@@ -118,13 +118,14 @@ def main():
 
     body = bridge.SimBody()
     try:
-        gpu.verify_renderer(body.env.simulator.renderer, selected_gpu)
+        body.verify_gpu(selected_gpu)
 
         np.random.seed(args.seed)
         body.reset()
+        position, orientation = body.initial_pose
         start_pose = {
-            "position": [float(value) for value in body.env.task.initial_pos],
-            "orientation": [float(value) for value in body.env.task.initial_orn],
+            "position": position,
+            "orientation": orientation,
             "seed": args.seed,
         }
         print("start:  {}".format(np.round(body.pose, 3)))

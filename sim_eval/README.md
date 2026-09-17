@@ -7,10 +7,13 @@ action changes the next view. Plan: `.claude/plans/nomad-sim-evaluation.md`.
 **P0** stood the simulator up. **P1** wired NoMaD's brain to the sim's body —
 one checkpoint driving itself along a hand-made trail. **P2** made the trails:
 the scene's own shortest path replaces the human teleop of `create_topomap.sh`.
-**P3 (this phase) is the ruler.** A fixed, seeded set of those trails becomes a
-task set every checkpoint faces; each task is run as an episode that ends on
-success or timeout, and every episode lands as one row of a metrics table. No
-video overlay yet — that is P4.
+**P3 is the ruler.** A fixed, seeded set of those trails becomes a task set
+every checkpoint faces; each task is run as an episode that ends on success or
+timeout, and every episode lands as one row of a metrics table. **P4 (this
+phase) makes a row watchable**: the same episode, filmed as it is scored, as a
+three-panel MP4 — camera, top-down map, subgoal and waypoints. It is a layer
+over the scorer and changes nothing about it; switched off, an episode runs
+exactly the code P3 ran.
 
 ## Layout
 
@@ -29,7 +32,9 @@ video overlay yet — that is P4.
 | `checkpoints.py` | resolve a checkpoint name to weights + its training config |
 | `nomad_policy.py` | the brain: `navigate.py`'s policy step, ported |
 | `pd_control.py` | the steering: `pd_controller.py`, ported |
-| `bridge.py` | the body ends, and the control tick that wires them together |
+| `bridge.py` | the robot end of the simulator, and the control tick that wires the two together |
+| `sim_scene.py` | the world end: floor height, geodesics, the traversability map |
+| `driver.py` | the four numbers that steer, as a config block |
 | `p1_0_make_topomap.py` | drive a fixed route open-loop, keep frames as a trail |
 | `p1_1_drive_test.py` | one checkpoint follows that trail; frames + GIF out |
 | `run_p1_drive_test.sh` | run the above two in the container, pinned to one GPU |
@@ -38,7 +43,7 @@ video overlay yet — that is P4.
 | `topomap_builder.py` | plan a route, drive it, keep every Nth frame (P2) |
 | `p2_1_build_test.py` | build one trail; path plot + thumbnails + format check |
 | `run_p2_build_test.sh` | run the above in the container, pinned to one GPU |
-| `configs/eval.yaml` | what gets scored, on what, and when an episode ends (P3) |
+| `configs/eval.yaml` | what gets scored, when an episode ends (P3), what is filmed (P4) |
 | `metrics.py` | the five metrics of plan §6, and the table they go in |
 | `episode_runner.py` | run one episode to success or timeout, and score it |
 | `task_set.py` | the fixed, seeded task set every checkpoint shares |
@@ -46,6 +51,9 @@ video overlay yet — that is P4.
 | `run_eval.sh` | run the above in the container, pinned to one GPU |
 | `p3_1_score_test.py` | score a small task set, then re-derive every metric |
 | `run_p3_score_test.sh` | run the above in the container, pinned to one GPU |
+| `recorder.py` | the three-panel video layer over the scorer (P4) |
+| `p4_1_record_test.py` | film one episode, then prove filming changed no metric |
+| `run_p4_record_test.sh` | run the above in the container, pinned to one GPU |
 | `run_tests.sh` | the GPU-free unit tests, in the container |
 | `tests/` | GPU-free unit tests (`./sim_eval/run_tests.sh`) |
 | `outputs/` | all generated files (gitignored, numbered `pN_M_*`) |
@@ -122,6 +130,21 @@ themselves — you never need to enter the container.
    It is long and unattended — run it inside `screen -r nomad_sim` so it
    survives the SSH connection dropping. `--build-only` builds the shared task
    set and stops. `--resume` continues a table that was interrupted.
+
+8. Watch an episode. One task, filmed, plus the same task unfilmed to prove
+   the recorder moved no metric:
+   ```
+   ./sim_eval/run_p4_record_test.sh
+   ```
+   It writes `sim_eval/outputs/videos/best_combined/Rs_00.mp4` — one frame per
+   control tick, three panels — and fails if the frame count and the tick count
+   disagree or if any column of the metrics row differs between the two runs.
+
+   To film a real scoring run, turn it on in `configs/eval.yaml` or from the
+   command line:
+   ```
+   ./sim_eval/run_eval.sh --checkpoint best_combined --record --record-tasks Rs_00,Rs_07
+   ```
 
 `SIM_GPU=0 ./sim_eval/run_p0_smoke_test.sh` picks the other GPU. Default is 1,
 because GPU 0 also drives the machine's X server.
@@ -263,6 +286,60 @@ around the furniture — a success under one rule and a timeout under the other.
 `episode.success_metric` in `configs/eval.yaml` switches it, and every row of
 the table records which rule scored it.
 
+## How an episode is filmed (P4)
+
+Recording is a **layer over** the scorer, not a change to it. The episode is a
+stream, so the consumer already holds the tick loop; filming is one line of it,
+and an unrecorded episode gets a `NullRecording` whose `capture` does nothing:
+
+```python
+with film.episode(task, checkpoint, scene) as video:
+    for record in episode:
+        video.capture(record)
+```
+
+Each frame is one `TickRecord`, drawn as three panels, so the panels cannot
+disagree with each other:
+
+| Panel | What it shows |
+|-------|---------------|
+| camera | the frame the encoder was fed this tick, at render resolution |
+| top-down | the house's traversability map, the reference trail, the path driven so far, the start, the goal and its success radius, every collision, and the node being steered at |
+| overlay | the subgoal image, the distance head's reading for it, and all eight diffusion samples in the robot's frame with waypoint #2 — the one the PD controller acts on — marked |
+
+The tick, `v` and `w` sit across the top, in red on a colliding tick.
+
+Videos land in `outputs/videos/<checkpoint>/<task_id>.mp4` — one directory per
+arm, so the same task under two checkpoints is two files to watch side by side.
+The knobs are the `recording:` block of `configs/eval.yaml`:
+
+| Knob | Values |
+|------|--------|
+| `enabled` | `false` (default) / `true`; `--record` and `--no-record` override it |
+| `fps` | playback speed. The loop is 4 Hz, so **4 is real time** and the default 10 is 2.5x |
+| `tasks` | `all`, a count (the first N of each scene), or a list of task ids |
+| `directory` | where the per-checkpoint folders go |
+
+**Filming costs about 0.09 s per tick** — one matplotlib frame drawn and
+encoded — measured as 13.4 s against 8.0 s for the same 58-tick episode, video
+at ~26 kB per frame. That is why it is off by default: worth paying to watch an
+episode, not worth paying for twenty nobody will open.
+
+## Talking to the simulator
+
+Two adapters, split by what they are asked about. Nothing else in the package
+touches iGibson:
+
+| Ask | Where |
+|-----|-------|
+| observe · command · pose · place · reset | `SimBody` (`bridge.py`) — the robot |
+| camera intrinsics · "is EGL on the GPU I pinned" | `SimBody` — the renderer is the body's |
+| floor height · geodesic distance · shortest path · random point · traversability map | `body.scene`, a `SimScene` (`sim_scene.py`) — the world |
+
+The floor is bound into `SimScene` when the simulator is opened, so it is not a
+parameter anybody forwards. `SimBody._env` is private: reaching through it is
+the friction both halves exist to remove (see Under the hood).
+
 ## Under the hood
 
 - **iGibson's LoCoBot turns the wrong way, and the bridge corrects it.**
@@ -386,6 +463,54 @@ the table records which rule scored it.
   ever be handed what the runner thought to pass, which is why the old
   `on_tick` — a `TickRecord` and nothing else, no task, no output path — was
   never going to carry P4.
+- **The simulator is reached through two adapters, and never around them.**
+  `SimBody` had only a robot interface, so twelve call sites across seven files
+  reached through `body.env` for world answers — `body.env.scene.floor_heights`,
+  `body.env.simulator.renderer` at five sites for the GPU check. The P1
+  architecture review predicted exactly this ("P3 needs geodesic distance ...;
+  P4 needs the traversability map. All would leak the same way") and both
+  phases proved it. `SimScene` is the widened seam; `_env` is now private. The
+  payoff is not tidiness — it is that the geodesic rule which decides success,
+  the floor lookup and the axis flip are now pinned by tests that need no GPU,
+  and `verify_gpu` exists once instead of five times.
+- **Every row records how the policy was steered.** `num_samples`, the waypoint
+  index, the localization radius and the close threshold decide the action as
+  much as the checkpoint does, and they used to be reachable only by editing
+  `nomad_policy.py` — the only dials here with neither a config section nor a
+  column. They are `driver:` in the config and a `driver` column (`n8w2r4t3`)
+  in every row now. The defaults are unchanged, and are meant to stay that way
+  (plan decision E); the column is what lets a table *prove* it, which matters
+  because P5 is allowed to tune them and P6 requires that every arm faced the
+  same ones. A run whose settings depart from the robot's prints **TUNED** in
+  its header.
+- **Recording off is off by construction, not by inspection.** The alternative
+  — `if recording:` inside the tick loop — is one edit away from filming an
+  unattended 20-task run by accident, and the loop that scores would no longer
+  be the loop that was tested. A null object cannot drift: the loop is the same
+  loop, and `p4_1_record_test.py` runs the same episode twice, filmed and not,
+  and fails if any column of the metrics row moves.
+- **The overlay recovers the localization window; it is not handed one.**
+  `PolicyStep` names its nodes by absolute trail index but carries the distance
+  head's scores by window offset, so the number under the subgoal image is
+  `distances[subgoal_node - (closest_node - argmin(distances))]`. Off by one
+  there puts a plausible number under a plausible picture, for the wrong node,
+  and nothing looks wrong — `tests/test_recorder.py` pins it, including the
+  clamped window at the start of a trail.
+- **The panel figure is built once per episode and only its data changes.**
+  matplotlib is fast at `set_data` and slow at `subplots`; at hundreds of ticks
+  an episode and tens of episodes a run, rebuilding the figure per frame would
+  cost minutes per arm. The map, the trail and the start/goal markers cannot
+  change during an episode, so they are drawn at open time and never touched.
+  The waypoint axes are fixed on the first tick for the same reason a video
+  needs it: an autoscaled axis reads as the world lurching rather than the
+  prediction changing.
+- **The top-down panel plots world metres, not map pixels.** iGibson's
+  traversability map is a square image centred on the world origin, so handing
+  matplotlib its bounds as an `extent` removes every per-point conversion from
+  the tick loop. It is drawn `origin="lower"` so `+y` is up: a left turn on the
+  map is then a left turn in the camera beside it. (`p2_1_build_test.py` draws
+  its still in pixel coordinates, which mirrors y — fine for one picture,
+  confusing in something you watch.)
 - **A `TickRecord` holds the policy's output rather than copying it.**
   `record.step` is the `PolicyStep` itself, so `distances` (the temporal
   distance to every node in the localization window) and `samples` (all eight
@@ -434,4 +559,10 @@ the table records which rule scored it.
 | `FAILED: ... pins a start/goal pair` | the topomap config has `start`/`goal` set, so every task would be the same trail |
 | `FAILED: the metrics table does not hold up` | a metric disagrees with the numbers beside it in its own row — the message names which |
 | `success_metric must be one of ('geodesic', 'euclidean')` | a typo in `episode.success_metric` |
+| `No module named 'imageio'` when recording | the container predates LAYER 3b of `sim.Dockerfile` — `pip install "imageio<3" imageio-ffmpeg` inside it, or rebuild the image |
+| `FAILED: ... holds N frames but the episode ran M ticks` | the video and the run disagree; the encoder dropped or doubled a frame |
+| `FAILED: filming changed the episode` | the recorder touched the run it was meant to watch — the message names every column that moved |
+| `recording tasks must be 'all', a count, or a list of task ids` | a typo in `recording.tasks` |
+| `TypeError: __init__() got an unexpected keyword argument` on startup | a typo in a config knob — the section names it; nothing is silently ignored |
+| the run header says `driver: ... (TUNED — not navigate.py's defaults)` | working as intended: `driver:` in the config departs from the real robot's settings (plan decision E) |
 | `RuntimeWarning: divide by zero` from `point_nav_fixed_task.py` | harmless — iGibson's own built-in task computes its own SPL at reset, with a zero path length. The bridge ignores that task entirely; the goal is the topomap. |

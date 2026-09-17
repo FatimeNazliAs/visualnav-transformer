@@ -82,6 +82,17 @@ RUN pip install --no-cache-dir igibson==2.2.2
 
 
 # ------------------------------------------------------------------------------
+# LAYER 3b — Video encoding for P4's per-episode replays
+#
+# imageio-ffmpeg ships a static ffmpeg binary, which is the whole point: the
+# episodes are encoded headless inside this container, with no system ffmpeg to
+# install and no apt package to drift. matplotlib (the panels) and Pillow (the
+# frames) are already here, inherited from nomad:latest.
+# ------------------------------------------------------------------------------
+RUN pip install --no-cache-dir "imageio>=2.19,<3" "imageio-ffmpeg>=0.4.7"
+
+
+# ------------------------------------------------------------------------------
 # LAYER 4 — Runtime environment
 #
 # Assets are NOT baked into the image: scene meshes are tens of GB and belong on

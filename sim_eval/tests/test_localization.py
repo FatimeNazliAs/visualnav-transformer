@@ -27,9 +27,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from driver import DEFAULT_CLOSE_THRESHOLD, DEFAULT_RADIUS  # noqa: E402
 from nomad_policy import (  # noqa: E402
-    DEFAULT_CLOSE_THRESHOLD,
-    DEFAULT_RADIUS,
     localization_window,
     localize,
     window_size,

@@ -63,6 +63,24 @@ def frame_to_pil(rgb):
     return Image.fromarray(pixels)
 
 
+def waypoint_scale_m(model_params, limits):
+    """Metres per normalized waypoint unit — navigate.py's `MAX_V / RATE`.
+
+    `get_action` returns cumulative, normalized position deltas, and one unit is
+    how far the robot travels in one control period at its top speed. A
+    checkpoint trained without normalization already emits metres, so the scale
+    is 1.
+
+    It is a function rather than a line inside the tick because two places need
+    the same conversion and they must not drift: the bridge converts the one
+    waypoint it acts on, and P4's overlay converts all eight sampled
+    trajectories to draw them beside it.
+    """
+    if not model_params["normalize"]:
+        return 1.0
+    return limits.max_v / limits.frame_rate
+
+
 def load_topomap(topomap_dir):
     """Load a topomap directory of 0.png, 1.png, ... in node order.
 
@@ -112,7 +130,13 @@ class ContextQueue:
 
 
 class SimBody:
-    """iGibson's end of the bridge: it renders frames and executes (v, w)."""
+    """iGibson's end of the bridge: it renders frames and executes (v, w).
+
+    The *robot* half of the simulator adapter. World questions — the floor's
+    height, what is traversable, how far two points are around the furniture —
+    belong to `self.scene` (`sim_scene.SimScene`), which this opens and binds
+    to a floor. `_env` is private on purpose: callers reaching through it into
+    iGibson is the friction both halves exist to remove."""
 
     # iGibson 2.2.2's Locobot declares `base_control_idx = [1, 0]` for
     # [left, right], but its URDF lists wheel_left_joint first — so the
@@ -127,39 +151,89 @@ class SimBody:
     # NoMaD's (v, w) is untouched, and plan decision E still holds.
     ANGULAR_VELOCITY_SIGN = -1.0
 
-    def __init__(self, config_path=DEFAULT_SIM_CONFIG, limits=None, mode="headless"):
+    def __init__(self, config_path=DEFAULT_SIM_CONFIG, limits=None,
+                 mode="headless", floor=0):
         # Imported here, not at module scope, so that importing this module
         # does not pull in iGibson (and its GPU renderer) — the unit tests in
         # sim_eval/tests exercise the queue and the controller without a GPU.
         from igibson.envs.igibson_env import iGibsonEnv
 
+        from sim_scene import SimScene
+
         self.limits = limits or RobotLimits.from_config()
         self.config_path = Path(config_path)
         # This is the "step the sim at 4 Hz" of the control tick: one env.step
         # advances the world by exactly one control period of the real robot.
-        self.env = iGibsonEnv(
+        self._env = iGibsonEnv(
             config_file=str(self.config_path),
             mode=mode,
             action_timestep=self.limits.dt,
             physics_timestep=PHYSICS_TIMESTEP,
         )
+        # The world half of the adapter, with the floor already bound. Callers
+        # ask it rather than reaching through this object into iGibson — see
+        # sim_scene.py for what that cost before it existed.
+        self.scene = SimScene(self._env.scene, floor)
 
     @property
     def robot(self):
-        return self.env.robots[0]
+        return self._env.robots[0]
+
+    @property
+    def intrinsics(self):
+        """The camera this body sees through, for anything that must say what a
+        pixel means — projecting a waypoint into a frame, or comparing this
+        camera with the real LoCoBot's.
+
+        A renderer question, so it belongs to the body (which owns the camera)
+        rather than to the scene.
+        """
+        renderer = self._env.simulator.renderer
+        return {
+            "width": int(renderer.width),
+            "height": int(renderer.height),
+            "vertical_fov_deg": float(renderer.vertical_fov),
+            "intrinsic_matrix": [[float(value) for value in row]
+                                 for row in renderer.get_intrinsics()],
+        }
+
+    @property
+    def initial_pose(self):
+        """Where the simulator's own task placed the robot: (position, orientation).
+
+        Used only by P1's hand-made trail, which drives from wherever the reset
+        put the robot. Every later phase places the robot itself, from a task's
+        recorded start pose.
+        """
+        task = self._env.task
+        return ([float(value) for value in task.initial_pos],
+                [float(value) for value in task.initial_orn])
+
+    def verify_gpu(self, expected_gpu):
+        """Refuse to run if EGL is not rendering where we pinned it.
+
+        `cukurovaai` is shared, and a render that lands on a teammate's GPU
+        looks perfect from here. The check used to be spelled
+        `gpu.verify_renderer(body.env.simulator.renderer, selected_gpu)` at five
+        call sites, each reaching three levels into the simulator; it is one
+        call now, and the renderer stays private.
+        """
+        import gpu
+
+        return gpu.verify_renderer(self._env.simulator.renderer, expected_gpu)
 
     def reset(self):
         """Reset the episode. Leaves the robot wherever the task put it."""
-        self.env.reset()
+        self._env.reset()
 
     def place(self, position, orientation):
         """Put the robot at a pose and let it settle onto the floor."""
-        self.env.land(self.robot, np.asarray(position), np.asarray(orientation))
-        self.env.simulator.sync(force_sync=True)
+        self._env.land(self.robot, np.asarray(position), np.asarray(orientation))
+        self._env.simulator.sync(force_sync=True)
 
     def observe(self):
         """The current camera frame, as a PIL image."""
-        return frame_to_pil(self.env.get_state()["rgb"])
+        return frame_to_pil(self._env.get_state()["rgb"])
 
     def command(self, v, w):
         """Execute (v, w) for one control period. Returns True if it collided.
@@ -172,8 +246,8 @@ class SimBody:
         count and continue).
         """
         action = np.array([v, self.ANGULAR_VELOCITY_SIGN * w])
-        _state, _reward, _done, _info = self.env.step(action)
-        return len(self.env.collision_links) > 0
+        _state, _reward, _done, _info = self._env.step(action)
+        return len(self._env.collision_links) > 0
 
     @property
     def pose(self):
@@ -188,7 +262,7 @@ class SimBody:
         return float(x), float(y), float(yaw)
 
     def close(self):
-        self.env.close()
+        self._env.close()
 
 
 class TickRecord:
@@ -270,13 +344,12 @@ class NomadBridge:
     def _waypoint_to_metres(self, waypoint):
         """navigate.py: `chosen_waypoint[:2] *= (MAX_V / RATE)` when normalized.
 
-        `get_action` returns cumulative, normalized position deltas; this is
-        the deployment stack's conversion into metres — one unit is how far the
-        robot travels in one control period at its top speed.
+        Only the position half is scaled: a 4-element waypoint carries a
+        heading in its last two, which is a direction and has no units to
+        convert.
         """
         waypoint = np.array(waypoint, dtype=float)
-        if self.policy.model_params["normalize"]:
-            waypoint[:2] *= self.limits.max_v / self.limits.frame_rate
+        waypoint[:2] *= waypoint_scale_m(self.policy.model_params, self.limits)
         return waypoint
 
     def tick(self):

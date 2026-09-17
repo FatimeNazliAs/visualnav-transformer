@@ -181,20 +181,7 @@ def write_world_config(world, output_dir):
     return path
 
 
-def plan_path(scene, floor, start_xy, goal_xy):
-    """iGibson's A* over the traversability graph: the perfect route, in metres.
-
-    `entire_path=True` returns the whole polyline instead of the task's fixed
-    number of waypoints; the geodesic length that comes back is measured on the
-    unsubsampled path, so it is the true shortest-path length SPL needs.
-    """
-    path, geodesic = scene.get_shortest_path(
-        floor, np.asarray(start_xy, dtype=float), np.asarray(goal_xy, dtype=float),
-        entire_path=True)
-    return np.asarray(path, dtype=float), float(geodesic)
-
-
-def sample_start_goal(scene, floor, sampler):
+def sample_start_goal(scene, sampler):
     """Draw a start/goal pair that is connected and the right length (plan §5).
 
     `has_node` is checked *before* planning, not for speed: `get_shortest_path`
@@ -206,14 +193,13 @@ def sample_start_goal(scene, floor, sampler):
     before calling (`build_topomap` does).
     """
     for _ in range(sampler.max_attempts):
-        _floor, start = scene.get_random_point(floor=floor)
-        _floor, goal = scene.get_random_point(floor=floor)
-        start_xy, goal_xy = start[:2], goal[:2]
+        start_xy = scene.random_point()
+        goal_xy = scene.random_point()
 
-        if not (scene.has_node(floor, start_xy) and scene.has_node(floor, goal_xy)):
+        if not (scene.has_node(start_xy) and scene.has_node(goal_xy)):
             continue
 
-        path, geodesic = plan_path(scene, floor, start_xy, goal_xy)
+        path, geodesic = scene.shortest_path(start_xy, goal_xy)
         if sampler.accepts(geodesic):
             return start_xy, goal_xy, path, geodesic
 
@@ -228,32 +214,15 @@ def sample_start_goal(scene, floor, sampler):
 def resolve_start_goal(scene, config):
     """Use the configured pair if there is one, otherwise sample a valid one."""
     if config.start is None:
-        return sample_start_goal(scene, config.floor, config.sampler)
+        return sample_start_goal(scene, config.sampler)
 
     for name, point in (("start", config.start), ("goal", config.goal)):
-        if not scene.has_node(config.floor, point):
+        if not scene.has_node(point):
             raise TopomapError(
                 "configured {} {} is not on the nav mesh's traversable "
                 "component, so no path can run through it.".format(name, point))
-    path, geodesic = plan_path(scene, config.floor, config.start, config.goal)
+    path, geodesic = scene.shortest_path(config.start, config.goal)
     return np.asarray(config.start), np.asarray(config.goal), path, geodesic
-
-
-def camera_intrinsics(body):
-    """The camera the trail was seen through, for P3 and for anything later.
-
-    Intrinsics are not needed to follow a trail, but they are needed to say
-    what a pixel in it means — projecting a waypoint into a frame, or comparing
-    this camera with the real LoCoBot's.
-    """
-    renderer = body.env.simulator.renderer
-    return {
-        "width": int(renderer.width),
-        "height": int(renderer.height),
-        "vertical_fov_deg": float(renderer.vertical_fov),
-        "intrinsic_matrix": [[float(value) for value in row]
-                             for row in renderer.get_intrinsics()],
-    }
 
 
 def _pose_record(pose):
@@ -462,7 +431,7 @@ def open_body(config, output_dir):
     import bridge
 
     world_path = write_world_config(config.world_config(), output_dir)
-    return bridge.SimBody(config_path=world_path)
+    return bridge.SimBody(config_path=world_path, floor=config.floor)
 
 
 def drive_one_attempt(body, config, scene, on_node=None):
@@ -474,7 +443,7 @@ def drive_one_attempt(body, config, scene, on_node=None):
     """
     start_xy, goal_xy, path, geodesic = resolve_start_goal(scene, config)
     yaw = path_follow.initial_yaw(path, config.follower.lookahead_m)
-    floor_height = float(scene.floor_heights[config.floor])
+    floor_height = scene.floor_height
 
     body.reset()
     body.place([float(start_xy[0]), float(start_xy[1]), floor_height], [0.0, 0.0, yaw])
@@ -493,7 +462,7 @@ def build_topomap(body, config, output_dir, on_node=None, on_reject=None):
     Returns the metadata dict, which is also written to `metadata.json`.
     """
     output_dir = Path(output_dir)
-    scene = body.env.scene
+    scene = body.scene
 
     # iGibson samples through numpy's global RNG, and so does the task's own
     # reset — so this one seed fixes the trail, and a rerun reproduces it
@@ -520,7 +489,7 @@ def build_topomap(body, config, output_dir, on_node=None, on_reject=None):
 
     write_topomap(trail.nodes, output_dir)
     metadata = build_metadata(config, scene.scene_id, trail, path, geodesic,
-                              camera_intrinsics(body), body.limits)
+                              body.intrinsics, body.limits)
     metadata["rejected_attempts"] = rejections
     (output_dir / METADATA_NAME).write_text(json.dumps(metadata, indent=2) + "\n")
     return metadata

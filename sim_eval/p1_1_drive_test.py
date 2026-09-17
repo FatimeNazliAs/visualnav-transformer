@@ -181,7 +181,7 @@ def main():
     policy = NomadPolicy(spec, device)
     body = bridge.SimBody()
     try:
-        gpu.verify_renderer(body.env.simulator.renderer, selected_gpu)
+        body.verify_gpu(selected_gpu)
 
         # Reproduce the start pose the route was driven from. The seed matters
         # because the task's reset samples a pose before we override it, and

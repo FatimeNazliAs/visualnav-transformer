@@ -54,26 +54,19 @@ def parse_args():
     return parser.parse_args()
 
 
-def to_plot_xy(scene, points):
-    """World metres -> pixel columns/rows of the traversability map.
-
-    `scene.world_to_map` returns (row, col) — it flips the axes, because the
-    map image's first index runs along world y. Plotting needs them the other
-    way round, so this is where the flip is undone, once.
-    """
-    rows_cols = np.array([scene.world_to_map(np.asarray(point, dtype=float)[:2])
-                          for point in points])
-    return rows_cols[:, 1], rows_cols[:, 0]
-
-
-def plot_path(scene, metadata, floor, output_path):
+def plot_path(scene, metadata, output_path):
     """Top-down view: is this trail a sane route through the house?
 
     The planned path and the driven path are drawn separately on purpose. They
     should sit on top of each other; where they part is where the follower cut
     a corner, and that is the thing to notice.
+
+    Drawn in map pixels (`SimScene.world_to_map`) with `origin="upper"`, which
+    mirrors the y axis against the world. That is fine for one still; the
+    recorder's top-down panel, which is watched beside the camera, plots world
+    metres the right way up instead.
     """
-    trav_map = scene.floor_map[floor]
+    trav_map = scene.trav_map
     planned = np.asarray(metadata["planned_path"], dtype=float)
     driven = np.asarray(metadata["driven_path"], dtype=float)
     nodes = np.asarray([[node["pose"]["x"], node["pose"]["y"]]
@@ -82,28 +75,28 @@ def plot_path(scene, metadata, floor, output_path):
     figure, axes = plt.subplots(figsize=(7.5, 7.5))
     axes.imshow(trav_map, cmap="gray", origin="upper")
 
-    axes.plot(*to_plot_xy(scene, planned), color="tab:blue", linewidth=2.0,
+    axes.plot(*scene.world_to_map(planned), color="tab:blue", linewidth=2.0,
               label="planned (A* on the nav mesh)")
-    axes.plot(*to_plot_xy(scene, driven), color="tab:orange", linewidth=1.5,
+    axes.plot(*scene.world_to_map(driven), color="tab:orange", linewidth=1.5,
               linestyle="--", label="driven")
-    axes.scatter(*to_plot_xy(scene, nodes), s=26, color="tab:red", zorder=3,
+    axes.scatter(*scene.world_to_map(nodes), s=26, color="tab:red", zorder=3,
                  label="topomap nodes")
 
     for index, node in enumerate(nodes):
-        column, row = to_plot_xy(scene, [node])
+        column, row = scene.world_to_map([node])
         axes.annotate(str(index), (column[0], row[0]), color="tab:red",
                       fontsize=7, xytext=(3, 3), textcoords="offset points")
 
     start, goal = metadata["start_pose"], metadata["goal_pose"]
     for pose, colour, label in ((start, "lime", "start"), (goal, "magenta", "goal")):
-        column, row = to_plot_xy(scene, [[pose["x"], pose["y"]]])
+        column, row = scene.world_to_map([[pose["x"], pose["y"]]])
         axes.scatter(column, row, s=150, marker="*", color=colour,
                      edgecolor="black", zorder=4, label=label)
 
     axes.set_title(
         "{} floor {} · {} nodes every {} ticks ({:.2f} s)\n"
         "geodesic {:.2f} m · driven {:.2f} m · {} collision ticks".format(
-            metadata["scene"]["id"], floor, len(nodes),
+            metadata["scene"]["id"], scene.floor, len(nodes),
             metadata["spacing"]["ticks_per_node"],
             metadata["spacing"]["seconds_per_node"],
             metadata["geodesic_length_m"], metadata["driven_length_m"],
@@ -207,7 +200,7 @@ def main():
 
     body = topomap_builder.open_body(config, args.output)
     try:
-        gpu.verify_renderer(body.env.simulator.renderer, selected_gpu)
+        body.verify_gpu(selected_gpu)
         metadata = topomap_builder.build_topomap(
             body, config, args.output,
             on_node=lambda node: print("node {:>2}  tick {:>3}  pose {}".format(
@@ -216,7 +209,7 @@ def main():
                 "\nrejected attempt {}: {}\n".format(attempt, why)))
         # Drawn before the sim closes: the traversability map belongs to the
         # scene, and the scene dies with the environment.
-        plot_path(body.env.scene, metadata, config.floor, DEFAULT_PATH_PLOT)
+        plot_path(body.scene, metadata, DEFAULT_PATH_PLOT)
     finally:
         body.close()
 

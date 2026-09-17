@@ -28,13 +28,17 @@ import checkpoints
 import episode_runner
 import gpu
 import metrics
+import recorder as recording
 import task_set
+from driver import DriverConfig
 from episode_runner import EpisodeRules
+from recorder import RecordingConfig
 from task_set import TaskSetConfig, TaskSetError
 from topomap_builder import TopomapError
 
 SIM_EVAL_DIR = Path(__file__).resolve().parent
 DEFAULT_CONFIG = SIM_EVAL_DIR / "configs" / "eval.yaml"
+DEFAULT_VIDEO_DIR = "outputs/videos"
 
 
 def resolve_path(path):
@@ -48,18 +52,29 @@ class EvalConfig:
     """`configs/eval.yaml`: which problems, which arms, and when an episode ends."""
 
     def __init__(self, tasks, task_directory, rules, floor, checkpoint_names,
-                 output_dir):
+                 output_dir, recording, driver):
         self.tasks = tasks
         self.task_directory = task_directory
         self.rules = rules
         self.floor = floor
         self.checkpoint_names = checkpoint_names
         self.output_dir = output_dir
+        # P4's layer: whether an episode is filmed while it is scored. It can
+        # change nothing about the scoring, which is why it is a section of its
+        # own rather than another episode rule.
+        self.recording = recording
+        # How the policy steers. A section of its own because it belongs to the
+        # driver, not to the problem: the same task set is faced with it, and
+        # every row of the table records which settings faced it.
+        self.driver = driver
 
     @classmethod
     def from_dict(cls, data):
         task_section = dict(data["task_set"])
         episode = dict(data.get("episode") or {})
+        record_section = dict(data.get("recording") or {})
+        record_section["directory"] = resolve_path(
+            record_section.get("directory", DEFAULT_VIDEO_DIR))
         return cls(
             task_directory=resolve_path(task_section.pop("directory")),
             tasks=TaskSetConfig.from_dict(task_section),
@@ -69,6 +84,8 @@ class EvalConfig:
             rules=EpisodeRules.from_dict(episode),
             checkpoint_names=list(data.get("checkpoints") or []),
             output_dir=resolve_path(data.get("output_dir", "outputs")),
+            recording=RecordingConfig.from_dict(record_section),
+            driver=DriverConfig.from_dict(data.get("driver")),
         )
 
     @classmethod
@@ -105,7 +122,30 @@ def parse_args():
                         help="one line per episode instead of one per tick")
     parser.add_argument("--gpu", type=int, default=None,
                         help="physical GPU to use; never guesses")
+    # P4's recorder. `None` means "whatever the config says", so neither flag
+    # has to be repeated to keep the config's answer.
+    parser.add_argument("--record", dest="record", action="store_true",
+                        default=None, help="film every recorded episode")
+    parser.add_argument("--no-record", dest="record", action="store_false",
+                        help="score without filming (the default)")
+    parser.add_argument("--record-fps", type=int, default=None,
+                        help="video frame rate; the sim runs at 4 Hz, so 4 is "
+                             "real time (default: from the config)")
+    parser.add_argument("--record-tasks", default=None,
+                        help="which episodes to film: all, a count, or a "
+                             "comma-separated list of task ids")
     return parser.parse_args()
+
+
+def apply_recording_flags(config, args):
+    """Let the command line override the config's `recording:` block."""
+    if args.record is not None:
+        config.recording.enabled = args.record
+    if args.record_fps is not None:
+        config.recording.fps = args.record_fps
+    if args.record_tasks is not None:
+        config.recording.tasks = recording.parse_subset(args.record_tasks)
+    return config.recording
 
 
 def build_task_set(config, directory, rebuild=False):
@@ -127,30 +167,38 @@ def build_task_set(config, directory, rebuild=False):
                 entry["nodes"], entry["seed"])))
 
 
-def run_scene(scene, tasks, runner, checkpoint_name, table, verbose=True):
+def run_scene(scene, tasks, runner, checkpoint_name, table, film,
+              verbose=True):
     """Score every task in one scene, through one already-open simulator.
 
     The tick loop is here, in the consumer, rather than inside the runner —
-    which is the seam P4's recorder attaches to. It adds a line to this loop
-    (encode the frame, draw the overlay) instead of widening a callback the
-    runner would have to know about. Nothing is kept: a record is printed and
-    released, so a scene's worth of episodes never accumulates frames.
+    which is the seam P4's recorder attaches to. Recording is one line of it
+    (`video.capture`) rather than a callback the runner would have to know
+    about, and an unrecorded run gets a `NullRecording` whose capture does
+    nothing, so the loop is the same loop either way. Nothing is kept: a record
+    is drawn, printed and released, so a scene's worth of episodes never
+    accumulates frames.
     """
     print("\n=== {}: {} tasks ===".format(scene, len(tasks)))
 
-    for task in tasks:
+    for task_index, task in enumerate(tasks):
         print("\n--- {} ({}) ---".format(task.summary(), checkpoint_name))
         episode = runner.episode(task, checkpoint_name)
-        for record in episode:
-            if verbose:
-                print(record.summary())
+        with film.episode(task, checkpoint_name, runner.body.scene,
+                          task_index=task_index) as video:
+            for record in episode:
+                video.capture(record)
+                if verbose:
+                    print(record.summary())
         result = episode.result()
         table.append(result.metrics, trace=result.trace())
         print(result.metrics.summary())
+        if video.path is not None:
+            print(video.summary())
 
 
 def score_checkpoint(config, tasks, policy, checkpoint_name, table,
-                     selected_gpu, verbose=True):
+                     selected_gpu, film, verbose=True):
     """Run every task for one checkpoint, one scene's simulator at a time.
 
     The world is opened from the first task's own `world.yaml` — the file P2
@@ -160,15 +208,35 @@ def score_checkpoint(config, tasks, policy, checkpoint_name, table,
     import bridge
 
     for scene, scene_tasks in task_set.group_by_scene(tasks).items():
-        body = bridge.SimBody(config_path=scene_tasks[0].world_config)
+        body = bridge.SimBody(config_path=scene_tasks[0].world_config,
+                              floor=config.floor)
         try:
-            gpu.verify_renderer(body.env.simulator.renderer, selected_gpu)
+            body.verify_gpu(selected_gpu)
             runner = episode_runner.EpisodeRunner(
-                policy, body, rules=config.rules, floor=config.floor)
+                policy, body, rules=config.rules)
             run_scene(scene, scene_tasks, runner, checkpoint_name, table,
-                      verbose=verbose)
+                      film, verbose=verbose)
         finally:
             body.close()
+
+
+def build_recorder(config, policy):
+    """P4's recorder for this run, or a disabled one.
+
+    The waypoint scale is read off the checkpoint that is about to drive — the
+    overlay draws the model's own samples in metres, and a checkpoint trained
+    without normalization means them in metres already.
+    """
+    import bridge
+    import pd_control
+
+    if not config.recording.enabled:
+        return recording.disabled()
+    return recording.Recorder(
+        config.recording,
+        waypoint_scale_m=bridge.waypoint_scale_m(
+            policy.model_params, pd_control.RobotLimits.from_config()),
+        success_radius_m=config.rules.success_radius_m)
 
 
 def evaluate(config, checkpoint_name, csv_path, selected_gpu, task_directory=None,
@@ -187,14 +255,16 @@ def evaluate(config, checkpoint_name, csv_path, selected_gpu, task_directory=Non
     spec = checkpoints.load(checkpoint_name)
     print("checkpoint: {}".format(spec.summary()))
     print("rules:      {}".format(config.rules.summary()))
+    print("driver:     {}".format(config.driver.summary()))
+    print("recording:  {}".format(config.recording.summary()))
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print("device:     {}".format(device))
-    policy = NomadPolicy(spec, device)
+    policy = NomadPolicy(spec, device, config.driver)
 
     table = metrics.MetricsTable(csv_path).open(resume=resume)
     score_checkpoint(config, tasks, policy, checkpoint_name, table,
-                     selected_gpu, verbose=verbose)
+                     selected_gpu, build_recorder(config, policy), verbose=verbose)
 
     print()
     print(metrics.format_aggregate(
@@ -217,6 +287,7 @@ def main():
     print("config:     {}".format(args.config))
     if args.tasks is not None:
         config.tasks.tasks_per_scene = args.tasks
+    apply_recording_flags(config, args)
 
     checkpoint_name = args.checkpoint or (config.checkpoint_names or [None])[0]
     if checkpoint_name is None and not args.build_only:

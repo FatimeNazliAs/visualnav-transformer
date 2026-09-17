@@ -23,6 +23,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import episode_runner  # noqa: E402
 import pd_control  # noqa: E402
 import task_set  # noqa: E402
+from driver import DriverConfig  # noqa: E402
+from sim_scene import SimScene  # noqa: E402
 
 LIMITS = pd_control.RobotLimits.from_config()
 
@@ -87,7 +89,10 @@ class FakeBody:
 
     def __init__(self, scene=None, collide_on=()):
         self.limits = LIMITS
-        self.env = types.SimpleNamespace(scene=scene or FakeScene())
+        # The world half of the adapter, as `SimBody` exposes it. The raw fake
+        # is wrapped in a real `SimScene`, so the geodesic rule that decides
+        # success is tested through the code that actually runs it.
+        self.scene = SimScene(scene or FakeScene(), floor=0)
         self.collide_on = set(collide_on)
         self.ticks = 0
         self.resets = 0
@@ -121,6 +126,8 @@ class FakePolicy:
     def __init__(self, context_size=3, claims_goal_from=None):
         self.spec = types.SimpleNamespace(context_size=context_size)
         self.model_params = {"normalize": False}
+        # A real one: the row's provenance column comes off it.
+        self.driver = DriverConfig()
         self.claims_goal_from = claims_goal_from
         self.calls = 0
 

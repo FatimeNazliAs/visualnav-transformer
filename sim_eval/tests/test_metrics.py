@@ -34,7 +34,8 @@ class FakeTask:
 
 def make_metrics(**overrides):
     values = dict(
-        checkpoint="best_combined", task=FakeTask(), seed=1000, success=True,
+        checkpoint="best_combined", task=FakeTask(), seed=1000,
+        driver="n8w2r4t3", success=True,
         collision_ticks=0, collision_events=0, path_length_m=5.0,
         final_geodesic_distance_m=0.4, final_euclidean_distance_m=0.4,
         ticks=80, seconds=20.0, timeout_ticks=352, success_radius_m=1.0,

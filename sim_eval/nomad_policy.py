@@ -27,11 +27,7 @@ from vint_train.models.nomad.nomad import NoMaD, DenseNetwork
 from vint_train.models.nomad.nomad_vint import NoMaD_ViNT, replace_bn_with_gn
 from vint_train.training.train_utils import get_action
 
-# navigate.py argparse defaults — the real robot's settings.
-DEFAULT_NUM_SAMPLES = 8     # -n: action samples drawn from the diffusion head
-DEFAULT_WAYPOINT = 2        # -w: "close waypoints exhibit straight line motion"
-DEFAULT_RADIUS = 4          # -r: topomap nodes either side of the current one
-DEFAULT_CLOSE_THRESHOLD = 3 # -t: temporal distance before localizing onward
+from driver import DriverConfig
 
 # ImageNet statistics, as in deployment/src/utils.py.
 IMAGENET_NORMALIZE = transforms.Compose([
@@ -171,15 +167,12 @@ class PolicyStep:
 class NomadPolicy:
     """A loaded NoMaD checkpoint that answers "where next" for one observation."""
 
-    def __init__(self, spec, device, num_samples=DEFAULT_NUM_SAMPLES,
-                 waypoint=DEFAULT_WAYPOINT, radius=DEFAULT_RADIUS,
-                 close_threshold=DEFAULT_CLOSE_THRESHOLD):
+    def __init__(self, spec, device, driver=None):
         self.spec = spec
         self.device = device
-        self.num_samples = num_samples
-        self.waypoint = waypoint
-        self.radius = radius
-        self.close_threshold = close_threshold
+        # The four steering knobs, as one config object — see DriverConfig for
+        # why they are not four keyword arguments any more.
+        self.driver = driver or DriverConfig()
 
         self.model_params = spec.model_params
         self.model = load_model(spec.weights_path, self.model_params, device)
@@ -216,7 +209,7 @@ class NomadPolicy:
         # goal-directed navigation behaviour. Exploration would set this to 1.
         mask = torch.zeros(1).long().to(self.device)
 
-        start, end = localization_window(closest_node, goal_node, self.radius)
+        start, end = localization_window(closest_node, goal_node, self.driver.radius)
         goal_image = torch.concat(encoded_topomap[start:end + 1], dim=0)
 
         obsgoal_cond = self.model(
@@ -227,12 +220,12 @@ class NomadPolicy:
         )
         dists = to_numpy(self.model("dist_pred_net", obsgoal_cond=obsgoal_cond).flatten())
         closest_node, subgoal_offset = localize(
-            dists, start, len(obsgoal_cond), self.close_threshold)
+            dists, start, len(obsgoal_cond), self.driver.close_threshold)
         obs_cond = obsgoal_cond[subgoal_offset].unsqueeze(0)
 
         naction = self._denoise(obs_cond)
         return PolicyStep(
-            waypoint=naction[0][self.waypoint],
+            waypoint=naction[0][self.driver.waypoint],
             closest_node=closest_node,
             subgoal_node=start + subgoal_offset,
             distances=dists,
@@ -244,13 +237,13 @@ class NomadPolicy:
         with torch.no_grad():
             # encoder vision features
             if len(obs_cond.shape) == 2:
-                obs_cond = obs_cond.repeat(self.num_samples, 1)
+                obs_cond = obs_cond.repeat(self.driver.num_samples, 1)
             else:
-                obs_cond = obs_cond.repeat(self.num_samples, 1, 1)
+                obs_cond = obs_cond.repeat(self.driver.num_samples, 1, 1)
 
             # initialize action from Gaussian noise
             noisy_action = torch.randn(
-                (self.num_samples, self.model_params["len_traj_pred"], 2),
+                (self.driver.num_samples, self.model_params["len_traj_pred"], 2),
                 device=self.device)
             naction = noisy_action
 

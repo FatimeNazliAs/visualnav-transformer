@@ -43,13 +43,6 @@ import numpy as np
 
 import metrics
 
-# The geodesic that measures how far a failed episode stopped from its goal.
-# `scene.get_shortest_path` raises networkx's NoPath when the two ends are not
-# connected, which happens for real: an agent that climbs onto furniture leaves
-# the traversable component entirely. That is a fact about the episode, not an
-# error, so it is caught and reported as "no geodesic" rather than raised.
-NO_PATH_ERRORS = ("NetworkXNoPath", "NodeNotFound")
-
 # How "within the goal radius" is measured. Geodesic is the default and is what
 # `final_distance_to_goal` reports, so success and the distance beside it in the
 # table mean the same thing; euclidean is the looser reading, kept because it is
@@ -140,37 +133,6 @@ class EpisodeRules:
                 "(max_v x dt) + {} / dt), at least {} ticks".format(
                     self.success_radius_m, self.success_metric,
                     self.timeout_slack, turn, self.min_timeout_ticks))
-
-
-def geodesic_distance(scene, floor, source_xy, goal_xy):
-    """Geodesic distance between two points, or None if they are not connected.
-
-    Plan §6 asks for the *geodesic* final distance-to-goal, and the difference
-    matters exactly where the metric is read: an agent stopped a metre from the
-    goal with a wall between them has not nearly arrived.
-
-    `get_shortest_path` grafts an off-graph endpoint onto the graph as a new
-    node with a single edge to its nearest neighbour, so calling it mutates the
-    scene. That is safe here and it is worth saying why, because it is the
-    reason this is not simply asked every tick: a node with one edge is a leaf,
-    no shortest path ever routes *through* a leaf, and so no later query comes
-    back shorter for having been called. The graph still grows by a node per
-    call, which is why the callers below ask only at the end of an episode and
-    on the handful of ticks that are already inside the radius.
-    """
-    try:
-        _path, distance = scene.get_shortest_path(
-            floor, np.asarray(source_xy, dtype=float)[:2],
-            np.asarray(goal_xy, dtype=float)[:2], entire_path=False)
-    except Exception as error:                       # noqa: BLE001 - see below
-        # networkx is not imported here (it is iGibson's dependency, not ours),
-        # so the exception is identified by name rather than by class. Anything
-        # else is re-raised: a scene that cannot plan at all is a defect, and
-        # swallowing it would turn every episode's distance into a silent blank.
-        if type(error).__name__ not in NO_PATH_ERRORS:
-            raise
-        return None
-    return float(distance)
 
 
 def seed_episode(seed):
@@ -279,9 +241,9 @@ class Episode:
         seed_episode(self.seed)
 
         # The floor's height belongs to the scene, not to the task, so it is
-        # read from the open scene here — exactly as P2 does when it places the
+        # asked of the open scene here — exactly as P2 does when it places the
         # robot for the reference drive.
-        floor_height = float(body.env.scene.floor_heights[runner.floor])
+        floor_height = body.scene.floor_height
 
         driver = bridge.NomadBridge(runner.policy, body)
         driver.start_episode(self.task.topomap(), self.task.start_pose(floor_height))
@@ -336,6 +298,7 @@ class Episode:
             checkpoint=self.checkpoint_name,
             task=self.task,
             seed=self.seed,
+            driver=runner.policy.driver.label(),
             success=self._success,
             collision_ticks=sum(self._collided),
             collision_events=metrics.count_collision_events(self._collided),
@@ -366,13 +329,16 @@ class EpisodeRunner:
     runner scores a whole scene's worth of tasks without anything leaking from
     one to the next except the simulator itself (which `reset` clears) and
     numpy's global RNG (which `seed_episode` overwrites).
+
+    There is no `floor` here any more: the floor is bound into `body.scene`
+    when the simulator is opened, so it stopped being a parameter every layer
+    forwarded without reading.
     """
 
-    def __init__(self, policy, body, rules=None, floor=0):
+    def __init__(self, policy, body, rules=None):
         self.policy = policy
         self.body = body
         self.rules = rules or EpisodeRules()
-        self.floor = floor
 
     def _euclidean_distance(self, goal_xy):
         """How far the agent is from the goal right now, in a straight line."""
@@ -381,8 +347,7 @@ class EpisodeRunner:
 
     def _geodesic_distance(self, goal_xy):
         """How far the agent is from the goal around the furniture, or None."""
-        return geodesic_distance(
-            self.body.env.scene, self.floor, self.body.pose, goal_xy)
+        return self.body.scene.geodesic_distance(self.body.pose, goal_xy)
 
     def _reached(self, goal_xy):
         """Is the agent inside the goal radius — by whichever measure rules say.

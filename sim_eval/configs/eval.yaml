@@ -71,6 +71,50 @@ episode:
   # Which floor of the house. Rs has one.
   floor: 0
 
+# --- how the policy steers (navigate.py's own flags) -------------------------
+# These four decide the action as much as the checkpoint does. They are
+# `navigate.py`'s argparse defaults — the settings the real LoCoBot runs — and
+# plan decision E says to mirror them and tune nothing, so changing anything
+# here is a deliberate departure from the robot.
+#
+# They are written down rather than left as constants for one reason: every row
+# of the metrics table records them (the `driver` column, e.g. `n8w2r4t3`), so
+# two tables produced under two different settings can never be mistaken for
+# each other. P5 is expected to try tuning these; P6 requires that every arm
+# faced identical ones.
+driver:
+  num_samples: 8      # -n: action samples drawn from the diffusion head
+  waypoint: 2         # -w: which waypoint of the predicted trajectory is acted on
+  radius: 4           # -r: topomap nodes either side of the current one
+  close_threshold: 3  # -t: temporal distance before localizing onward
+
+# --- watching the runs (plan §11) --------------------------------------------
+# P4's layer over the scorer: each recorded episode is written as a three-panel
+# MP4 — the robot camera, a top-down map of where it has been, and what it is
+# steering at. It changes nothing about the scoring; with `enabled: false` the
+# tick loop runs exactly the code P3 ran.
+recording:
+  # Off by default. Filming costs about 0.09 s per tick — one matplotlib frame
+  # drawn and encoded — which measured as 13.4 s against 8.0 s for the same
+  # 58-tick episode. Worth paying to watch an episode; not worth paying for
+  # twenty that nobody will open.
+  enabled: false
+
+  # Playback speed, not simulation speed. The control loop is 4 Hz (plan
+  # decision E), so 4 fps is real time and 10 fps is 2.5x — a 400-tick episode
+  # becomes a 40-second video. Nothing about the rollout changes with it.
+  fps: 10
+
+  # Which episodes get filmed:
+  #   all              every one (what P6 wants: a video for every run)
+  #   3                the first 3 tasks of each scene
+  #   [Rs_00, Rs_07]   exactly these task ids — chasing one failure
+  tasks: all
+
+  # outputs/videos/<checkpoint>/<task_id>.mp4 — one directory per arm, so the
+  # same task under two checkpoints is two files to watch side by side.
+  directory: outputs/videos
+
 # --- what gets scored --------------------------------------------------------
 # Names from configs/checkpoints.yaml. The headline pair of plan §7; P3 runs
 # one at a time (`--checkpoint`), and P6 runs both, one per GPU.
