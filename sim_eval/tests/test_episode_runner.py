@@ -162,11 +162,21 @@ def make_task(directory, goal_x=5.0, geodesic_m=5.0, nodes=4):
     return task_set.Task("Rs_00", "Rs", directory, seed=1000, metadata=metadata)
 
 
-def run_episode(task, body=None, policy=None, rules=None):
-    body = body or FakeBody()
+def make_episode(task, body=None, policy=None, rules=None):
     rules = rules or episode_runner.EpisodeRules(success_radius_m=SUCCESS_RADIUS_M)
-    runner = episode_runner.EpisodeRunner(policy or FakePolicy(), body, rules=rules)
-    return runner.run(task, "fake_checkpoint"), body
+    runner = episode_runner.EpisodeRunner(
+        policy or FakePolicy(), body or FakeBody(), rules=rules)
+    return runner.episode(task, "fake_checkpoint")
+
+
+def run_episode(task, body=None, policy=None, rules=None, on_tick=None):
+    """Drive an episode to its end the way a consumer does, and score it."""
+    body = body or FakeBody()
+    episode = make_episode(task, body=body, policy=policy, rules=rules)
+    for record in episode:
+        if on_tick is not None:
+            on_tick(record)
+    return episode.result(), body
 
 
 # --- the timeout formula -----------------------------------------------------
@@ -209,7 +219,7 @@ def test_a_nonsense_rule_is_refused_rather_than_scored():
 def test_an_episode_ends_the_tick_the_agent_enters_the_goal_radius(task):
     """Goal at 5 m, radius 0.875 m, 0.05 m per tick: arrival is the 83rd tick."""
     result, _body = run_episode(task)
-    assert result.success
+    assert result.metrics.success
     assert result.metrics.ticks == ARRIVAL_TICK
     assert result.metrics.outcome == "success"
 
@@ -220,7 +230,7 @@ def test_the_path_includes_the_leg_of_the_final_tick(task):
     table is computed against a path one tick too short."""
     result, _body = run_episode(task)
     assert result.metrics.path_length_m == pytest.approx(ARRIVAL_TICK * METRES_PER_TICK)
-    assert result.poses[-1][0] == pytest.approx(4.15)
+    assert result.trace()["poses"][-1][0] == pytest.approx(4.15)
 
 
 def test_success_is_measured_after_the_tick_not_before_it(task):
@@ -242,7 +252,7 @@ def test_an_agent_that_never_arrives_spends_exactly_its_budget(tmp_path):
     task = make_task(tmp_path, goal_x=100.0, geodesic_m=0.5)
     rules = episode_runner.EpisodeRules(turn_allowance_s=0.0)
     result, _body = run_episode(task, rules=rules)
-    assert not result.success
+    assert not result.metrics.success
     assert result.metrics.outcome == "timeout"
     assert result.metrics.ticks == rules.timeout_ticks(0.5, LIMITS)
 
@@ -258,7 +268,7 @@ def test_a_failed_episode_scores_zero_spl(tmp_path):
 def test_collisions_do_not_end_an_episode(task):
     body = FakeBody(collide_on=range(0, 40))
     result, _body = run_episode(task, body=body)
-    assert result.success
+    assert result.metrics.success
     assert result.metrics.ticks == ARRIVAL_TICK
     assert result.metrics.collision_ticks == 40
 
@@ -283,7 +293,7 @@ def test_the_policy_claiming_arrival_does_not_end_the_episode(tmp_path):
     result, _body = run_episode(task, policy=policy, rules=rules)
 
     assert result.metrics.declared_arrival_tick == 5
-    assert not result.success
+    assert not result.metrics.success
     assert result.metrics.ticks == rules.timeout_ticks(0.5, LIMITS)
 
 
@@ -306,7 +316,7 @@ def test_the_two_success_rules_disagree_where_the_furniture_is(task):
     loose = run_episode(task, body=body(), rules=episode_runner.EpisodeRules(
         success_radius_m=SUCCESS_RADIUS_M, success_metric="euclidean"))[0]
 
-    assert loose.success and strict.success
+    assert loose.metrics.success and strict.metrics.success
     assert loose.metrics.ticks == ARRIVAL_TICK
     assert strict.metrics.ticks == 87
 
@@ -359,7 +369,7 @@ def test_an_agent_with_no_path_to_the_goal_has_not_reached_it(tmp_path):
     rules = episode_runner.EpisodeRules(success_radius_m=SUCCESS_RADIUS_M,
                                         turn_allowance_s=0.0)
     result, _body = run_episode(task, body=FakeBody(scene=scene), rules=rules)
-    assert not result.success
+    assert not result.metrics.success
     assert result.metrics.ticks == rules.timeout_ticks(0.5, LIMITS)
 
 
@@ -383,5 +393,79 @@ def test_the_trace_carries_the_path_and_the_per_tick_decisions(task):
     assert trace["task_id"] == "Rs_00"
     assert len(trace["poses"]) == trace["ticks"] + 1
     assert len(trace["ticks_log"]) == trace["ticks"]
-    assert set(trace["ticks_log"][0]) == {"tick", "node", "subgoal", "v", "w",
-                                          "collided"}
+    assert set(trace["ticks_log"][0]) == {"tick", "node", "subgoal", "waypoint_m",
+                                          "v", "w", "collided"}
+
+
+def test_the_trace_carries_the_waypoint_the_robot_steered_to(task):
+    """P4's overlay draws it, and the trace used to drop it."""
+    trace = run_episode(task)[0].trace()
+    assert trace["ticks_log"][0]["waypoint_m"] == [0.05, 0.0]
+
+
+# --- the episode is a stream -------------------------------------------------
+
+def test_iterating_the_episode_is_what_runs_it(task):
+    """One record per tick, in order, as it happens."""
+    seen = []
+    episode = make_episode(task)
+    for record in episode:
+        seen.append(record.index)
+    assert seen == list(range(ARRIVAL_TICK))
+    assert episode.result().metrics.ticks == ARRIVAL_TICK
+
+
+def test_the_episode_keeps_no_records_and_so_no_frames(task):
+    """Each record pins a decoded camera frame. An episode's worth is hundreds
+    of megabytes and a scene's worth is gigabytes, so nothing may hold them —
+    this is the whole reason the loop was inverted."""
+    episode = make_episode(task)
+    for _record in episode:
+        pass
+    result = episode.result()
+
+    held = [name for name, value in vars(episode).items()
+            if isinstance(value, list) and any(
+                hasattr(item, "frame") for item in value)]
+    assert held == []
+    assert not hasattr(result, "records")
+
+
+def test_a_consumer_sees_the_frame_the_model_saw(task):
+    """The frame is on the stream, so a recorder can encode it and drop it."""
+    frames = [record.frame for record in make_episode(task)]
+    assert len(frames) == ARRIVAL_TICK
+    assert frames[0].size == (8, 6)
+
+
+def test_the_record_carries_the_policy_step_rather_than_a_copy_of_it(task):
+    """`distances` and `samples` are what P4's and P5's overlays draw, and a
+    field-by-field copy silently dropped them."""
+    record = next(iter(make_episode(task)))
+    assert record.step.closest_node == 0
+    assert hasattr(record.step, "distances")
+    assert hasattr(record.step, "samples")
+
+
+def test_an_episode_runs_once(task):
+    """Re-iterating would score half a second run against the first's tally."""
+    episode = make_episode(task)
+    for _record in episode:
+        pass
+    with pytest.raises(RuntimeError):
+        for _record in episode:
+            pass
+
+
+def test_an_unfinished_episode_refuses_to_be_scored(task):
+    """Scoring a partial run would report a timeout that never happened."""
+    episode = make_episode(task)
+    with pytest.raises(RuntimeError):
+        episode.result()
+
+
+def test_the_budget_is_known_before_the_episode_runs(task):
+    """A consumer sizing a video needs it up front."""
+    episode = make_episode(task)
+    assert episode.timeout_ticks == episode_runner.EpisodeRules(
+        success_radius_m=SUCCESS_RADIUS_M).timeout_ticks(5.0, LIMITS)

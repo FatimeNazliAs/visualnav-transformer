@@ -25,6 +25,12 @@ would stop the odometer early and inflate its SPL. So the episode ends on where
 the agent *is*; the tick it first claimed arrival is recorded as
 `declared_arrival_tick`, a diagnostic, and the run continues either way.
 
+An episode is a **stream**, not a batch: iterate it and each tick arrives as it
+is decided, with the frame the model saw. A consumer that wants numbers keeps
+none of them; a consumer that wants a video encodes each one and drops it.
+Nothing accumulates, which is what keeps a 439-tick episode from pinning 405 MB
+of frames and a 20-task scene from pinning gigabytes.
+
 The runner never opens a simulator or loads a checkpoint: it is handed both. So
 `run_eval.py` can pay for a scene and a checkpoint once and run many episodes
 through them, and `tests/test_episode_runner.py` can pin the stop conditions
@@ -187,44 +193,179 @@ def seed_episode(seed):
 
 
 class EpisodeResult:
-    """One finished episode: how it ended, what it scored, and what it did."""
+    """One finished episode: what it scored, and the evidence behind it.
 
-    def __init__(self, episode_metrics, records, poses):
+    Deliberately small. This used to also carry every `TickRecord`, which meant
+    it carried every decoded camera frame — 405 MB for the longest episode that
+    has actually run, and `run_eval` kept one of these per task for a whole
+    scene. Nothing read them. The ticks are gone from here because the ticks
+    are *streamed* now (see `Episode`): a consumer that wants a frame is handed
+    it as it happens, and the result is what is left once the episode is over.
+    """
+
+    def __init__(self, episode_metrics, trace):
         self.metrics = episode_metrics
-        self.records = records
-        self.poses = poses
-
-    @property
-    def success(self):
-        return self.metrics.success
+        self._trace = trace
 
     def trace(self):
         """The episode as JSON — the evidence behind its row in the table.
 
-        Frames are left out on purpose: they are large, and P4's recorder
-        re-runs the episode to capture them. What is here is everything needed
-        to redraw the path and read the decisions behind it.
+        Frames are not in it: they are large, and a consumer that wants them
+        takes them off the stream. What is here is everything needed to redraw
+        the path and read the decisions behind it.
         """
-        row = self.metrics.as_row()
-        row["poses"] = [[round(value, 4) for value in pose] for pose in self.poses]
-        row["ticks_log"] = [
-            {"tick": record.index,
-             "node": record.closest_node,
-             "subgoal": record.subgoal_node,
-             "v": round(record.v, 4),
-             "w": round(record.w, 4),
-             "collided": bool(record.collided)}
-            for record in self.records]
-        return row
+        return self._trace
+
+
+class Episode:
+    """One episode, as a stream of ticks that can be watched while it happens.
+
+    Iterate it to run it; ask it for its `result()` once it is done:
+
+        episode = runner.episode(task, "best_combined")
+        for record in episode:
+            print(record.summary())      # or encode a video frame, or both
+        result = episode.result()
+
+    **Why the consumer holds the loop and not the runner.** The work a consumer
+    does per tick — write a frame to a video, draw an overlay, print a line —
+    is the consumer's business, and a callback the runner invokes can only ever
+    be given what the runner thought to pass. That is how the old `on_tick`
+    became too weak for P4: it received a `TickRecord` and nothing else, no
+    task, no output path, so every new need widened the runner's signature.
+    Iterating inverts that. The runner keeps what only it can know — when the
+    episode is over — and the consumer keeps everything else.
+
+    **Nothing here retains a record.** Each one pins a 0.92 MB decoded frame,
+    so an episode's worth is hundreds of megabytes and a scene's worth is
+    gigabytes. What is kept instead is what the metrics need: the poses, the
+    collision flags and the last step. The invariant is pinned by
+    `tests/test_episode_runner.py`.
+    """
+
+    def __init__(self, runner, task, checkpoint_name, seed):
+        self.runner = runner
+        self.task = task
+        self.checkpoint_name = checkpoint_name
+        self.seed = seed
+        self.timeout_ticks = runner.rules.timeout_ticks(
+            task.geodesic_length_m, runner.body.limits)
+
+        self._poses = []
+        self._collided = []
+        self._ticks_log = []
+        self._last_step = None
+        self._declared_arrival_tick = None
+        self._success = False
+        self._started = False
+        self._finished = False
+
+    def __iter__(self):
+        """Run the episode, yielding each tick as it is decided and acted on.
+
+        Ends on success — inside the goal radius — or on timeout, and on
+        nothing else. Collisions are recorded every tick and never terminal.
+        """
+        import bridge
+
+        if self._started:
+            raise RuntimeError(
+                "an episode runs once; build another with runner.episode(). "
+                "Re-iterating would score a half-finished second run against "
+                "the first one's tally.")
+        self._started = True
+
+        runner, body, rules = self.runner, self.runner.body, self.runner.rules
+        seed_episode(self.seed)
+
+        # The floor's height belongs to the scene, not to the task, so it is
+        # read from the open scene here — exactly as P2 does when it places the
+        # robot for the reference drive.
+        floor_height = float(body.env.scene.floor_heights[runner.floor])
+
+        driver = bridge.NomadBridge(runner.policy, body)
+        driver.start_episode(self.task.topomap(), self.task.start_pose(floor_height))
+        goal_xy = self.task.goal_xy
+
+        for _ in range(self.timeout_ticks):
+            record = driver.tick()
+
+            self._poses.append(record.pose)
+            self._collided.append(bool(record.collided))
+            self._last_step = record.step
+            self._ticks_log.append({
+                "tick": record.index,
+                "node": record.step.closest_node,
+                "subgoal": record.step.subgoal_node,
+                # The waypoint the PD controller actually steered to, in
+                # metres. P4's overlay draws this; the old trace dropped it.
+                "waypoint_m": [round(float(value), 4)
+                               for value in record.waypoint_m[:2]],
+                "v": round(record.v, 4),
+                "w": round(record.w, 4),
+                "collided": bool(record.collided),
+            })
+            if self._declared_arrival_tick is None and driver.reached_goal:
+                self._declared_arrival_tick = record.index
+
+            yield record
+
+            # Measured after the tick, on the pose the tick produced — the
+            # record holds the pose the tick *started* from.
+            if runner._reached(goal_xy):
+                self._success = True
+                break
+
+        # The odometer has to include the leg of the last tick, which no record
+        # holds: each one stores where its tick began.
+        self._poses.append(body.pose)
+        self._finished = True
+
+    def result(self):
+        """Score the finished episode. Iterate it first."""
+        if not self._finished:
+            raise RuntimeError(
+                "this episode has not finished; iterate it to completion "
+                "before asking what it scored.")
+
+        runner = self.runner
+        goal_xy = self.task.goal_xy
+        ticks = len(self._collided)
+
+        episode_metrics = metrics.EpisodeMetrics(
+            checkpoint=self.checkpoint_name,
+            task=self.task,
+            seed=self.seed,
+            success=self._success,
+            collision_ticks=sum(self._collided),
+            collision_events=metrics.count_collision_events(self._collided),
+            path_length_m=metrics.path_length(self._poses),
+            final_geodesic_distance_m=runner._geodesic_distance(goal_xy),
+            final_euclidean_distance_m=runner._euclidean_distance(goal_xy),
+            ticks=ticks,
+            seconds=ticks * runner.body.limits.dt,
+            timeout_ticks=self.timeout_ticks,
+            success_radius_m=runner.rules.success_radius_m,
+            success_metric=runner.rules.success_metric,
+            declared_arrival_tick=self._declared_arrival_tick,
+            final_node=self._last_step.closest_node if self._last_step else 0,
+        )
+
+        trace = episode_metrics.as_row()
+        trace["poses"] = [[round(value, 4) for value in pose]
+                          for pose in self._poses]
+        trace["ticks_log"] = self._ticks_log
+        return EpisodeResult(episode_metrics, trace)
 
 
 class EpisodeRunner:
     """Runs episodes for one checkpoint, in one already-open simulator.
 
-    Holds no per-episode state: `run` is handed the task and the seed, so the
-    same runner scores a whole scene's worth of tasks without anything leaking
-    from one episode into the next except the simulator itself (which `reset`
-    clears) and numpy's global RNG (which `seed_episode` overwrites).
+    Holds no per-episode state: `episode()` is handed the task and the seed and
+    returns an `Episode` that owns everything about that run, so the same
+    runner scores a whole scene's worth of tasks without anything leaking from
+    one to the next except the simulator itself (which `reset` clears) and
+    numpy's global RNG (which `seed_episode` overwrites).
     """
 
     def __init__(self, policy, body, rules=None, floor=0):
@@ -264,73 +405,11 @@ class EpisodeRunner:
         geodesic = self._geodesic_distance(goal_xy)
         return geodesic is not None and geodesic <= self.rules.success_radius_m
 
-    def run(self, task, checkpoint_name, seed=None, on_tick=None):
-        """Run `task` to success or timeout, and score it.
+    def episode(self, task, checkpoint_name, seed=None):
+        """Build the episode for one task. Iterate it to run it.
 
         `seed` defaults to the task's own, which is what the fairness protocol
         wants; it is an argument only so a rerun can deliberately vary it.
         """
-        import bridge
-
-        seed = task.seed if seed is None else int(seed)
-        seed_episode(seed)
-
-        rules = self.rules
-        limits = self.body.limits
-        timeout_ticks = rules.timeout_ticks(task.geodesic_length_m, limits)
-        goal_xy = task.goal_xy
-
-        # The floor's height belongs to the scene, not to the task, so it is
-        # read from the open scene here — exactly as P2 does when it places the
-        # robot for the reference drive.
-        floor_height = float(self.body.env.scene.floor_heights[self.floor])
-
-        runner = bridge.NomadBridge(self.policy, self.body)
-        runner.start_episode(task.topomap(), task.start_pose(floor_height))
-
-        records = []
-        poses = []
-        declared_arrival_tick = None
-        success = False
-
-        for _ in range(timeout_ticks):
-            record = runner.tick()
-            records.append(record)
-            poses.append(record.pose)
-
-            if declared_arrival_tick is None and runner.reached_goal:
-                declared_arrival_tick = record.index
-            if on_tick is not None:
-                on_tick(record)
-
-            # Measured after the tick, on the pose the tick produced — the
-            # record holds the pose the tick *started* from.
-            if self._reached(goal_xy):
-                success = True
-                break
-
-        # The odometer has to include the leg of the last tick, which no record
-        # holds: each one stores where its tick began.
-        final_pose = self.body.pose
-        poses.append(final_pose)
-
-        episode_metrics = metrics.EpisodeMetrics(
-            checkpoint=checkpoint_name,
-            task=task,
-            seed=seed,
-            success=success,
-            collision_ticks=sum(1 for record in records if record.collided),
-            collision_events=metrics.count_collision_events(
-                record.collided for record in records),
-            path_length_m=metrics.path_length(poses),
-            final_geodesic_distance_m=self._geodesic_distance(goal_xy),
-            final_euclidean_distance_m=self._euclidean_distance(goal_xy),
-            ticks=len(records),
-            seconds=len(records) * limits.dt,
-            timeout_ticks=timeout_ticks,
-            success_radius_m=rules.success_radius_m,
-            success_metric=rules.success_metric,
-            declared_arrival_tick=declared_arrival_tick,
-            final_node=records[-1].closest_node if records else 0,
-        )
-        return EpisodeResult(episode_metrics, records, poses)
+        return Episode(self, task, checkpoint_name,
+                       task.seed if seed is None else int(seed))

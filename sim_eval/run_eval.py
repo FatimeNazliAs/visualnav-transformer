@@ -128,18 +128,25 @@ def build_task_set(config, directory, rebuild=False):
 
 
 def run_scene(scene, tasks, runner, checkpoint_name, table, verbose=True):
-    """Score every task in one scene, through one already-open simulator."""
-    on_tick = (lambda record: print(record.summary())) if verbose else None
+    """Score every task in one scene, through one already-open simulator.
+
+    The tick loop is here, in the consumer, rather than inside the runner —
+    which is the seam P4's recorder attaches to. It adds a line to this loop
+    (encode the frame, draw the overlay) instead of widening a callback the
+    runner would have to know about. Nothing is kept: a record is printed and
+    released, so a scene's worth of episodes never accumulates frames.
+    """
     print("\n=== {}: {} tasks ===".format(scene, len(tasks)))
 
-    results = []
     for task in tasks:
         print("\n--- {} ({}) ---".format(task.summary(), checkpoint_name))
-        result = runner.run(task, checkpoint_name, on_tick=on_tick)
+        episode = runner.episode(task, checkpoint_name)
+        for record in episode:
+            if verbose:
+                print(record.summary())
+        result = episode.result()
         table.append(result.metrics, trace=result.trace())
         print(result.metrics.summary())
-        results.append(result)
-    return results
 
 
 def score_checkpoint(config, tasks, policy, checkpoint_name, table,

@@ -102,6 +102,30 @@ def write_frames(records, output_dir):
     return gif_path
 
 
+def drive(runner, max_ticks):
+    """Tick until the bridge localizes onto the last node, or the budget runs out.
+
+    P1's own stopping rule, and it lives here rather than on the bridge because
+    it is P1's alone: "the distance head thinks it is at the last node" is a
+    claim about where the robot believes it is, which P3 measures rather than
+    trusts. Keeping it in the one script that wants it means there is exactly
+    one answer in the package to "when is an episode over", and it is
+    `episode_runner`'s.
+
+    This script does keep every frame — it writes them all out as a GIF, which
+    is the point of it. That is a deliberate, local choice, not the default:
+    the scorer streams and keeps nothing.
+    """
+    records = []
+    for _ in range(max_ticks):
+        record = runner.tick()
+        records.append(record)
+        print(record.summary())
+        if runner.reached_goal:
+            break
+    return records
+
+
 def report(records, runner, goal_pose, node_count):
     """Print what a human needs to decide whether this looks sane."""
     if not records:
@@ -121,13 +145,13 @@ def report(records, runner, goal_pose, node_count):
     print("ticks:          {} ({:.1f} s of robot time)".format(
         len(records), len(records) * runner.limits.dt))
     print("nodes:          localized to {} of {}".format(
-        records[-1].closest_node, node_count - 1))
+        records[-1].step.closest_node, node_count - 1))
     print("final pose:     {}".format(np.round(end_pose, 3)))
     print("goal pose:      {}".format(np.round(goal_pose, 3)))
     print("distance:       {:.2f} m from the last topomap node".format(goal_distance))
     print("path driven:    {:.2f} m".format(path_length))
     print("collided on:    {} of {} ticks".format(
-        runner.body.collision_ticks, len(records)))
+        sum(1 for record in records if record.collided), len(records)))
     print("reached goal:   {}".format(runner.reached_goal))
 
 
@@ -168,7 +192,7 @@ def main():
         print("start:      {}".format(np.round(body.pose, 3)))
         print()
 
-        records = runner.run(args.max_ticks, on_tick=lambda r: print(r.summary()))
+        records = drive(runner, args.max_ticks)
         report(records, runner, goal_pose, len(topomap))
     finally:
         body.close()

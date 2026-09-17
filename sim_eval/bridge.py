@@ -24,6 +24,16 @@ Two things the sim forces on us, both recorded here rather than buried:
     frame 0 repeated — the standard cold-start for a frame-stack policy.
   * **iGibson's LoCoBot turns the wrong way.** See ANGULAR_VELOCITY_SIGN.
 
+**The bridge makes ticks; it does not run episodes.** `tick()` is the whole of
+its loop-facing interface. When an episode is over — a goal radius reached, a
+tick budget spent — is `episode_runner`'s business, and there is deliberately
+no second answer to it here. There used to be: a `run()` that stopped when the
+distance head localized onto the last node, which is `navigate.py`'s rule on
+the real robot and is a claim about where the agent *thinks* it is. Ending an
+episode there lets a lost agent declare victory and stops the odometer early,
+inflating its SPL. `reached_goal` survives as that claim, and the episode
+records it as a diagnostic rather than obeying it.
+
 No metrics and no episode sampling live here; they are P3.
 """
 
@@ -133,7 +143,6 @@ class SimBody:
             action_timestep=self.limits.dt,
             physics_timestep=PHYSICS_TIMESTEP,
         )
-        self.collision_ticks = 0
 
     @property
     def robot(self):
@@ -142,7 +151,6 @@ class SimBody:
     def reset(self):
         """Reset the episode. Leaves the robot wherever the task put it."""
         self.env.reset()
-        self.collision_ticks = 0
 
     def place(self, position, orientation):
         """Put the robot at a pose and let it settle onto the floor."""
@@ -156,13 +164,16 @@ class SimBody:
     def command(self, v, w):
         """Execute (v, w) for one control period. Returns True if it collided.
 
-        Collisions are counted and never terminal (plan §6).
+        It *reports* the contact and does not count it. A body has no business
+        knowing how it is being scored, and it used to keep a tally that two
+        later tallies superseded — one in the reference drive, one in the
+        episode — while still looking authoritative on the object every caller
+        holds. Collisions are counted where they are interpreted (plan §6:
+        count and continue).
         """
         action = np.array([v, self.ANGULAR_VELOCITY_SIGN * w])
         _state, _reward, _done, _info = self.env.step(action)
-        collided = len(self.env.collision_links) > 0
-        self.collision_ticks += int(collided)
-        return collided
+        return len(self.env.collision_links) > 0
 
     @property
     def pose(self):
@@ -181,24 +192,41 @@ class SimBody:
 
 
 class TickRecord:
-    """Everything one control tick decided, for eyeballing and for replay."""
+    """Everything one control tick decided, for eyeballing and for replay.
 
-    def __init__(self, index, frame, pose, waypoint_m, v, w,
-                 closest_node, subgoal_node, collided):
+    The policy's own output is *held*, not copied out field by field. Copying
+    is how this class used to lose things: `PolicyStep` carries `distances` and
+    `samples` — the temporal distance to every node in the localization window,
+    and all eight diffusion trajectories — which `nomad_policy` annotates as
+    being "for inspection and overlays", and which a nine-field copy silently
+    dropped. A consumer that wants to draw what the model was thinking
+    (P4's overlays, P5's multimodality) reaches through `record.step`.
+
+    `waypoint_m` is not on the step because it is not the policy's: the policy
+    emits normalized units and the bridge converts them into metres.
+
+    **Nothing may retain a record.** It pins a decoded camera frame — 0.92 MB
+    at the render resolution — so a held episode's worth is hundreds of
+    megabytes. The episode yields these one at a time and keeps none; see
+    `episode_runner.Episode`.
+    """
+
+    def __init__(self, index, frame, pose, step, waypoint_m, v, w, collided):
         self.index = index
         self.frame = frame
         self.pose = pose
+        # The PolicyStep this tick acted on: closest_node, subgoal_node,
+        # distances, samples, and the raw normalized waypoint.
+        self.step = step
         self.waypoint_m = waypoint_m
         self.v = v
         self.w = w
-        self.closest_node = closest_node
-        self.subgoal_node = subgoal_node
         self.collided = collided
 
     def summary(self):
         return ("tick {:3d}  node {:>2} -> subgoal {:>2}  waypoint "
                 "({:+.3f}, {:+.3f}) m  v={:.3f} w={:+.3f}{}".format(
-                    self.index, self.closest_node, self.subgoal_node,
+                    self.index, self.step.closest_node, self.step.subgoal_node,
                     self.waypoint_m[0], self.waypoint_m[1], self.v, self.w,
                     "  COLLISION" if self.collided else ""))
 
@@ -267,26 +295,7 @@ class NomadBridge:
 
         self.context.push(self.body.observe())
         record = TickRecord(
-            index=self._tick_index, frame=frame, pose=pose,
-            waypoint_m=waypoint_m, v=float(v), w=float(w),
-            closest_node=step.closest_node, subgoal_node=step.subgoal_node,
-            collided=collided)
+            index=self._tick_index, frame=frame, pose=pose, step=step,
+            waypoint_m=waypoint_m, v=float(v), w=float(w), collided=collided)
         self._tick_index += 1
         return record
-
-    def run(self, max_ticks, on_tick=None):
-        """Tick until the goal node is reached or `max_ticks` is spent.
-
-        P1 has no success radius and no metrics — reaching the last topomap
-        node is navigate.py's own stopping condition, and whether that means
-        the robot is *at* the goal is exactly what P3 measures.
-        """
-        records = []
-        for _ in range(max_ticks):
-            record = self.tick()
-            records.append(record)
-            if on_tick is not None:
-                on_tick(record)
-            if self.reached_goal:
-                break
-        return records

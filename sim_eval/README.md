@@ -203,6 +203,16 @@ is the whole of the fairness protocol (plan §7), so the set is fingerprinted
 and cannot be quietly rebuilt under a half-finished comparison. An **episode**
 is one checkpoint attempting one task. In order:
 
+An episode is a **stream**: you iterate it to run it, and each tick arrives as
+it is decided, carrying the frame the model saw.
+
+```python
+episode = runner.episode(task, "best_combined")
+for record in episode:
+    print(record.summary())      # or encode a video frame, or both
+result = episode.result()
+```
+
 1. seed numpy and torch with the *task's* seed, so every arm meets the same
    reset and the same diffusion noise
 2. place the robot at the pose the reference drive started from
@@ -365,6 +375,34 @@ the table records which rule scored it.
   problems and half on another is not a comparison, and nothing in the CSV
   would say so. The episode rules are deliberately *not* in the fingerprint:
   they change how a task is scored, not which tasks exist.
+- **The consumer holds the tick loop, and nothing keeps a record.** A
+  `TickRecord` pins a decoded 640x480 frame — 0.92 MB — so an episode's worth
+  is up to 405 MB and a 20-task scene's worth is gigabytes. The episode yields
+  them one at a time and keeps only what the metrics need (poses, collision
+  flags, the last step), so a consumer that wants numbers holds no frames and
+  one that wants a video encodes each frame and drops it. That is also the seam
+  P4 attaches to: the recorder adds a line to the loop in `run_scene` rather
+  than widening a callback the runner has to know about. A callback could only
+  ever be handed what the runner thought to pass, which is why the old
+  `on_tick` — a `TickRecord` and nothing else, no task, no output path — was
+  never going to carry P4.
+- **A `TickRecord` holds the policy's output rather than copying it.**
+  `record.step` is the `PolicyStep` itself, so `distances` (the temporal
+  distance to every node in the localization window) and `samples` (all eight
+  diffusion trajectories) reach an overlay. The nine-field copy that preceded
+  it silently dropped both, although `nomad_policy` annotates them as being
+  "for inspection and overlays".
+- **There is one answer to "when is an episode over".** The bridge makes ticks;
+  `episode_runner` ends them. `NomadBridge.run()` used to be a second answer
+  that stopped when the distance head localized onto the last node — the real
+  robot's rule, and a claim about where the agent *thinks* it is. It is gone,
+  because the next person wanting "just run an episode" would have found it
+  first, on the object they already had. `p1_1_drive_test.py` keeps that rule
+  in its own three-line loop, where it belongs, and keeps every frame on
+  purpose because it writes a GIF.
+- **The body reports contact; it does not count it.** `SimBody.collision_ticks`
+  was a tally on the robot that two later tallies superseded while still
+  looking authoritative. A body has no business knowing how it is being scored.
 - **Rows are appended as they finish, not written at the end.** A run is tens
   of slow episodes; a crash on the last one must not cost the rest, and a run
   in progress should be readable with `tail -f`. Hence also `python -u` in the
