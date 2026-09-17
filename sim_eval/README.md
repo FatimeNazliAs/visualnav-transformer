@@ -5,10 +5,12 @@ directory is the other thing — a simulator the model actually drives, so an
 action changes the next view. Plan: `.claude/plans/nomad-sim-evaluation.md`.
 
 **P0** stood the simulator up. **P1** wired NoMaD's brain to the sim's body —
-one checkpoint driving itself along a hand-made trail. **P2 (this phase) makes
-the trails.** The scene's own shortest path replaces the human teleop of
-`create_topomap.sh`: plan a route, drive it, keep every Nth frame. Still no
-metrics, no episode sampling and no video overlay: those are P3 and P4.
+one checkpoint driving itself along a hand-made trail. **P2** made the trails:
+the scene's own shortest path replaces the human teleop of `create_topomap.sh`.
+**P3 (this phase) is the ruler.** A fixed, seeded set of those trails becomes a
+task set every checkpoint faces; each task is run as an episode that ends on
+success or timeout, and every episode lands as one row of a metrics table. No
+video overlay yet — that is P4.
 
 ## Layout
 
@@ -36,6 +38,14 @@ metrics, no episode sampling and no video overlay: those are P3 and P4.
 | `topomap_builder.py` | plan a route, drive it, keep every Nth frame (P2) |
 | `p2_1_build_test.py` | build one trail; path plot + thumbnails + format check |
 | `run_p2_build_test.sh` | run the above in the container, pinned to one GPU |
+| `configs/eval.yaml` | what gets scored, on what, and when an episode ends (P3) |
+| `metrics.py` | the five metrics of plan §6, and the table they go in |
+| `episode_runner.py` | run one episode to success or timeout, and score it |
+| `task_set.py` | the fixed, seeded task set every checkpoint shares |
+| `run_eval.py` | score one checkpoint over the whole task set, unattended |
+| `run_eval.sh` | run the above in the container, pinned to one GPU |
+| `p3_1_score_test.py` | score a small task set, then re-derive every metric |
+| `run_p3_score_test.sh` | run the above in the container, pinned to one GPU |
 | `run_tests.sh` | the GPU-free unit tests, in the container |
 | `tests/` | GPU-free unit tests (`./sim_eval/run_tests.sh`) |
 | `outputs/` | all generated files (gitignored, numbered `pN_M_*`) |
@@ -92,6 +102,26 @@ themselves — you never need to enter the container.
    Which house, where the trail runs and how far apart its nodes are all live
    in `sim_eval/configs/topomap.yaml`. Nothing about the trail is hardcoded, so
    more houses and more trails (plan §6, §7) are edits to that file.
+
+7. Score a checkpoint. The small version first — three tasks in one house,
+   end to end, unattended:
+   ```
+   ./sim_eval/run_p3_score_test.sh
+   ```
+   It builds the task set (printing one line per trail), runs each task as an
+   episode, prints the per-episode metrics, and then **re-derives every metric
+   in the table from the table** — SPL from the path lengths beside it, success
+   against the distance it stopped at, the tick budget against the timeout
+   formula. It writes `sim_eval/outputs/p3_1_score_test.csv` plus a `.jsonl`
+   of the same episodes with their pose traces.
+
+   The full version scores every task in `configs/eval.yaml` for one arm:
+   ```
+   ./sim_eval/run_eval.sh --checkpoint best_combined
+   ```
+   It is long and unattended — run it inside `screen -r nomad_sim` so it
+   survives the SSH connection dropping. `--build-only` builds the shared task
+   set and stops. `--resume` continues a table that was interrupted.
 
 `SIM_GPU=0 ./sim_eval/run_p0_smoke_test.sh` picks the other GPU. Default is 1,
 because GPU 0 also drives the machine's X server.
@@ -164,6 +194,64 @@ training resolution, which the fairness protocol (plan §7) requires.
 `metadata.json` is what P3 scores against: the goal pose success is measured
 from, the geodesic length SPL divides by, the spacing, the camera intrinsics,
 every node's pose and both paths (planned and driven).
+
+## How an episode is scored (P3)
+
+A **task** is one of P2's trails plus its metadata. A **task set** is a fixed,
+seeded list of them, built once and shared by every checkpoint — that sharing
+is the whole of the fairness protocol (plan §7), so the set is fingerprinted
+and cannot be quietly rebuilt under a half-finished comparison. An **episode**
+is one checkpoint attempting one task. In order:
+
+1. seed numpy and torch with the *task's* seed, so every arm meets the same
+   reset and the same diffusion noise
+2. place the robot at the pose the reference drive started from
+3. hand the trail to the bridge and tick it (P1's loop, unchanged)
+4. after each tick, measure the distance to the goal pose
+5. end on **success** — inside the goal radius — or on **timeout**, and on
+   nothing else
+6. count collisions every tick, and never stop for one
+7. append one row to the CSV, and one JSON line holding the pose trace
+
+**The rules, in numbers:**
+
+| Rule | Value | Where it comes from |
+|------|-------|---------------------|
+| success radius | **1.0 m** from the goal pose, **geodesic** | plan §5 |
+| timeout | `ceil(4 x geodesic_m / (max_v x dt) + (pi / max_w) / dt)` ticks | plan §6, "tied to reference-path length" |
+| collisions | counted, never terminal | plan §6 |
+
+The timeout's first term is how many ticks the shortest path would take at the
+robot's top speed — the floor no agent can beat — and the 4x is the room it
+gets to steer, overshoot and correct. The second is a flat allowance for
+turning on the spot, which buys no distance at all: a differential drive that
+starts off-heading spends up to `pi / max_w` = 7.9 s lining up before it moves.
+Both scale with the robot's own limits, so changing the control rate cannot
+silently change what a timeout means. For a 3.3 m trail that is 295 ticks, or
+74 s of robot time.
+
+**The five metrics** (plan §6), per episode:
+
+| Metric | Formula |
+|--------|---------|
+| success | final distance to the goal pose <= 1.0 m |
+| collision rate | distinct collisions per metre, and the fraction of ticks in contact |
+| SPL | `success x geodesic / max(driven, geodesic)` |
+| final distance-to-goal | geodesic, from where it stopped to the goal pose |
+| steps / time | ticks, and ticks x 0.25 s |
+
+`geodesic` is the task's own shortest-path length, measured by A* on the nav
+mesh when the trail was built — never what the reference drive happened to
+travel.
+
+**Why the success radius is geodesic.** It is the same distance the table
+reports as `final_distance_to_goal`, so success and the number beside it cannot
+mean different things, and it is the standard reading in the point-goal
+literature. It is also not a hypothetical difference: the first episode ever
+scored here stopped **0.97 m** from its goal in a straight line and **1.08 m**
+around the furniture — a success under one rule and a timeout under the other.
+`episode.success_metric` in `configs/eval.yaml` switches it, and every row of
+the table records which rule scored it.
 
 ## Under the hood
 
@@ -239,6 +327,51 @@ every node's pose and both paths (planned and driven).
   pure pursuit smooths that out. SPL divides by the geodesic (the planner's
   number), never by what the reference drive happened to travel.
 
+- **The straight-line distance gates the geodesic one, and that is a proof, not
+  a shortcut.** A path around the furniture is never shorter than the line
+  through it, so an agent outside the radius in a straight line is outside it
+  geodesically too — no A* needed. Only the handful of ticks already inside the
+  radius pay for one. That matters because `scene.get_shortest_path` *mutates*
+  the scene: an endpoint that is not on the traversability graph is grafted on
+  as a new node. Asking every tick would add hundreds of nodes per episode. The
+  grafted node is always a leaf, and no shortest path routes through a leaf, so
+  the queries that do happen cannot shorten a later answer.
+- **An agent with no geodesic to the goal has not arrived.** It has left the
+  traversable component — in Rs, that means it climbed onto the furniture. The
+  distance column is left blank rather than filled with a 0 that would read as
+  "arrived".
+- **SPL is clamped at 1, and the clamp earns its place here.** A* runs on an
+  8-connected grid and zigzags between cell centres, so an agent that drives the
+  same route smoothly covers *less* than the geodesic it is divided by. Without
+  `max(P, L)` those episodes score above 1 and quietly inflate the mean.
+- **The model claiming it has arrived is recorded, not obeyed.** The bridge
+  stops when the distance head localizes onto the last node — `navigate.py`'s
+  rule on the real robot. That is a claim about where the agent thinks it is,
+  and the second episode ever scored here made it at tick 57 and then ended
+  1.5 m from the goal. Ending on it would let a lost agent score, and would
+  stop the odometer early and inflate its SPL, so it is logged as
+  `declared_arrival_tick` and the episode runs on.
+- **A collision never ends an episode, and one of them can fill it.** Plan §6
+  is count-and-continue, so an agent that wedges against furniture spends its
+  whole budget there: an early run logged 298 colliding ticks out of 341 as a
+  *single* collision event. That is why the table carries both counts, and why
+  the per-metre rate divides **events** by distance rather than contact ticks —
+  the tick version reported "60 collisions per metre" for that episode, which
+  is a number about being stuck, not about hitting things. How stuck it was is
+  `contact_tick_fraction`.
+- **The task set is immutable once anything has been scored against it.** It is
+  fingerprinted from the config that built it, and a build against a changed
+  config refuses instead of rebuilding. Half a table scored on one set of
+  problems and half on another is not a comparison, and nothing in the CSV
+  would say so. The episode rules are deliberately *not* in the fingerprint:
+  they change how a task is scored, not which tasks exist.
+- **Rows are appended as they finish, not written at the end.** A run is tens
+  of slow episodes; a crash on the last one must not cost the rest, and a run
+  in progress should be readable with `tail -f`. Hence also `python -u` in the
+  wrapper scripts — `docker exec` hands Python a pipe, not a tty, so stdout is
+  block-buffered otherwise and an unattended run looks hung for minutes at a
+  time.
+
 ## Common errors
 
 | Symptom | Cause |
@@ -258,3 +391,9 @@ every node's pose and both paths (planned and driven).
 | `FAILED: no start/goal pair between X and Y m` | the geodesic bounds are wider than the house; Rs's longest path is ~7.7 m |
 | `FAILED: configured start ... is not on the nav mesh` | a hand-picked start/goal in `topomap.yaml` is inside a wall |
 | `FAILED: ... has no metadata.json` | that topomap predates P2 (the P1 trail has `route.json` instead) |
+| `FAILED: the task set in ... was built from a different config` | working as intended — restore the config, or build the new set in a new directory and re-run *every* arm against it |
+| `FAILED: ... has no manifest.json` | no task set there yet; `run_eval.py` builds one (`--build-only` to stop after) |
+| `FAILED: ... pins a start/goal pair` | the topomap config has `start`/`goal` set, so every task would be the same trail |
+| `FAILED: the metrics table does not hold up` | a metric disagrees with the numbers beside it in its own row — the message names which |
+| `success_metric must be one of ('geodesic', 'euclidean')` | a typo in `episode.success_metric` |
+| `RuntimeWarning: divide by zero` from `point_nav_fixed_task.py` | harmless — iGibson's own built-in task computes its own SPL at reset, with a zero path length. The bridge ignores that task entirely; the goal is the topomap. |

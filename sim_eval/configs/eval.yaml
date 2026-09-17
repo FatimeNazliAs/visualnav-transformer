@@ -1,0 +1,81 @@
+# ==============================================================================
+# sim_eval/configs/eval.yaml — what gets scored, on what, and when an episode
+# is over.
+#
+# This is the whole of P3's configuration. The task set it describes is built
+# once and shared by every checkpoint (plan §7): a change to anything under
+# `task_set` produces a different set of problems, so the builder fingerprints
+# this block and refuses to extend a set that was built from a different one.
+# ==============================================================================
+
+# --- which problems ----------------------------------------------------------
+task_set:
+  # P2's knobs — the trail spacing, the geodesic bounds, the follower, what
+  # counts as a drivable reference path. Referenced rather than copied so there
+  # is one definition of what a trail is; `overrides` amends it per task set.
+  topomap_config: configs/topomap.yaml
+  overrides: {}
+
+  # Plan §B: 2 houses x 10 trails, starting small. Rs is the house P0-P2 were
+  # built and verified in; a second house is one more line here, and costs a
+  # rebuild of the whole set (a task set is immutable once scored against).
+  scenes: [Rs]
+  tasks_per_scene: 10
+
+  # Every task's seed is `base_seed + scene_index * 1000 + task_index`, so a
+  # task's identity does not depend on how many were asked for: the first three
+  # tasks of a three-task set and a ten-task set are the same three tasks.
+  base_seed: 1000
+
+  # Where the built set lives. Numbered like every other output, and gitignored.
+  directory: outputs/p3_0_task_set
+
+# --- when an episode is over (plan §6) ---------------------------------------
+# Success and timeout, and nothing else. Collisions are counted every tick and
+# never end an episode.
+episode:
+  # Plan §5: "within ~1 m of the goal pose". Measured from the pose the goal
+  # image was rendered at, which is where the model is actually being sent.
+  success_radius_m: 1.0
+
+  # How that radius is measured: `geodesic` (around the furniture) or
+  # `euclidean` (straight line, through it). Geodesic is the default for two
+  # reasons — it is what `final_distance_to_goal` reports, so success and the
+  # distance beside it in the table cannot mean different things, and it is the
+  # standard definition in the point-goal literature.
+  #
+  # The difference is not academic. The first episode ever scored here stopped
+  # 0.97 m from its goal in a straight line and 1.08 m around the furniture: a
+  # success under one rule and a timeout under the other. Changing this changes
+  # the headline success rate, so it is recorded in every row of the table.
+  success_metric: geodesic
+
+  # The timeout, tied to the reference path's length:
+  #
+  #   ceil(timeout_slack * geodesic_m / (max_v * dt)  +  turn_allowance_s / dt)
+  #
+  # The first term is how long the shortest path takes at the robot's top speed
+  # — the floor no agent can beat — and the slack is the room it gets to steer,
+  # overshoot and correct. 4x is generous on purpose: a timeout that is too
+  # tight scores the budget rather than the agent, and a failing episode costs
+  # only sim time. The second term pays for turning on the spot, which buys no
+  # distance: `null` derives it as a half turn at max_w (pi / 0.4 = 7.9 s).
+  timeout_slack: 4.0
+  turn_allowance_s: null
+
+  # A floor under the budget for a very short task. With the sampler's 3 m
+  # minimum geodesic this never binds; it is here so that lowering that bound
+  # cannot produce a task with no time to turn around in.
+  min_timeout_ticks: 40
+
+  # Which floor of the house. Rs has one.
+  floor: 0
+
+# --- what gets scored --------------------------------------------------------
+# Names from configs/checkpoints.yaml. The headline pair of plan §7; P3 runs
+# one at a time (`--checkpoint`), and P6 runs both, one per GPU.
+checkpoints: [best_combined, clean_stock]
+
+# One CSV per checkpoint, plus a .jsonl of the same episodes with their pose
+# traces and per-tick decisions beside it.
+output_dir: outputs/p3_2_metrics
