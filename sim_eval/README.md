@@ -9,11 +9,16 @@ one checkpoint driving itself along a hand-made trail. **P2** made the trails:
 the scene's own shortest path replaces the human teleop of `create_topomap.sh`.
 **P3 is the ruler.** A fixed, seeded set of those trails becomes a task set
 every checkpoint faces; each task is run as an episode that ends on success or
-timeout, and every episode lands as one row of a metrics table. **P4 (this
-phase) makes a row watchable**: the same episode, filmed as it is scored, as a
+timeout, and every episode lands as one row of a metrics table. **P4 makes a
+row watchable**: the same episode, filmed as it is scored, as a
 three-panel MP4 — camera, top-down map, subgoal and waypoints. It is a layer
 over the scorer and changes nothing about it; switched off, an episode runs
-exactly the code P3 ran.
+exactly the code P3 ran. **P5 (this phase) uses all of it to ask why.** It is
+diagnostic, not a feature: a small set of episodes is run, filmed and taken
+apart, the frames the sim feeds the encoder are held up against the frames the
+model was trained on, and each failure gets a name. Nothing about how the
+policy steers is tuned — plan decision E, and plan §7's fairness protocol,
+both depend on P6 facing the real robot's settings.
 
 ## Layout
 
@@ -54,6 +59,11 @@ exactly the code P3 ran.
 | `recorder.py` | the three-panel video layer over the scorer (P4) |
 | `p4_1_record_test.py` | film one episode, then prove filming changed no metric |
 | `run_p4_record_test.sh` | run the above in the container, pinned to one GPU |
+| `p5_1_input_check.py` | what the sim feeds the encoder, against what training did (P5) |
+| `run_p5_1_input_check.sh` | run the above in the container, pinned to one GPU |
+| `diagnosis.py` | why an episode failed — a name, from the evidence in its trace |
+| `p5_2_diagnose.py` | run a few episodes, filmed, and name each failure |
+| `run_p5_2_diagnose.sh` | run the above in the container, pinned to one GPU |
 | `run_tests.sh` | the GPU-free unit tests, in the container |
 | `tests/` | GPU-free unit tests (`./sim_eval/run_tests.sh`) |
 | `outputs/` | all generated files (gitignored, numbered `pN_M_*`) |
@@ -145,6 +155,29 @@ themselves — you never need to enter the container.
    ```
    ./sim_eval/run_eval.sh --checkpoint best_combined --record --record-tasks Rs_00,Rs_07
    ```
+
+9. Check the model is being fed what it was trained on. This is cheap, it
+   loads no checkpoint weights and it should be the first thing run whenever
+   the behaviour looks wrong:
+   ```
+   ./sim_eval/run_p5_1_input_check.sh
+   ```
+   It prints channel order, value range, aspect and crop, field of view and
+   camera height for a sim frame and a GoStanford frame side by side, and
+   writes `sim_eval/outputs/p5_1_input_check.png` — both sources at every stage
+   of the transform, the same sim pose rendered through four fields of view,
+   and a strip of real training frames to hold them against.
+
+10. Find out why the episodes that fail, fail:
+   ```
+   ./sim_eval/run_p5_2_diagnose.sh
+   ```
+   It runs three tasks in one scene, filmed, then reads the traces back and
+   names each failure. Everything lands in
+   `sim_eval/outputs/p5_2_diagnostics/`: the metrics table, the traces, one
+   flat per-tick CSV per episode under `ticks/`, the videos under `videos/`,
+   and `p5_2_diagnosis.csv`. `--tasks 5` runs more; `--checkpoint clean_stock`
+   diagnoses the other arm.
 
 `SIM_GPU=0 ./sim_eval/run_p0_smoke_test.sh` picks the other GPU. Default is 1,
 because GPU 0 also drives the machine's X server.
@@ -324,6 +357,134 @@ The knobs are the `recording:` block of `configs/eval.yaml`:
 encoded — measured as 13.4 s against 8.0 s for the same 58-tick episode, video
 at ~26 kB per frame. That is why it is off by default: worth paying to watch an
 episode, not worth paying for twenty nobody will open.
+
+## Why an episode failed (P5)
+
+P0-P4 built a ruler and it works. What it measured first was one success in
+three, and a success rate cannot say *why*: the same row — timed out, 1.5 m
+short — is written by an agent wedged under a sofa, an agent spinning on the
+spot, an agent that drove confidently past the goal, and an agent whose
+distance head decided at tick 57 that it had already arrived. Four problems,
+four different answers, one number.
+
+**P5 is diagnostic. It tunes nothing.** Plan decision E mirrors the real
+LoCoBot's settings and plan §7 requires every arm in P6 to face identical ones,
+so the driver block, the control rate, the waypoint index and the localization
+parameters are untouched here. What P5 adds is the ability to see.
+
+### Is the model even being fed the right thing?
+
+The first question, and the cheapest — `./sim_eval/run_p5_1_input_check.sh`.
+A policy fed BGR, or fed a differently cropped frame than every frame in its
+training set, fails in a way that is indistinguishable from "the sim looks
+different from a real corridor". So one sim frame and one GoStanford frame go
+through **the transform the policy itself uses** and come out side by side:
+
+| Checked | Sim | GoStanford |
+|---------|-----|------------|
+| channel order | R 166 · G 151 · B 140 | R 127 · G 124 · B 118 |
+| encoder range | [-2.12, +2.24] | [-2.12, +2.64] |
+| native size | 640x480, aspect 1.333 | 160x120, aspect 1.333 |
+| training's 4:3 centre crop | no-op | no-op |
+| resize | to the checkpoint's own `image_size` | the same |
+| lens | 45 deg vertical / 58 deg horizontal, rectilinear | no intrinsics in the dataset |
+| camera height | 0.88 m above the floor | not recoverable |
+
+The first five rows agree, which rules out the cheap explanations: the channel
+order matches, the value range matches (training normalized with the same
+ImageNet statistics — `train/train.py` line 68, over `[0, 1]` tensors from
+`resize_and_aspect_crop`), and the 4:3 crop is a no-op on both because both
+sources are already 4:3.
+
+The lens row is the one that does not agree, and it cannot be settled with a
+number because GoStanford ships frames and odometry and nothing about the rig.
+So the figure settles it with pictures: the same sim pose rendered at 45, 70,
+90 and 110 degrees vertical, printed directly above a strip of real training
+frames. Read them against each other.
+
+### Why did *this* episode end here?
+
+`./sim_eval/run_p5_2_diagnose.sh` runs a small set — three tasks, one scene,
+one checkpoint — with the recorder on, and writes a bundle to
+`outputs/p5_2_diagnostics/`:
+
+| File | What it is |
+|------|------------|
+| `<checkpoint>.csv` | the metrics table P3 would have written, unchanged |
+| `<checkpoint>.jsonl` | the same episodes with their pose traces |
+| `ticks/<task_id>.csv` | **one row per control tick** — pose, node, subgoal, both distance-head readings, the waypoint, `(v, w)`, contact |
+| `videos/<checkpoint>/*.mp4` | P4's three-panel replay of each |
+| `p5_2_diagnosis.csv` | one named failure mode per episode, with its evidence |
+
+`diagnosis.py` names the mode from the trace. The modes are **ordered, and the
+order is the argument**: they are not mutually exclusive (a wedged agent has
+also failed to advance its trail, and has also driven a strange path), so the
+first match wins and they are tried most-specific first, which makes the name
+point at the earliest thing that went wrong rather than at its consequence.
+
+| Mode | What it means |
+|------|---------------|
+| reached the goal | inside the success radius before the budget ran out |
+| wedged | in contact for most of the episode and did not move in its last quarter |
+| turning on the spot | most ticks below 0.02 m/s — the waypoint never lands in front |
+| false arrival | the distance head localized onto the last node, and the agent finished somewhere else |
+| trail not advanced | localized under a quarter of the way along the trail |
+| wandered | drove at least twice the shortest path and finished short |
+| ran out of ticks | made progress, nothing singular went wrong, the budget ran out |
+
+Those thresholds are for **reading, not for scoring**. Nothing in the metrics
+table depends on them, and moving one renames an episode without moving a
+single number P6 will report.
+
+### What the first diagnostic run found
+
+`best_combined`, three tasks in Rs, `n8w2r4t3` (the deployment defaults):
+
+| Task | Outcome | Mode |
+|------|---------|------|
+| `Rs_00` | success, 58 ticks, SPL 1.0 | reached the goal |
+| `Rs_01` | timeout, 341 ticks, 1.51 m short | wedged — 87% of ticks in contact |
+| `Rs_02` | timeout, 439 ticks, 1.73 m short | wedged — 87% of ticks in contact |
+
+**NoMaD navigates.** That is the first thing the per-tick logs say and it is
+easy to lose behind two timeouts. `Rs_00` drives 4.4 m to its goal cleanly, and
+both failures track their reference trail to within **0.15-0.18 m** — about the
+robot's own body radius — for their first 43 and 55 ticks, with the distance
+head reading under 1.5 the whole time. Neither episode is lost when it fails.
+
+**Both failures are one contact, never recovered from**, and the tick log makes
+the chain exact (`ticks/Rs_01.csv`):
+
+| Tick | What happened |
+|------|---------------|
+| 43 | first contact, 0.15 m off a reference path that was driven collision-free, head reading 0.21, subgoal advancing normally |
+| 44 | still advancing — node 11, subgoal 12 |
+| 45 | head reading jumps to **3.48**, past `close_threshold` 3, so the subgoal stops advancing |
+| 46-47 | 9.58, then 12.54 — the head no longer recognizes anything |
+| 48-340 | `v` pinned at 0.2 m/s into the obstacle for 296 of the next 297 ticks; the head reads past the threshold for 296 of them |
+
+The view explains the collapse: once the robot is against the furniture, the
+camera fills with a close-up of a table underside, which matches no node of the
+trail, so every temporal distance is large and the subgoal freezes on the node
+the agent is already at. It then drives at full speed into what it is stuck on
+for 87% of its budget. `Rs_02` is the same sequence at tick 55.
+
+So the interesting question is not "why did it get lost" — it did not — but
+**why it clipped something 0.16 m off a clean path, and why one scrape is
+terminal in this harness**. Two facts bear on the first, and they are the
+reason `p5_1_input_check.py` exists:
+
+- the sim camera sees **58 degrees horizontally**, rectilinear. GoStanford was
+  shot through a lens wide enough to put both walls, the floor and the ceiling
+  of a corridor in one frame. An obstacle the robot is about to clip with its
+  shoulder is in that training frame and is off the edge of this one.
+- the sim's eye sits **0.88 m** above the floor.
+
+Neither is tuned here. Changing the camera an episode runs under is an edit to
+`vertical_fov` in the world config and it changes what every arm sees, so it
+belongs to a decision, not to a diagnostic. On the second — plan §6 is
+count-and-continue by design, and static Gibson furniture cannot be pushed out
+of the way the way a real chair can.
 
 ## Talking to the simulator
 
@@ -534,6 +695,51 @@ the friction both halves exist to remove (see Under the hood).
   wrapper scripts — `docker exec` hands Python a pipe, not a tty, so stdout is
   block-buffered otherwise and an unattended run looks hung for minutes at a
   time.
+- **The distance head's own reading is a column now, and it had to be.** The
+  trace recorded which node the agent localized onto and which it steered at,
+  and those two cannot distinguish "the trail is not advancing" from "the head
+  is confident": the subgoal only moves past the closest node when the head's
+  reading for that node falls under `close_threshold` (3), so an episode whose
+  readings sit above it steers at the node it believes it is *already at*,
+  tick after tick. That number existed nowhere but a pixel on a video frame.
+  It is `dist_closest` and `dist_subgoal` in the per-tick log, and the
+  arithmetic that recovers it moved onto `PolicyStep` — the step names its two
+  nodes by absolute trail index but carries the head's scores by window offset,
+  and a second copy of that recovery is exactly where an off-by-one hides.
+  `tests/test_localization.py` pins it beside the index convention it undoes.
+- **The field of view is rendered, not asserted.** `SimBody.render_at_vertical_fov`
+  changes the camera, takes one frame and puts it back in a `finally`, so a
+  diagnostic cannot leave the rollout camera altered behind it. Changing the
+  camera an episode actually runs under is an edit to `vertical_fov` in the
+  world config, reviewed as such — which is the point: P5 is allowed to *show*
+  that 45 degrees is not what GoStanford was shot through without quietly
+  becoming the phase that changed it.
+- **A pixel statistic cannot tell the two lenses apart, and one was tried.**
+  The obvious candidate is the dark border a fisheye leaves in the corners of a
+  rectangular frame. Measured over 120 training frames and 32 sim frames it
+  came out *higher for the sim* — 1.6% against 0.3% at a threshold of 10 —
+  because GoStanford's frames are crops from inside the lens circle rather than
+  the whole circle, and Rs has dark furniture. The comparison is two bands of
+  pictures in `p5_1_input_check.png` for that reason, not for lack of trying to
+  make it a number.
+- **A task set is fingerprinted on its world's contents, not its path.** The
+  camera, the robot and the physics are half of what a task is: every trail
+  image is rendered through that camera, and every episode reopens the copy of
+  the world saved beside its trail. The fingerprint used to hash
+  `scene_config: configs/locobot_rs_bridge.yaml` as a *string*, so an edit to
+  `vertical_fov` in that file matched the old fingerprint: an existing set was
+  reused at the old camera without a word, and a new set could not be told
+  apart from it. It now hashes the resolved world as well
+  (`TaskSetConfig.world()`), and `tests/test_task_set.py` pins that a camera
+  edit moves it. Found by the P5 architecture review, which is why every task
+  set built before it has to be rebuilt once — with the same seeds, the same
+  trails come back.
+- **A diagnosis is a reading, not a measurement.** `diagnosis.py` computes
+  nothing the metrics table does not already contain; it only names what is
+  there. Its thresholds are therefore allowed to be judgement calls, and moving
+  one renames an episode without moving a number P6 reports — which is the
+  whole reason it is a separate module from `metrics.py` rather than another
+  column in it.
 
 ## Common errors
 
@@ -554,7 +760,7 @@ the friction both halves exist to remove (see Under the hood).
 | `FAILED: no start/goal pair between X and Y m` | the geodesic bounds are wider than the house; Rs's longest path is ~7.7 m |
 | `FAILED: configured start ... is not on the nav mesh` | a hand-picked start/goal in `topomap.yaml` is inside a wall |
 | `FAILED: ... has no metadata.json` | that topomap predates P2 (the P1 trail has `route.json` instead) |
-| `FAILED: the task set in ... was built from a different config` | working as intended — restore the config, or build the new set in a new directory and re-run *every* arm against it |
+| `FAILED: the task set in ... was built from a different config` | working as intended — restore the config, or build the new set in a new directory and re-run *every* arm against it. Editing the world config (the camera, the robot) counts; a set built before the P5 review needs one `--rebuild-tasks` |
 | `FAILED: ... has no manifest.json` | no task set there yet; `run_eval.py` builds one (`--build-only` to stop after) |
 | `FAILED: ... pins a start/goal pair` | the topomap config has `start`/`goal` set, so every task would be the same trail |
 | `FAILED: the metrics table does not hold up` | a metric disagrees with the numbers beside it in its own row — the message names which |
@@ -566,3 +772,6 @@ the friction both halves exist to remove (see Under the hood).
 | `TypeError: __init__() got an unexpected keyword argument` on startup | a typo in a config knob — the section names it; nothing is silently ignored |
 | the run header says `driver: ... (TUNED — not navigate.py's defaults)` | working as intended: `driver:` in the config departs from the real robot's settings (plan decision E) |
 | `RuntimeWarning: divide by zero` from `point_nav_fixed_task.py` | harmless — iGibson's own built-in task computes its own SPL at reset, with a zero path length. The bridge ignores that task entirely; the goal is the topomap. |
+| `FAILED: no GoStanford at /data/...` | running the input check outside the container, where `/data` is not mounted |
+| the diagnosis says `false arrival` | working as intended: the distance head localized onto the last node while the agent was somewhere else. The episode ran on (plan §6) and the tick it claimed is in the table. |
+| a diagnosis disagrees with the video | the video wins. A mode is a label on something you can watch, and the thresholds in `diagnosis.py` are for reading, not scoring. |

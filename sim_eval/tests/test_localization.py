@@ -29,6 +29,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from driver import DEFAULT_CLOSE_THRESHOLD, DEFAULT_RADIUS  # noqa: E402
 from nomad_policy import (  # noqa: E402
+    PolicyStep,
     localization_window,
     localize,
     window_size,
@@ -177,3 +178,46 @@ def test_ties_resolve_to_the_earliest_node(ties):
     closest_node, _offset = localize(
         ties, start=5, num_window_nodes=len(ties), close_threshold=0)
     assert closest_node == 5
+
+
+# --------------------------------------------------------------------------
+# reading a score back out
+# --------------------------------------------------------------------------
+# `localize` hands back one absolute index and one window offset, and the step
+# then stores *both* its nodes as absolute indices while keeping the scores by
+# window offset. Anything that wants "what did the head say about this node"
+# has to undo that, and the failure is silent in both places it is wanted: a
+# plausible number under the wrong picture on P4's overlay, and a plausible
+# column in P5's trace.
+
+
+def a_step(distances, closest_node, subgoal_node):
+    """A step carrying only what reading a score back out depends on."""
+    return PolicyStep(waypoint=None, closest_node=closest_node,
+                      subgoal_node=subgoal_node, distances=distances,
+                      samples=None)
+
+
+def test_the_distance_is_read_at_the_subgoal_not_at_the_closest_node():
+    # Window [4..8]: the head scores node 6 lowest, and the subgoal is node 7.
+    step = a_step([9.0, 7.0, 1.0, 3.0, 5.0], closest_node=6, subgoal_node=7)
+    assert step.window_start() == 4
+    assert step.subgoal_distance() == 3.0
+    assert step.closest_distance() == 1.0
+
+
+def test_the_window_is_recovered_when_it_is_clamped_at_the_start_of_the_trail():
+    # navigate.py floors the window at node 0, so at the trail's start the
+    # closest node is its own offset and the arithmetic must still land.
+    step = a_step([2.0, 4.0, 6.0], closest_node=0, subgoal_node=1)
+    assert step.window_start() == 0
+    assert step.subgoal_distance() == 4.0
+
+
+def test_a_node_outside_the_window_is_blank_rather_than_wrong():
+    step = a_step([1.0, 2.0], closest_node=0, subgoal_node=9)
+    assert step.subgoal_distance() is None
+    empty = a_step([], closest_node=0, subgoal_node=0)
+    assert empty.window_start() is None
+    assert empty.subgoal_distance() is None
+    assert empty.closest_distance() is None

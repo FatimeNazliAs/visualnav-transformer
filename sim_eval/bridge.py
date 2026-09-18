@@ -197,6 +197,28 @@ class SimBody:
                                  for row in renderer.get_intrinsics()],
         }
 
+    def render_at_vertical_fov(self, degrees):
+        """Render one frame at a different vertical field of view, then restore.
+
+        The camera's field of view is the one thing about the sim's optics that
+        `configs/locobot_rs_bridge.yaml` cannot mirror from the real robot,
+        because GoStanford records no intrinsics — so P5 has to *show* the
+        difference rather than argue about it, by rendering the same pose
+        through several lenses and putting them beside a training frame.
+
+        It is deliberately a render, not a setting: the FOV is put back before
+        this returns, so nothing a diagnostic looks at can leave the rollout
+        camera changed behind it. Changing the camera an episode runs under is
+        a config edit (`vertical_fov`), reviewed as such.
+        """
+        renderer = self._env.simulator.renderer
+        original = float(renderer.vertical_fov)
+        try:
+            renderer.set_fov(float(degrees))
+            return self.observe()
+        finally:
+            renderer.set_fov(original)
+
     @property
     def initial_pose(self):
         """Where the simulator's own task placed the robot: (position, orientation).

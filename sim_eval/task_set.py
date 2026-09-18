@@ -175,6 +175,14 @@ class TaskSetConfig:
         knobs["seed"] = task_seed(self.base_seed, scene_index, task_index)
         return TopomapConfig(**knobs)
 
+    def world(self):
+        """The iGibson world every task is driven in, as its contents.
+
+        `scene_id` is left as the file has it: each task overrides it with its
+        own scene, and the scene list is hashed separately.
+        """
+        return TopomapConfig(**self.base_knobs()).world_config()
+
     def fingerprint(self):
         """A hash of everything that decides which tasks exist.
 
@@ -183,12 +191,22 @@ class TaskSetConfig:
         spacing is a different problem. If this changes, the task set on disk
         is not the one this config describes, and the build says so instead of
         silently producing a second, incomparable set.
+
+        It covers the **world file's contents**, not just its path. The camera,
+        the robot and the physics are the other half of a task: every trail
+        image is rendered through that camera, and every episode reopens the
+        copy of the world saved beside its trail. Hashing only the path, as
+        this did until the P5 review, meant an edit to `vertical_fov` in
+        `configs/locobot_rs_bridge.yaml` matched the old fingerprint — so an
+        existing set was silently reused at the old camera, and a new set was
+        indistinguishable from it.
         """
         payload = {
             "scenes": self.scenes,
             "tasks_per_scene": self.tasks_per_scene,
             "base_seed": self.base_seed,
             "topomap": self.base_knobs(),
+            "world": self.world(),
         }
         blob = json.dumps(payload, sort_keys=True, default=str).encode("utf-8")
         return hashlib.sha256(blob).hexdigest()[:16]

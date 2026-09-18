@@ -163,6 +163,50 @@ class PolicyStep:
         # All num_samples action sequences, for inspection and overlays.
         self.samples = samples
 
+    def window_start(self):
+        """Which absolute trail index `distances[0]` scored.
+
+        The step names its two nodes by *absolute* trail index but carries the
+        distance head's scores by window offset, so anything reading a score
+        back out has to recover the window. `localize` chose `closest_node` as
+        the window entry the head scored lowest, which fixes the origin.
+
+        Returns None when there are no scores to index.
+        """
+        distances = np.asarray(self.distances, dtype=float)
+        if distances.size == 0:
+            return None
+        return int(self.closest_node) - int(np.argmin(distances))
+
+    def _score(self, node):
+        """The head's reading for one absolute trail index, or None.
+
+        None rather than a guess: a mislabelled temporal distance is worse than
+        a blank, whether it is printed under a picture or logged in a trace.
+        """
+        start = self.window_start()
+        if start is None:
+            return None
+        distances = np.asarray(self.distances, dtype=float)
+        offset = int(node) - start
+        if not 0 <= offset < distances.size:
+            return None
+        return float(distances[offset])
+
+    def closest_distance(self):
+        """How far the head thinks the node it localized onto is.
+
+        The minimum of the window by construction, and the number that decides
+        whether the subgoal advances (`close_threshold`). Logged per tick from
+        P5 on, because a run whose readings sit far above that threshold is
+        one where the trail never advances — a failure mode no metric names.
+        """
+        return self._score(self.closest_node)
+
+    def subgoal_distance(self):
+        """How far the head thinks the node being steered at is."""
+        return self._score(self.subgoal_node)
+
 
 class NomadPolicy:
     """A loaded NoMaD checkpoint that answers "where next" for one observation."""

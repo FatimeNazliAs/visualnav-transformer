@@ -156,28 +156,6 @@ def parse_subset(text):
     return [part.strip() for part in text.split(",") if part.strip()]
 
 
-def subgoal_distance(step):
-    """The distance head's own reading for the node being steered at.
-
-    `PolicyStep` carries the head's output for every node in the localization
-    window, but it names its two nodes by *absolute* trail index, so the window
-    the array is indexed by has to be recovered: the closest node is the window
-    entry the head scored lowest, which fixes where the window starts, and the
-    subgoal's offset follows from that.
-
-    Returns None rather than guessing if the arithmetic lands outside the
-    array — a mislabelled number on an overlay is worse than a blank.
-    """
-    distances = np.asarray(step.distances, dtype=float)
-    if distances.size == 0:
-        return None
-    window_start = int(step.closest_node) - int(np.argmin(distances))
-    offset = int(step.subgoal_node) - window_start
-    if not 0 <= offset < distances.size:
-        return None
-    return float(distances[offset])
-
-
 def floor_extent(trav_map, resolution):
     """A traversability map's world bounds, as matplotlib's `extent`.
 
@@ -398,7 +376,7 @@ class PanelFigure:
         self.subgoal_image.set_extent(
             (-0.5, image.shape[1] - 0.5, image.shape[0] - 0.5, -0.5))
 
-        distance = subgoal_distance(record.step)
+        distance = record.step.subgoal_distance()
         self.subgoal_title.set_text(
             "subgoal: node {} of {}   ·   distance head: {}   ·   at node {}"
             .format(node, self.node_images.count - 1,

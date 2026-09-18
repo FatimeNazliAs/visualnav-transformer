@@ -6,10 +6,10 @@ visibly — a blank panel, a frozen image. Three things do not:
   * **which episodes get filmed.** `enabled: false` with a subset that names a
     task must film nothing; a run that quietly records twenty episodes because
     a flag was read in the wrong order costs an hour and a gigabyte.
-  * **the distance head's number.** `PolicyStep` names its nodes by absolute
-    trail index and carries the head's scores by *window* offset, so the
-    overlay has to recover the window. Get it wrong by one and a plausible
-    number appears under a plausible picture, for the wrong node.
+  * **the map's world bounds** (below). The other silent failure — the
+    distance head's number under the subgoal image — moved to `PolicyStep`
+    in P5, because the episode trace needs the same reading; it is pinned in
+    `test_localization.py` beside the index convention it undoes.
   * **the map's world bounds.** The top-down panel plots world metres straight
     onto an image, so the extent is the only thing holding the path, the goal
     and the walls in the same frame. Off by half a pixel is invisible; off by a
@@ -31,15 +31,6 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import recorder  # noqa: E402
-
-
-class FakeStep:
-    """A `PolicyStep` as far as the overlay is concerned."""
-
-    def __init__(self, distances, closest_node, subgoal_node):
-        self.distances = np.asarray(distances, dtype=float)
-        self.closest_node = closest_node
-        self.subgoal_node = subgoal_node
 
 
 def fake_trav_map(size=100, patch=(40, 60)):
@@ -104,28 +95,6 @@ class FakeTask:
 def test_a_disabled_recorder_hands_back_null_recordings():
     assert isinstance(recorder.disabled().episode(FakeTask(), "arm", scene=None),
                       recorder.NullRecording)
-
-
-# --- the distance head's number ---------------------------------------------
-
-def test_the_distance_is_read_at_the_subgoal_not_at_the_closest_node():
-    # Window [4..8]: the head scores node 6 lowest, and the subgoal is node 7.
-    step = FakeStep(distances=[9.0, 7.0, 1.0, 3.0, 5.0],
-                    closest_node=6, subgoal_node=7)
-    assert recorder.subgoal_distance(step) == 3.0
-
-
-def test_the_window_is_recovered_when_it_is_clamped_at_the_start_of_the_trail():
-    # navigate.py floors the window at node 0, so at the trail's start the
-    # closest node is its own offset and the arithmetic must still land.
-    step = FakeStep(distances=[2.0, 4.0, 6.0], closest_node=0, subgoal_node=1)
-    assert recorder.subgoal_distance(step) == 4.0
-
-
-def test_a_subgoal_outside_the_window_is_blank_rather_than_wrong():
-    step = FakeStep(distances=[1.0, 2.0], closest_node=0, subgoal_node=9)
-    assert recorder.subgoal_distance(step) is None
-    assert recorder.subgoal_distance(FakeStep([], 0, 0)) is None
 
 
 # --- the map's world bounds -------------------------------------------------

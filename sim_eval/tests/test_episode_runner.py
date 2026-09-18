@@ -24,6 +24,7 @@ import episode_runner  # noqa: E402
 import pd_control  # noqa: E402
 import task_set  # noqa: E402
 from driver import DriverConfig  # noqa: E402
+from nomad_policy import PolicyStep  # noqa: E402
 from sim_scene import SimScene  # noqa: E402
 
 LIMITS = pd_control.RobotLimits.from_config()
@@ -123,8 +124,12 @@ class FakeBody:
 class FakePolicy:
     """Always points straight ahead, and claims whatever node it is told to."""
 
-    def __init__(self, context_size=3, claims_goal_from=None):
+    def __init__(self, context_size=3, claims_goal_from=None, distances=()):
         self.spec = types.SimpleNamespace(context_size=context_size)
+        # What the distance head "said" this tick, by window offset. Empty by
+        # default: most of these tests are about when an episode stops, and a
+        # step with no scores is the blank case the trace has to survive.
+        self.distances = list(distances)
         self.model_params = {"normalize": False}
         # A real one: the row's provenance column comes off it.
         self.driver = DriverConfig()
@@ -139,9 +144,14 @@ class FakePolicy:
         if self.claims_goal_from is not None and self.calls >= self.claims_goal_from:
             node = goal_node
         self.calls += 1
-        return types.SimpleNamespace(
+        # A real `PolicyStep`, not a stand-in: the trace reads the distance
+        # head back out of it (`closest_distance`, `subgoal_distance`), and a
+        # fake that merely carries the same field names would not exercise the
+        # window arithmetic those readings depend on.
+        return PolicyStep(
             waypoint=list(STRAIGHT_AHEAD), closest_node=node,
-            subgoal_node=min(node + 1, goal_node), distances=[], samples=[])
+            subgoal_node=min(node + 1, goal_node),
+            distances=self.distances, samples=[])
 
 
 @pytest.fixture
@@ -400,14 +410,34 @@ def test_the_trace_carries_the_path_and_the_per_tick_decisions(task):
     assert trace["task_id"] == "Rs_00"
     assert len(trace["poses"]) == trace["ticks"] + 1
     assert len(trace["ticks_log"]) == trace["ticks"]
-    assert set(trace["ticks_log"][0]) == {"tick", "node", "subgoal", "waypoint_m",
-                                          "v", "w", "collided"}
+    assert set(trace["ticks_log"][0]) == {
+        "tick", "node", "subgoal", "dist_closest", "dist_subgoal",
+        "waypoint_m", "v", "w", "collided"}
 
 
 def test_the_trace_carries_the_waypoint_the_robot_steered_to(task):
     """P4's overlay draws it, and the trace used to drop it."""
     trace = run_episode(task)[0].trace()
     assert trace["ticks_log"][0]["waypoint_m"] == [0.05, 0.0]
+
+
+def test_the_trace_carries_what_the_distance_head_read(task):
+    """P5's question is why an episode failed, and the two nodes alone cannot
+    answer it: the subgoal only advances when the head's reading for the
+    closest node falls under `close_threshold`, so a trail that never advances
+    and a head that is confident look identical without these two columns."""
+    # Window [n-1, n, n+1] with the middle scored lowest, so the closest node
+    # reads 1.0 and the subgoal beside it reads 4.0.
+    policy = FakePolicy(distances=[7.0, 1.0, 4.0])
+    tick = run_episode(task, policy=policy)[0].trace()["ticks_log"][0]
+    assert (tick["dist_closest"], tick["dist_subgoal"]) == (1.0, 4.0)
+
+
+def test_a_head_that_was_not_asked_leaves_the_trace_blank_rather_than_zero(task):
+    """A distance of 0 reads as "arrived". A reading that does not exist is
+    None, the same rule the table already follows for an unreachable goal."""
+    tick = run_episode(task)[0].trace()["ticks_log"][0]
+    assert tick["dist_closest"] is None and tick["dist_subgoal"] is None
 
 
 # --- the episode is a stream -------------------------------------------------

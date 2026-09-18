@@ -135,6 +135,15 @@ class EpisodeRules:
                     self.timeout_slack, turn, self.min_timeout_ticks))
 
 
+def _rounded(value, places=3):
+    """Round a reading for the trace, keeping `None` as `None`.
+
+    A distance the head could not be asked for is blank, not zero — the same
+    rule the table already follows for a goal with no geodesic to it.
+    """
+    return None if value is None else round(float(value), places)
+
+
 def seed_episode(seed):
     """Fix everything stochastic in an episode, so two arms face the same one.
 
@@ -237,7 +246,7 @@ class Episode:
                 "the first one's tally.")
         self._started = True
 
-        runner, body, rules = self.runner, self.runner.body, self.runner.rules
+        runner, body = self.runner, self.runner.body
         seed_episode(self.seed)
 
         # The floor's height belongs to the scene, not to the task, so it is
@@ -259,6 +268,15 @@ class Episode:
                 "tick": record.index,
                 "node": record.step.closest_node,
                 "subgoal": record.step.subgoal_node,
+                # What the distance head actually read, for the node it
+                # localized onto and for the node it steered at. P5 logs them
+                # because the two nodes alone cannot distinguish a trail that
+                # is not advancing from one the head is confident about: the
+                # subgoal only moves on when the closest reading falls under
+                # `close_threshold`, and that number was previously visible
+                # nowhere but a video frame.
+                "dist_closest": _rounded(record.step.closest_distance()),
+                "dist_subgoal": _rounded(record.step.subgoal_distance()),
                 # The waypoint the PD controller actually steered to, in
                 # metres. P4's overlay draws this; the old trace dropped it.
                 "waypoint_m": [round(float(value), 4)

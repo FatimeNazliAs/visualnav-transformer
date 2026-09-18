@@ -147,6 +147,51 @@ def test_the_fingerprint_is_stable_across_identical_configs(tmp_path):
     assert make_config(tmp_path).fingerprint() == make_config(tmp_path).fingerprint()
 
 
+def write_world(tmp_path, **changes):
+    """A copy of the bridge's world config, with some of it changed."""
+    world = yaml.safe_load(
+        (SIM_EVAL_DIR / "configs" / "locobot_rs_bridge.yaml").read_text())
+    world.update(changes)
+    path = tmp_path / "world_{}.yaml".format(len(list(tmp_path.glob("world_*"))))
+    path.write_text(yaml.safe_dump(world))
+    return path
+
+
+def test_the_fingerprint_changes_when_the_camera_does(tmp_path):
+    """Every trail image is rendered through the world's camera and every
+    episode reopens that world. The fingerprint used to hash the world file's
+    *path*, so a camera edit matched the old set and was silently ignored."""
+    same_path = tmp_path / "world.yaml"
+    same_path.write_text(write_world(tmp_path).read_text())
+    before = make_config(tmp_path, topomap={"scene_config": str(same_path)})
+    fingerprint = before.fingerprint()
+
+    edited = yaml.safe_load(same_path.read_text())
+    edited["vertical_fov"] = 90
+    same_path.write_text(yaml.safe_dump(edited))
+
+    assert before.fingerprint() != fingerprint
+
+
+def test_the_fingerprint_reads_what_is_in_the_world_file(tmp_path):
+    """Any knob of the world moves it, not only the camera — the robot, the
+    render size and the physics all decide what a trail image looks like."""
+    # Each config gets its own directory: `make_config` writes topomap.yaml
+    # there, and the knobs are read lazily, so a shared file would be read back
+    # as whichever config wrote it last.
+    def config_over(name, **changes):
+        directory = tmp_path / name
+        directory.mkdir()
+        world = write_world(directory, **changes)
+        return make_config(directory, topomap={"scene_config": str(world)})
+
+    first, second = config_over("first"), config_over("second")
+    assert first.world() == second.world()
+    changed = config_over("changed", image_width=320)
+    assert changed.world() != first.world()
+    assert changed.fingerprint() != first.fingerprint()
+
+
 # --- building and reusing ----------------------------------------------------
 
 def test_building_writes_a_manifest_and_one_directory_per_task(tmp_path, monkeypatch):
