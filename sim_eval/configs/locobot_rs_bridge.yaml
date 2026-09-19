@@ -92,13 +92,42 @@ output: [task_obs, rgb, depth]
 fisheye: false
 image_width: 640
 image_height: 480
-# 45 deg vertical FoV is iGibson's LoCoBot default and is NOT the real robot's
-# camera. GoStanford was recorded on a wide-angle lens, so the sim view is
-# narrower than anything in training. This is one concrete face of the domain
-# gap the plan already treats as a limitation (plan §10, "standing framing"):
-# left as the default here rather than tuned, because tuning it is a P5
-# question with evidence behind it, not a P1 guess.
+# 45 deg vertical (58 horizontal): iGibson's LoCoBot default, and NOT the
+# training camera. GoStanford was shot through a fisheye wide enough to show
+# both walls, the floor and the ceiling of a corridor.
+#
+# P5 tested widening it, as a correctness experiment rather than a tuned knob,
+# and it did not help. The angle was chosen on the model's *input* before any
+# episode ran: `p5_1_input_check.py` embeds the same 60 sim poses at 45-120
+# deg with the checkpoint's own observation encoder, and 120 sat nearest
+# GoStanford in 4 of 4 measurements. Run at 120 on the same three tasks —
+# byte-identical trails, n8w2r4t3 — the side clips persisted in 3 of 3, two of
+# them at bearings *inside* the wider view, and the one success became a wedge.
+# A rectilinear 120 is not a fisheye, and "nearer by one embedding distance"
+# did not mean "reads the scene the same way". So this stays at the default,
+# the gap is documented as a gap (plan §10), and README "The FOV experiment"
+# has the numbers. Re-running it is one edit here plus a new task-set
+# directory: the fingerprint covers this value, so a 45-deg set refuses to load
+# under any other angle.
 vertical_fov: 45
+
+# Camera tilt: not set, so the LoCoBot URDF's own fixed 20 deg down-tilt
+# (`head_tilt_joint`, ~21 at rest) through iGibson's own sensor path.
+# `camera_tilt_deg: N` here would re-aim the camera N deg down on the render
+# side (SimBody.observe), leaving height and physics alone.
+#
+# P5 tested levelling it, as a correctness experiment, and it did not help.
+# GoStanford's horizon sits near mid-frame, but the observation encoder showed
+# no preference among 0/7/14/20 deg (the rule picked 14, 14, 20, 20 across four
+# measurements; the spread was ~1% against ~5% seed noise), unlike the field of
+# view, where 45 was clearly worst every time. Run at 0 and 14 on byte-identical
+# trails with n8w2r4t3, one seed per task made 0 look better; replicated over
+# three diffusion seeds per task it did not: 2/9 successes and 7/9 side clips at
+# both 0 and 20, and the one-sided drift ran *longer* at 0 (36 ticks mean
+# against 29). Drift is the domain gap, not a wrongly fed camera. README "The
+# pitch experiment" has the numbers. Adding the key changes the world, so the
+# task-set fingerprint forces a new set.
+
 depth_low: 0.1
 depth_high: 10.0
 depth_noise_rate: 0.0

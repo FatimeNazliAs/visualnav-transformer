@@ -156,17 +156,19 @@ themselves — you never need to enter the container.
    ./sim_eval/run_eval.sh --checkpoint best_combined --record --record-tasks Rs_00,Rs_07
    ```
 
-9. Check the model is being fed what it was trained on. This is cheap, it
-   loads no checkpoint weights and it should be the first thing run whenever
-   the behaviour looks wrong:
+9. Check the model is being fed what it was trained on. It should be the
+   first thing run whenever the behaviour looks wrong:
    ```
    ./sim_eval/run_p5_1_input_check.sh
    ```
    It prints channel order, value range, aspect and crop, field of view and
    camera height for a sim frame and a GoStanford frame side by side, and
    writes `sim_eval/outputs/p5_1_input_check.png` — both sources at every stage
-   of the transform, the same sim pose rendered through four fields of view,
-   and a strip of real training frames to hold them against.
+   of the transform, the same sim pose rendered through six fields of view,
+   and a strip of real training frames to hold them against. It also embeds 60
+   sim poses at every angle and 200 training frames with the checkpoint's own
+   observation encoder, and prints which field of view the model thinks looks
+   most like training (see "The FOV experiment").
 
 10. Find out why the episodes that fail, fail:
    ```
@@ -485,6 +487,153 @@ Neither is tuned here. Changing the camera an episode runs under is an edit to
 belongs to a decision, not to a diagnostic. On the second — plan §6 is
 count-and-continue by design, and static Gibson furniture cannot be pushed out
 of the way the way a real chair can.
+
+### The FOV experiment: bug or gap?
+
+The first run pointed at the camera: the sim sees 58 degrees horizontally and
+GoStanford was shot through a fisheye, so perhaps the robot clipped things at
+its shoulder because it was never *shown* them — a model fed wrong, and a
+correctness fix. The rule for reading the result was set before it ran:
+**clips stop -> it was the feed; clips persist -> it is the domain gap.**
+
+**Choosing the angle, on the input only.** `p5_1_input_check.py` renders the
+same 60 sim poses at 45, 60, 75, 90, 105 and 120 degrees vertical, embeds them
+with the checkpoint's own observation encoder (`NomadPolicy.embed_frames`), and
+picks the angle whose frames sit nearest 200 GoStanford frames — the rule
+fixed in code beforehand, and no episode run under any candidate. 120 won in
+4 of 4 measurements (best_combined at seeds 0, 1, 2, and clean_stock); 45 was
+worst or next to it in every one. 120 is also the edge of the sweep, which is
+capped there because a rectilinear camera stretches its edges past use beyond
+it — so it is the nearest a pinhole gets to a fisheye, not a match.
+
+**Same tasks, same driver, one change.** The 120-degree task set was rebuilt
+from the same seeds: start, goal, planned path and the reference drive are
+byte-identical to the 45-degree set, the reference drives have 0 collisions in
+both, and every row reads `n8w2r4t3`. Only the camera differs — which is also
+the first live proof of the fingerprint fix: the 45-degree set refused to load
+under the new camera, as it should.
+
+| Task | 45 deg | 120 deg |
+|------|--------|---------|
+| `Rs_00` | success, 58 ticks, SPL 1.0 — no contact | **timeout**, 383 ticks, SPL 0 — first contact tick 40, **+62.7 deg** (left), 0.30 m off trail |
+| `Rs_01` | timeout, 341 ticks — contact tick 43, **+82.0 deg**, 0.15 m off trail | timeout, 341 ticks — contact tick 44, **+86.5 deg**, 0.12 m off trail |
+| `Rs_02` | timeout, 439 ticks — contact tick 55, **+64.5 deg**, 0.18 m off trail | timeout, 439 ticks — contact tick 44, **+60.5 deg**, 0.26 m off trail |
+
+The bearing is where on the robot it was touched: 0 ahead, +90 its left
+shoulder (`contact_bearing_deg` in the trace). The 45-degree camera sees
++-28.9 degrees either side; the 120-degree camera, +-66.5.
+
+**Verdict: the domain gap, not the feed.**
+
+- The side clips persisted, 3 of 3, every one at the left shoulder.
+- Two of the three 120-degree contacts — +62.7 and +60.5 — were **inside** the
+  wider view. The obstacle was in frame and the robot clipped it anyway, so
+  "it could not see it" is not the explanation.
+- The mechanism after contact is unchanged: the distance head reads past
+  `close_threshold` on 100% of the ticks after it, and the robot is at full
+  speed on 85-100% of them.
+- It got worse, not better: the only success became a wedge, and `Rs_02` hit
+  eleven ticks earlier. With three tasks that is weak evidence of harm; the
+  persistence of the clips is the robust part.
+
+So the bridge camera stays at 45 degrees, and plan §10's standing framing
+applies: the result is read as a ranking of arms, not an absolute. Two more
+things the experiment turned up:
+
+- **The drift before contact is steady, not noisy, and has no fixed side.**
+  In every failed episode the robot sat on one side of its trail for 32-46
+  consecutive ticks and never crossed back; `Rs_00` drifted right at 45
+  degrees (and arrived) and left at 120 (and clipped). No fixed side rules out
+  a sign error in the steering; a held offset is what a policy does when it
+  recognizes the place but not precisely where in it it is.
+- **The camera is pitched 21 degrees down** (and centred: -0.001 m lateral,
+  0.0 degrees yaw). GoStanford's horizon sits near mid-frame. That is a third
+  optical difference beside the lens and the 0.88 m height, and like the
+  height it has no training reference to set it from. Untouched.
+
+### The pitch experiment: bug or gap?
+
+The FOV experiment left one lead: before contact, the robot holds a steady
+5-30 cm offset to one side of its trail. The LoCoBot's camera is pitched 20
+degrees down by a *fixed* joint in its URDF (`head_tilt_joint`, ~21 at rest),
+and GoStanford's horizon sits near mid-frame — so perhaps the model misjudges
+where it is because it sees mostly floor. Same rule as before: **drift shrinks
+-> a wrongly fed camera; drift unchanged -> the domain gap.**
+
+**How the pitch is changed.** The joint is fixed, so it cannot be driven, and
+the URDF is a shared iGibson asset that also carries the head's collision mesh.
+`camera_tilt_deg` in the world config re-aims the camera on the *render* side
+instead (`SimBody.observe` -> `_render_rgb`): iGibson's own robot-camera render,
+line for line, with the view rotated about the camera's own optical centre. So
+the camera height (0.88 m), the physics and the collision geometry are
+untouched. At the URDF's own 20 degrees the new path matches iGibson's sensor
+frame **pixel for pixel** (0 pixels differ); with the key absent, the sensor
+path runs exactly as it always has. The key lives in the world config, so it
+is saved beside every trail and the task-set fingerprint covers it.
+
+**Choosing the pitch, on the input only.** `p5_1_input_check.py` now also
+renders the same 60 poses at 0, 7, 14 and 20 degrees down (at the 45-degree
+field of view) and applies the same pre-registered rule as the lens. Unlike the
+lens, it found nothing: the rule picked **14, 14, 20, 20** across best_combined
+at seeds 0-2 and clean_stock, the centroid gap disagreed every time, and the
+four pitches sat within ~1% of each other against ~5% of seed noise. Level
+(0) was never chosen. With no single answer, two pitches were committed to
+*before either ran*: **0** (level — the stated target, and the strongest test)
+and **14** (the rule's pick averaged over the four measurements). The drift
+criterion was fixed at the same time: mean |off-trail| before first contact
+lower in at least 2 of 3 tasks, *and* the longest one-sided run shorter in at
+least 2 of 3.
+
+**Same tasks, same driver, one change.** Both pitches' task sets were rebuilt
+from the same seeds; start, goal, planned path and reference drive are
+byte-identical to the baseline's, with 0 collisions; every row reads
+`n8w2r4t3`; the field of view stays 45 and the height 0.88 m.
+
+One seed per task, as every earlier run:
+
+| Pitch | Task | Outcome | Ticks | SPL | mean \|off\| (m) | longest one-sided run | first contact |
+|------:|------|---------|------:|----:|------:|-----:|------|
+| 20 (baseline) | Rs_00 | success | 58 | 1.0 | 0.089 | 39 | — |
+| 20 | Rs_01 | timeout | 341 | 0 | 0.089 | 38 | left, +82.0 |
+| 20 | Rs_02 | timeout | 439 | 0 | 0.089 | 46 | left, +64.5 |
+| 0 | Rs_00 | timeout | 383 | 0 | 0.084 | 33 | left, +66.2 |
+| 0 | Rs_01 | success | 56 | 1.0 | 0.052 | 44 | — |
+| 0 | Rs_02 | timeout | 439 | 0 | 0.070 | 25 | left, +43.7 |
+| 14 | Rs_00 | timeout | 383 | 0 | 0.042 | 14 | left, +50.0 |
+| 14 | Rs_01 | success | 56 | 1.0 | 0.040 | 44 | — |
+| 14 | Rs_02 | success | 84 | 1.0 | 0.192 | 63 | — |
+
+Read literally, 0 passes the criterion (|off| lower 3 of 3, run shorter 2 of
+3) and 14 fails it. But the outcomes shuffle between configurations in a way no
+camera explains — each task succeeds under a different pitch — so before
+calling it, the same comparison was **replicated**: 20 and 0 again, over two
+more diffusion seeds per task (`--seed-offset`; the row's `seed` column records
+the one used). The pitch was not chosen from these; they measure whether its
+effect beats run-to-run noise.
+
+| Pitch | Episodes | Successes | Side clips | mean \|off\| (m), mean / range | longest one-sided run, mean / range |
+|------:|---------:|----------:|-----------:|------|------|
+| 20 | 9 | 2 | 7 | 0.106 / 0.033-0.344 | 29 / 4-46 |
+| 0 | 9 | 2 | 7 | 0.078 / 0.051-0.121 | 36 / 25-52 |
+
+**Verdict: the domain gap, not the feed.** Over three seeds per task the
+criterion fails — |off| lower in 2 of 3 tasks, but the one-sided run shorter in
+only 1 of 3, and *longer* overall — and successes and clips are identical. The
+single-seed pass was inside the noise: at a fixed 20 degrees, the same task's
+mean |off| ranges from 0.057 to 0.344 m with nothing but the diffusion seed
+changed. So the camera stays at the URDF's 20 degrees, and plan §10 applies.
+NoMaD does not recentre on its trail and has no obstacle avoidance beyond what
+its images taught it: a held offset toward something it cannot recognize is a
+clip, and a clip is terminal.
+
+**What this means for P6: one seed per task is not enough to rank anything.**
+With the camera, the task and the checkpoint all fixed, `Rs_00` went success,
+timeout, success over three diffusion seeds. Every earlier comparison in this
+phase — including "120 degrees made it worse" — rested on one seed per task and
+is weaker than it looked. P6's 20 tasks x 1 seed per arm will carry the same
+variance into its headline table; replicating each task over several seeds
+(same seeds for every arm, so fairness holds) is the obvious remedy, and a
+decision for the plan rather than for this phase.
 
 ## Talking to the simulator
 
