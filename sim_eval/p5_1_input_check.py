@@ -25,6 +25,9 @@ silently differ:
     beside a strip of training frames — and by *measuring*, with the model's
     own observation encoder (see `camera_measurement`), which field of view
     puts sim frames where the model's training frames sit.
+  * **camera tilt** — the LoCoBot's camera is fixed 20 degrees down in its
+    URDF; GoStanford's horizon sits near mid-frame. Measured the same way as
+    the lens: the same poses at several tilts, through the encoder.
   * **camera height** — where the sim robot's eye sits above the floor.
 
 Nothing here is a fix and nothing here touches the policy. It is evidence, and
@@ -84,6 +87,12 @@ SAMPLE_FRAMES = 6
 # rectilinear projection stretches the edges into uselessness. The renderer is
 # put back to its configured value after each one.
 FOV_SWEEP_DEG = (45, 60, 75, 90, 105, 120)
+
+# Downward camera tilts to render the same poses through, at the configured
+# field of view. 20 is the LoCoBot URDF's own fixed head tilt (~21 at rest);
+# 0 is level, which is where GoStanford's horizon sits — near mid-frame. The
+# pitch experiment's candidates, fixed here before any episode ran under them.
+TILT_SWEEP_DEG = (0, 7, 14, 20)
 
 # The lens measurement's sample sizes. Every pose is rendered at every angle
 # in the sweep, so the scene content is identical across angles and only the
@@ -188,11 +197,16 @@ def fov_sweep(body, degrees):
             for degrees_i in degrees]
 
 
+def tilt_sweep(body, degrees):
+    """The pose the robot is standing at, rendered at each downward camera tilt."""
+    return [(tilt, body.render_at_camera_tilt(tilt)) for tilt in degrees]
+
+
 def camera_sweep(body, poses, render_settings):
     """`poses` random poses across the house, each rendered at every setting.
 
     `render_settings(body)` renders the pose the robot is at under each
-    candidate camera setting — such as `fov_sweep` — and returns
+    candidate camera setting — `fov_sweep` or `tilt_sweep` — and returns
     [(setting, frame), ...]. Returns {setting: [frame, ...]} with the frames in
     pose order, so the same index is the same place in the house under every
     setting and only the camera differs from one row to the next.
@@ -232,7 +246,7 @@ def camera_measurement(sim_embeddings, dataset_embeddings):
     The picture in the figure asks a person; this asks the observation
     encoder, which is the only reader of a frame whose opinion decides
     anything. Both sides are embedded by the same checkpoint's psi, and each
-    candidate setting — here, a field of view — gets two numbers:
+    candidate setting — a field of view, or a camera tilt — gets two numbers:
 
       * `nearest_ratio` — how far a sim frame is from its nearest training
         frame, divided by how far a held-out training frame is from *its*
@@ -467,6 +481,18 @@ def print_report(report):
         lambda angle: "{} / {:.0f} deg".format(
             angle, horizontal_fov_deg(angle, width, height)))
 
+    print("\n=== camera tilt ===")
+    print("  sim:           {} deg down — {}".format(
+        sim["camera_tilt_deg"], "the world config's `camera_tilt_deg`"
+        if sim["camera_tilt_configured"] else
+        "the LoCoBot URDF's fixed head tilt (~21 at rest)"))
+    print("  GoStanford:    no rig in the dataset; its horizon sits near "
+          "mid-frame, i.e. roughly level")
+    print("  so:            the same poses at {} deg down, at this field of "
+          "view:".format(", ".join(str(tilt) for tilt in TILT_SWEEP_DEG)))
+    print_camera_measurement(report["tilt"], "tilt down",
+                             lambda tilt: "{} deg".format(tilt))
+
     print("\n=== camera height ===")
     print("  sim:           {:.2f} m above the floor ({})".format(
         sim["camera_height_m"], report["robot"]))
@@ -553,6 +579,11 @@ def main():
         sweep = fov_sweep(body, FOV_SWEEP_DEG)
         sim_lens = camera_sweep(
             body, args.lens_poses, lambda b: fov_sweep(b, FOV_SWEEP_DEG))
+        # After the lens sweep, so its poses — and every FOV number measured
+        # before the tilt sweep existed — come out of the RNG unchanged.
+        sim_tilt = camera_sweep(
+            body, args.lens_poses, lambda b: tilt_sweep(b, TILT_SWEEP_DEG))
+        camera_tilt = body.camera_tilt_deg
     finally:
         body.close()
 
@@ -569,6 +600,9 @@ def main():
     lens = camera_measurement(
         {angle: policy.embed_frames(frames) for angle, frames in sim_lens.items()},
         dataset_embeddings)
+    tilt = camera_measurement(
+        {angle: policy.embed_frames(frames) for angle, frames in sim_tilt.items()},
+        dataset_embeddings)
 
     sim = describe_source("simulator", sim_strip[0], spec.image_size)
     sim.update({
@@ -577,7 +611,11 @@ def main():
             intrinsics["vertical_fov_deg"], intrinsics["width"],
             intrinsics["height"]),
         "camera_height_m": height,
+        "camera_tilt_deg": (bridge.URDF_CAMERA_TILT_DEG if camera_tilt is None
+                            else camera_tilt),
+        "camera_tilt_configured": camera_tilt is not None,
         "fov_sweep_deg": list(FOV_SWEEP_DEG),
+        "tilt_sweep_deg": list(TILT_SWEEP_DEG),
     })
     dataset = describe_source("GoStanford", dataset_strip[0], spec.image_size)
 
@@ -589,6 +627,8 @@ def main():
         "dataset": dataset,
         "sim": sim,
         "lens": dict(lens, sim_poses=args.lens_poses,
+                     dataset_frames=len(dataset_lens), seed=args.seed),
+        "tilt": dict(tilt, sim_poses=args.lens_poses,
                      dataset_frames=len(dataset_lens), seed=args.seed),
     }
     print_report(report)

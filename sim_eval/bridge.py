@@ -52,6 +52,34 @@ DEFAULT_SIM_CONFIG = SIM_EVAL_DIR / "configs" / "locobot_rs_bridge.yaml"
 PHYSICS_TIMESTEP = 1 / 240.0
 
 
+# iGibson 2.2.2's LoCoBot URDF tilts the camera down by a *fixed* joint:
+# `head_tilt_joint` has rpy="0 0.3490658503988659 0" — 20 degrees, which reads
+# as ~21 at rest once the base settles. It is fixed, so it cannot be driven;
+# `camera_tilt_deg` in a world config re-aims the camera on the render side
+# instead (see `SimBody.observe`).
+URDF_CAMERA_TILT_DEG = 20.0
+
+
+def tilted_camera_axes(rotation, tilt_change_deg):
+    """The camera's (view, up) directions after tilting it by `tilt_change_deg`.
+
+    iGibson aims the robot camera along the eyes link's local +x, with local +z
+    as up (`MeshRenderer.render_single_robot_camera`). Tilting is a rotation
+    about the camera's own local y axis, and positive is *down* — the sign the
+    URDF's own 20-degree tilt has. The rotation is about the camera's optical
+    centre, so the view changes and the camera's height does not: P5's pitch
+    experiment changes one thing.
+    """
+    angle = np.radians(tilt_change_deg)
+    about_local_y = np.array([
+        [np.cos(angle), 0.0, np.sin(angle)],
+        [0.0, 1.0, 0.0],
+        [-np.sin(angle), 0.0, np.cos(angle)],
+    ])
+    tilted = np.asarray(rotation, dtype=float) @ about_local_y
+    return tilted @ np.array([1.0, 0.0, 0.0]), tilted @ np.array([0.0, 0.0, 1.0])
+
+
 def frame_to_pil(rgb):
     """iGibson's RGB frame as a PIL image — the sim's answer to `msg_to_pil`.
 
@@ -195,6 +223,12 @@ class SimBody:
         # ask it rather than reaching through this object into iGibson — see
         # sim_scene.py for what that cost before it existed.
         self.scene = SimScene(self._env.scene, floor)
+        # None = the URDF's own tilt, rendered by iGibson's own path, exactly as
+        # every phase before the pitch experiment ran. A number re-aims the
+        # camera on the render side. It lives in the world config, so it is
+        # saved beside every trail and covered by the task-set fingerprint.
+        tilt = self._env.config.get("camera_tilt_deg")
+        self.camera_tilt_deg = None if tilt is None else float(tilt)
 
     @property
     def robot(self):
@@ -240,6 +274,38 @@ class SimBody:
         finally:
             renderer.set_fov(original)
 
+    def render_at_camera_tilt(self, degrees):
+        """Render one frame with the camera tilted down `degrees`, changing nothing.
+
+        P5's pitch experiment renders the same pose at several tilts and asks
+        the observation encoder which one looks like training — the pitch
+        counterpart of `render_at_vertical_fov`. Every tilt in a sweep goes
+        through the same render path, including the URDF's own 20, so the rows
+        of the sweep differ in the tilt and in nothing else.
+        """
+        return self._render_rgb(degrees)
+
+    def _render_rgb(self, tilt_deg):
+        """iGibson's robot-camera render, with the camera re-aimed.
+
+        `MeshRenderer.render_single_robot_camera`, line for line, except that
+        the view and up directions come from `tilted_camera_axes` rather than
+        straight off the eyes link — and only RGB is rendered, which is all
+        `observe` returns. The robot's physics body, collision meshes and
+        camera position are untouched.
+        """
+        from igibson.utils.mesh_util import quat2rotmat, xyzw2wxyz
+
+        renderer = self._env.simulator.renderer
+        eyes = self.robot.eyes
+        camera_pos = eyes.get_position()
+        rotation = quat2rotmat(xyzw2wxyz(eyes.get_orientation()))[:3, :3]
+        view, up = tilted_camera_axes(rotation, tilt_deg - URDF_CAMERA_TILT_DEG)
+        renderer.set_camera(camera_pos, camera_pos + view, up)
+        hidden = (self.robot.renderer_instances
+                  if renderer.rendering_settings.hide_robot else [])
+        return frame_to_pil(renderer.render(modes=("rgb",), hidden=hidden)[0])
+
     @property
     def initial_pose(self):
         """Where the simulator's own task placed the robot: (position, orientation).
@@ -275,8 +341,16 @@ class SimBody:
         self._env.simulator.sync(force_sync=True)
 
     def observe(self):
-        """The current camera frame, as a PIL image."""
-        return frame_to_pil(self._env.get_state()["rgb"])
+        """The current camera frame, as a PIL image.
+
+        With no `camera_tilt_deg` in the world config this is iGibson's own
+        sensor path, unchanged since P1 — so every earlier result still stands
+        on the code that produced it. With one, the camera is re-aimed on the
+        render side (`_render_rgb`).
+        """
+        if self.camera_tilt_deg is None:
+            return frame_to_pil(self._env.get_state()["rgb"])
+        return self._render_rgb(self.camera_tilt_deg)
 
     def command(self, v, w):
         """Execute (v, w) for one control period. Returns True if it collided.
