@@ -44,6 +44,7 @@ import checkpoints
 import diagnosis
 import gpu
 import run_eval
+import task_set
 from task_set import TaskSetError
 from topomap_builder import TopomapError
 
@@ -61,7 +62,7 @@ DEFAULT_TASKS = 3
 # thought, what it decided, what the robot did.
 TICK_COLUMNS = ("tick", "x", "y", "yaw", "node", "subgoal", "dist_closest",
                 "dist_subgoal", "waypoint_x_m", "waypoint_y_m", "v", "w",
-                "collided")
+                "collided", "contact_bearing_deg")
 
 DIAGNOSIS_COLUMNS = ("task_id", "mode", "explanation", "outcome", "ticks",
                      "final_distance_m", "path_length_m", "geodesic_length_m",
@@ -69,7 +70,14 @@ DIAGNOSIS_COLUMNS = ("task_id", "mode", "explanation", "outcome", "ticks",
                      "collision_events", "declared_arrival_tick",
                      "final_displacement_m", "mean_v", "mean_abs_w",
                      "turning_tick_fraction", "mean_dist_closest",
-                     "min_dist_closest")
+                     "min_dist_closest", "first_contact_tick",
+                     "first_contact_bearing_deg", "first_contact_side",
+                     "off_trail_at_first_contact_m",
+                     "max_off_trail_before_contact_m",
+                     "mean_abs_off_trail_before_contact_m",
+                     "mean_signed_off_trail_before_contact_m",
+                     "longest_one_side_run_ticks",
+                     "head_lost_after_contact", "full_speed_after_contact")
 
 
 def read_traces(path):
@@ -104,6 +112,10 @@ def write_tick_log(trace, path):
                 "waypoint_x_m": waypoint[0], "waypoint_y_m": waypoint[1],
                 "v": tick.get("v"), "w": tick.get("w"),
                 "collided": int(bool(tick.get("collided"))),
+                # Several contact points on one tick are usually one obstacle;
+                # the CSV keeps them all, separated so the cell stays one cell.
+                "contact_bearing_deg": ";".join(
+                    str(value) for value in tick.get("contact_bearing_deg") or []),
             })
     return path
 
@@ -153,6 +165,11 @@ def parse_args():
                         help="where the task set lives (default: %(default)s)")
     parser.add_argument("--rebuild-tasks", action="store_true",
                         help="rebuild the task set even if one is already there")
+    parser.add_argument("--seed-offset", type=int, default=0,
+                        help="added to every task's seed, to replay the same "
+                             "tasks under different diffusion noise and measure "
+                             "run-to-run variation; 0 is the fair, scored "
+                             "setting (default: %(default)s)")
     parser.add_argument("--no-record", dest="record", action="store_false",
                         default=True,
                         help="skip the videos (the numbers are the same either way)")
@@ -174,6 +191,7 @@ def main():
     config.recording.enabled = args.record
     config.recording.tasks = "all"
     config.recording.directory = args.bundle / "videos"
+    config.seed_offset = args.seed_offset
 
     bundle = args.bundle
     bundle.mkdir(parents=True, exist_ok=True)
@@ -187,7 +205,12 @@ def main():
     traces = read_traces(table.trace_path)
     for trace in traces:
         write_tick_log(trace, bundle / "ticks" / "{}.csv".format(trace["task_id"]))
-    diagnoses = diagnosis.diagnose_all(traces)
+    # The trail each episode was asked to follow, so the diagnosis can say how
+    # far off it the agent was when something first touched it.
+    _manifest, tasks = task_set.load(args.task_set)
+    reference_paths = {task.task_id: task.metadata["driven_path"] for task in tasks}
+    diagnoses = diagnosis.diagnose_all(traces, reference_paths,
+                                       config.driver.close_threshold)
     write_diagnoses(diagnoses, bundle / "p5_2_diagnosis.csv")
 
     report(diagnoses, config.driver, bundle)

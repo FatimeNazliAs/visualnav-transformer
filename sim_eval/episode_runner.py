@@ -284,6 +284,11 @@ class Episode:
                 "v": round(record.v, 4),
                 "w": round(record.w, 4),
                 "collided": bool(record.collided),
+                # Which side it was touched on — ahead, at a shoulder, behind.
+                # P5's FOV experiment turns on whether a contact was inside
+                # the camera's view or outside it.
+                "contact_bearing_deg": [round(value, 1) for value
+                                        in record.contact_bearings_deg],
             })
             if self._declared_arrival_tick is None and driver.reached_goal:
                 self._declared_arrival_tick = record.index
@@ -353,10 +358,16 @@ class EpisodeRunner:
     forwarded without reading.
     """
 
-    def __init__(self, policy, body, rules=None):
+    def __init__(self, policy, body, rules=None, seed_offset=0):
         self.policy = policy
         self.body = body
         self.rules = rules or EpisodeRules()
+        # Added to every task's seed. 0 — every scoring run — is the fairness
+        # protocol: each arm meets each task with that task's own noise. A
+        # non-zero offset replays the same task under different diffusion noise,
+        # which is how P5 measures run-to-run variation rather than a setting's
+        # effect. The seed actually used is in every row's `seed` column.
+        self.seed_offset = int(seed_offset)
 
     def _euclidean_distance(self, goal_xy):
         """How far the agent is from the goal right now, in a straight line."""
@@ -395,4 +406,4 @@ class EpisodeRunner:
         wants; it is an argument only so a rerun can deliberately vary it.
         """
         return Episode(self, task, checkpoint_name,
-                       task.seed if seed is None else int(seed))
+                       task.seed + self.seed_offset if seed is None else int(seed))

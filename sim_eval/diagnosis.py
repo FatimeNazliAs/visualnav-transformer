@@ -27,6 +27,8 @@ single number that P6 will report.
 
 import math
 
+from driver import DEFAULT_CLOSE_THRESHOLD
+
 # --- when an agent counts as stuck against something ------------------------
 # Plan §6 counts collisions and never ends an episode for one, so an agent that
 # wedges spends its entire budget in contact: P3's second episode logged 298
@@ -55,6 +57,14 @@ TRAIL_STALLED_FRACTION = 0.25
 # episode drove 2.7 m of a 4.4 m geodesic (the planner's grid zigzags, so
 # driving *less* is normal), and its worst failure drove 5.6 m of 3.9 m.
 WANDERING_PATH_RATIO = 2.0
+
+
+# --- which side a contact was on ---------------------------------------------
+# A contact within this many degrees of the heading counts as "front". 30 is
+# the 45-degree-vertical camera's own horizontal half field of view (28.9
+# degrees, rounded): anything wider was outside what P1-P5's camera could see.
+FRONT_HALF_ANGLE_DEG = 30.0
+REAR_HALF_ANGLE_DEG = 30.0
 
 
 class Diagnosis:
@@ -141,8 +151,143 @@ def _distance_head(ticks_log):
     }
 
 
-def evidence(trace):
-    """Everything a diagnosis is allowed to look at, as one flat dict."""
+def signed_offset_from_path(point, path):
+    """How far (x, y) is from a polyline, signed by which side of it: + is left
+    of the direction the path runs, - is right.
+
+    Measured to the segments, not the vertices, so a sparse path does not read
+    as further away than it is. The sign is what turns "off the trail" into
+    *drift*: a robot that wanders either side of its trail is noisy, and one
+    that sits on the same side of it tick after tick is holding an offset.
+    """
+    x, y = float(point[0]), float(point[1])
+    vertices = [(float(p[0]), float(p[1])) for p in path]
+    if len(vertices) == 1:
+        return math.hypot(x - vertices[0][0], y - vertices[0][1])
+    best, signed = math.inf, 0.0
+    for (ax, ay), (bx, by) in zip(vertices, vertices[1:]):
+        dx, dy = bx - ax, by - ay
+        length_sq = dx * dx + dy * dy
+        t = 0.0 if length_sq == 0 else max(0.0, min(1.0, (
+            (x - ax) * dx + (y - ay) * dy) / length_sq))
+        distance = math.hypot(x - (ax + t * dx), y - (ay + t * dy))
+        if distance < best:
+            side = dx * (y - ay) - dy * (x - ax)
+            best, signed = distance, math.copysign(distance, side)
+    return signed
+
+
+def distance_to_path(point, path):
+    """Shortest distance from (x, y) to a polyline."""
+    return abs(signed_offset_from_path(point, path))
+
+
+# How far off the trail counts as being on one side of it, for the longest
+# one-sided run. 2 cm is well under the 15-30 cm offsets the failures hold,
+# and well over the millimetres a robot straddling its trail wobbles by.
+ONE_SIDE_M = 0.02
+
+
+def longest_one_side_run(offsets, threshold=ONE_SIDE_M):
+    """The most consecutive ticks spent on the same side of the trail.
+
+    "Ticks to cross back", taken to its end: a run is broken by a tick on the
+    other side, or by one within `threshold` of the trail itself. A policy
+    that recentres keeps these short; P5's failures held one side for 32-46
+    ticks straight until something touched them.
+    """
+    longest = current = 0
+    side = 0
+    for offset in offsets:
+        this = 0 if abs(offset) <= threshold else (1 if offset > 0 else -1)
+        current = current + 1 if this != 0 and this == side else (1 if this else 0)
+        side = this
+        longest = max(longest, current)
+    return longest
+
+
+def mean_bearing_deg(bearings):
+    """The circular mean of some bearings — +179 and -179 average to 180, not 0."""
+    if not bearings:
+        return None
+    sines = sum(math.sin(math.radians(value)) for value in bearings)
+    cosines = sum(math.cos(math.radians(value)) for value in bearings)
+    return math.degrees(math.atan2(sines, cosines))
+
+
+def side_of(bearing_deg):
+    """front / left / right / rear, from a bearing in the ROS convention."""
+    if bearing_deg is None:
+        return None
+    if abs(bearing_deg) <= FRONT_HALF_ANGLE_DEG:
+        return "front"
+    if abs(bearing_deg) >= 180.0 - REAR_HALF_ANGLE_DEG:
+        return "rear"
+    return "left" if bearing_deg > 0 else "right"
+
+
+def _first_contact(ticks_log, poses, reference_path, close_threshold):
+    """The first collision, and what happened to the policy after it.
+
+    This is the wedge -> freeze mechanism made into columns: where the contact
+    was, how well the agent had been tracking its trail until then, and — for
+    every tick after it — whether the distance head had lost the trail (its
+    closest reading at or past `close_threshold`, so the subgoal cannot
+    advance) and whether the robot was still driving at full speed.
+    """
+    first = next((tick for tick in ticks_log if tick.get("collided")), None)
+    before = [tick for tick in ticks_log
+              if first is None or tick["tick"] < first["tick"]]
+    facts = {
+        "first_contact_tick": None if first is None else int(first["tick"]),
+        "first_contact_bearing_deg": None,
+        "first_contact_side": None,
+        "off_trail_at_first_contact_m": None,
+        "max_off_trail_before_contact_m": None,
+        "mean_abs_off_trail_before_contact_m": None,
+        "mean_signed_off_trail_before_contact_m": None,
+        "longest_one_side_run_ticks": None,
+        "head_lost_after_contact": None,
+        "full_speed_after_contact": None,
+    }
+    if first is not None:
+        bearing = mean_bearing_deg(first.get("contact_bearing_deg") or [])
+        facts["first_contact_bearing_deg"] = (
+            None if bearing is None else round(bearing, 1))
+        facts["first_contact_side"] = side_of(bearing)
+        after = [tick for tick in ticks_log if tick["tick"] > first["tick"]]
+        if after:
+            lost = [tick for tick in after if tick.get("dist_closest") is not None
+                    and float(tick["dist_closest"]) >= close_threshold]
+            fast = [tick for tick in after if abs(float(tick["v"])) >= 0.199]
+            facts["head_lost_after_contact"] = round(len(lost) / len(after), 3)
+            facts["full_speed_after_contact"] = round(len(fast) / len(after), 3)
+
+    if reference_path and poses:
+        def signed(tick):
+            index = int(tick["tick"])
+            return signed_offset_from_path(poses[index], reference_path) \
+                if index < len(poses) else None
+        offsets = [value for value in map(signed, before) if value is not None]
+        if offsets:
+            facts["max_off_trail_before_contact_m"] = round(
+                max(abs(value) for value in offsets), 3)
+            facts["mean_abs_off_trail_before_contact_m"] = round(
+                sum(abs(value) for value in offsets) / len(offsets), 3)
+            facts["mean_signed_off_trail_before_contact_m"] = round(
+                sum(offsets) / len(offsets), 3)
+            facts["longest_one_side_run_ticks"] = longest_one_side_run(offsets)
+        if first is not None and signed(first) is not None:
+            facts["off_trail_at_first_contact_m"] = round(abs(signed(first)), 3)
+    return facts
+
+
+def evidence(trace, reference_path=None, close_threshold=DEFAULT_CLOSE_THRESHOLD):
+    """Everything a diagnosis is allowed to look at, as one flat dict.
+
+    `reference_path` is the trail's own driven path (the task's metadata), and
+    is optional: without it the off-trail columns are blank rather than guessed.
+    """
     ticks_log = trace.get("ticks_log") or []
     facts = {
         "outcome": trace.get("outcome"),
@@ -158,15 +303,17 @@ def evidence(trace):
     }
     facts.update(_motion(ticks_log))
     facts.update(_distance_head(ticks_log))
+    facts.update(_first_contact(ticks_log, trace.get("poses") or [],
+                                reference_path, close_threshold))
     facts["path_ratio"] = (
         round(facts["path_length_m"] / facts["geodesic_length_m"], 2)
         if facts["geodesic_length_m"] else None)
     return facts
 
 
-def diagnose(trace):
+def diagnose(trace, reference_path=None, close_threshold=DEFAULT_CLOSE_THRESHOLD):
     """Name one episode's mode. First match wins — see the module docstring."""
-    facts = evidence(trace)
+    facts = evidence(trace, reference_path, close_threshold)
     task_id = trace.get("task_id", "?")
 
     def named(mode, explanation):
@@ -236,8 +383,12 @@ def _number(value):
     return "{:.1f}".format(value) if value is not None else "nothing"
 
 
-def diagnose_all(traces):
-    return [diagnose(trace) for trace in traces]
+def diagnose_all(traces, reference_paths=None, close_threshold=DEFAULT_CLOSE_THRESHOLD):
+    """Diagnose every trace; `reference_paths` maps task id -> driven path."""
+    reference_paths = reference_paths or {}
+    return [diagnose(trace, reference_paths.get(trace.get("task_id")),
+                     close_threshold)
+            for trace in traces]
 
 
 def tally(diagnoses):

@@ -230,6 +230,33 @@ class NomadPolicy:
             prediction_type="epsilon",
         )
 
+    def embed_frames(self, frames, batch_size=64):
+        """psi, the observation encoder's own token for each frame, on its own.
+
+        Exactly the per-frame half of `NoMaD_ViNT.forward` -- extract_features,
+        average pool, flatten, compress -- stopped before the frames are
+        stacked into a context and mixed with the goal. What comes out is how
+        the model *sees* one image, which is the thing to compare when the
+        question is whether a sim camera shows the model what training did.
+        Returned as an (N, encoding_size) numpy array, in input order.
+        """
+        encoder = self.model.vision_encoder
+        tokens = []
+        with torch.no_grad():
+            for first in range(0, len(frames), batch_size):
+                batch = frames[first:first + batch_size]
+                images = torch.cat(
+                    [transform_images(frame, self.spec.image_size) for frame in batch],
+                    dim=0).to(self.device)
+                features = encoder.obs_encoder.extract_features(images)
+                features = encoder.obs_encoder._avg_pooling(features)
+                if encoder.obs_encoder._global_params.include_top:
+                    features = features.flatten(start_dim=1)
+                    features = encoder.obs_encoder._dropout(features)
+                tokens.append(to_numpy(
+                    encoder.compress_obs_enc(features).reshape(len(batch), -1)))
+        return np.concatenate(tokens, axis=0)
+
     def encode_topomap(self, topomap):
         """Pre-transform the topomap once; it does not change during an episode."""
         return [transform_images(node, self.spec.image_size).to(self.device)

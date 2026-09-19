@@ -120,6 +120,10 @@ class FakeBody:
         self.ticks += 1
         return collided
 
+    def contact_points(self):
+        """Every contact is 0.2 m to the robot's left — a shoulder clip."""
+        return [(self._x, 0.2)]
+
 
 class FakePolicy:
     """Always points straight ahead, and claims whatever node it is told to."""
@@ -405,6 +409,18 @@ def test_an_episode_is_seeded_from_its_task_so_every_arm_faces_the_same_one(task
     assert result.metrics.seed == task.seed
 
 
+def test_a_seed_offset_replays_the_task_under_other_noise_and_says_so(task):
+    """Offset 0 is the fairness protocol; anything else is a replicate, and the
+    row records the seed it actually ran with so the two cannot be confused."""
+    runner = episode_runner.EpisodeRunner(
+        FakePolicy(), FakeBody(), rules=episode_runner.EpisodeRules(
+            success_radius_m=SUCCESS_RADIUS_M), seed_offset=100000)
+    episode = runner.episode(task, "fake_checkpoint")
+    for _record in episode:
+        pass
+    assert episode.result().metrics.seed == task.seed + 100000
+
+
 def test_the_trace_carries_the_path_and_the_per_tick_decisions(task):
     trace = run_episode(task)[0].trace()
     assert trace["task_id"] == "Rs_00"
@@ -412,7 +428,16 @@ def test_the_trace_carries_the_path_and_the_per_tick_decisions(task):
     assert len(trace["ticks_log"]) == trace["ticks"]
     assert set(trace["ticks_log"][0]) == {
         "tick", "node", "subgoal", "dist_closest", "dist_subgoal",
-        "waypoint_m", "v", "w", "collided"}
+        "waypoint_m", "v", "w", "collided", "contact_bearing_deg"}
+
+
+def test_the_trace_says_which_side_a_contact_was_on(task):
+    """A contact at the robot's left shoulder is +90 degrees; a tick with no
+    contact has no bearing rather than a zero, which would read as 'ahead'."""
+    trace = run_episode(task, body=FakeBody(collide_on={3}))[0].trace()
+    ticks = trace["ticks_log"]
+    assert ticks[3]["contact_bearing_deg"] == [90.0]
+    assert ticks[2]["contact_bearing_deg"] == []
 
 
 def test_the_trace_carries_the_waypoint_the_robot_steered_to(task):

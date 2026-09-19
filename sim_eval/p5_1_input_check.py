@@ -20,11 +20,11 @@ silently differ:
     centre crop (`vint_train.data.data_utils.IMAGE_ASPECT_RATIO`) does to it,
     and what it is resized to.
   * **lens and field of view** — the sim's, read off the renderer's own
-    intrinsics. GoStanford records none, so the comparison is made by
-    *rendering*: the same sim pose through a sweep of fields of view, printed
-    beside a strip of training frames, so which one the training distribution
-    actually looks like is a judgement made on pictures rather than on memory
-    of what camera the dataset was shot with.
+    intrinsics. GoStanford records none, so the comparison is made twice:
+    by *rendering* — one sim pose through a sweep of fields of view, printed
+    beside a strip of training frames — and by *measuring*, with the model's
+    own observation encoder (see `camera_measurement`), which field of view
+    puts sim frames where the model's training frames sit.
   * **camera height** — where the sim robot's eye sits above the floor.
 
 Nothing here is a fix and nothing here touches the policy. It is evidence, and
@@ -34,7 +34,7 @@ gap is a documented limitation, not a bug to be tuned away).
 What comes out (from `sim_eval/outputs/`):
 
     p5_1_input_check.png    the two sources side by side, at every stage
-    p5_1_input_check.json   the same numbers, machine-readable
+    p5_1_input_check.json   the same numbers, plus the lens measurement
 
 Run (from the repo root, on the host):
     ./sim_eval/run_p5_1_input_check.sh
@@ -78,11 +78,19 @@ IMAGE_ASPECT_RATIO = 4 / 3
 # whether one frame was a fluke, few enough to read at a glance.
 SAMPLE_FRAMES = 6
 
-# Vertical fields of view to render the same pose through. 45 is the sim's own
-# (iGibson's LoCoBot default); the rest bracket what a wide indoor lens covers,
-# up to the point where a rectilinear projection stretches the edges into
-# uselessness. The renderer is put back to its own value after each one.
-FOV_SWEEP_DEG = (45, 70, 90, 110)
+# Vertical fields of view to render the same pose through. 45 is iGibson's
+# LoCoBot default, which P1-P5 ran under; the rest bracket what a wide indoor
+# lens covers, up to 120 deg vertical (132 deg horizontal), past which a
+# rectilinear projection stretches the edges into uselessness. The renderer is
+# put back to its configured value after each one.
+FOV_SWEEP_DEG = (45, 60, 75, 90, 105, 120)
+
+# The lens measurement's sample sizes. Every pose is rendered at every angle
+# in the sweep, so the scene content is identical across angles and only the
+# lens differs; the GoStanford frames are split in half so that training can
+# be measured against itself, which is what "indistinguishable" looks like.
+LENS_SIM_POSES = 60
+LENS_DATASET_FRAMES = 200
 
 
 # --------------------------------------------------------------------------
@@ -180,6 +188,96 @@ def fov_sweep(body, degrees):
             for degrees_i in degrees]
 
 
+def camera_sweep(body, poses, render_settings):
+    """`poses` random poses across the house, each rendered at every setting.
+
+    `render_settings(body)` renders the pose the robot is at under each
+    candidate camera setting — such as `fov_sweep` — and returns
+    [(setting, frame), ...]. Returns {setting: [frame, ...]} with the frames in
+    pose order, so the same index is the same place in the house under every
+    setting and only the camera differs from one row to the next.
+    """
+    frames = {}
+    for _ in range(poses):
+        _place_randomly(body)
+        for setting, frame in render_settings(body):
+            frames.setdefault(setting, []).append(frame)
+    return frames
+
+
+def standardize(embeddings, reference):
+    """Express embeddings in units of the reference set's own spread, per dim."""
+    mean = reference.mean(axis=0)
+    spread = reference.std(axis=0) + 1e-6
+    return (np.asarray(embeddings, dtype=float) - mean) / spread
+
+
+def mean_nearest_distance(probe, reference):
+    """How far, on average, each probe point is from its nearest reference point."""
+    probe = np.asarray(probe, dtype=float)
+    reference = np.asarray(reference, dtype=float)
+    squared = ((probe[:, None, :] - reference[None, :, :]) ** 2).sum(axis=2)
+    return float(np.sqrt(squared.min(axis=1)).mean())
+
+
+def centroid_gap(probe, reference):
+    """Distance between the two sets' means, per dimension, in reference spreads."""
+    probe = standardize(probe, reference)
+    return float(np.linalg.norm(probe.mean(axis=0)) / np.sqrt(probe.shape[1]))
+
+
+def camera_measurement(sim_embeddings, dataset_embeddings):
+    """Which camera setting makes sim frames look like training, to the model.
+
+    The picture in the figure asks a person; this asks the observation
+    encoder, which is the only reader of a frame whose opinion decides
+    anything. Both sides are embedded by the same checkpoint's psi, and each
+    candidate setting — here, a field of view — gets two numbers:
+
+      * `nearest_ratio` — how far a sim frame is from its nearest training
+        frame, divided by how far a held-out training frame is from *its*
+        nearest one. 1.0 is "as close to training as training is to itself".
+      * `centroid_gap` — how far the two means sit apart, in training spreads.
+
+    The rule for choosing is fixed here, before anything is run: **the
+    setting with the lowest `nearest_ratio`**, reported with `centroid_gap`
+    beside it as a check that the two agree. It is chosen on the model's
+    *input*, from frames nobody drove, so no episode outcome can have
+    influenced it — the property that makes a camera change a correctness fix
+    rather than a tuned knob (plan decision E).
+
+    The scene confound is real — Rs is a house and GoStanford is university
+    buildings — but it is constant across a sweep: every setting is rendered
+    at the same poses, so only the camera changes from one row to the next.
+    What the absolute numbers mean is content plus camera; what the *trend*
+    means is camera.
+    """
+    dataset = np.asarray(dataset_embeddings, dtype=float)
+    half = len(dataset) // 2
+    reference, held_out = dataset[:half], dataset[half:]
+    scale = mean_nearest_distance(standardize(held_out, reference),
+                                  standardize(reference, reference))
+
+    def score(embeddings):
+        probe = standardize(embeddings, reference)
+        return {
+            "nearest_ratio": round(mean_nearest_distance(
+                probe, standardize(reference, reference)) / scale, 4),
+            "centroid_gap": round(centroid_gap(embeddings, reference), 4),
+        }
+
+    rows = {int(setting): score(embeddings)
+            for setting, embeddings in sorted(sim_embeddings.items())}
+    best = min(rows, key=lambda setting: rows[setting]["nearest_ratio"])
+    return {
+        "training_against_itself": score(held_out),
+        "by_setting": rows,
+        "chosen": best,
+        "centroid_agrees": best == min(
+            rows, key=lambda setting: rows[setting]["centroid_gap"]),
+    }
+
+
 # --------------------------------------------------------------------------
 # the two sources
 # --------------------------------------------------------------------------
@@ -192,14 +290,17 @@ def sim_frames(body, count):
     to choose.
     """
     frames = []
-    floor_height = body.scene.floor_height
     for _ in range(count):
-        point = body.scene.random_point()
-        position = [point[0], point[1], floor_height]
-        yaw = float(np.random.uniform(-math.pi, math.pi))
-        body.place(position, [0.0, 0.0, yaw])
+        _place_randomly(body)
         frames.append(body.observe())
     return frames
+
+
+def _place_randomly(body):
+    """Put the robot on a random traversable point, facing a random way."""
+    point = body.scene.random_point()
+    yaw = float(np.random.uniform(-math.pi, math.pi))
+    body.place([point[0], point[1], body.scene.floor_height], [0.0, 0.0, yaw])
 
 
 def dataset_frames(dataset_dir, count, rng):
@@ -354,21 +455,45 @@ def print_report(report):
 
     print("\n=== lens and field of view ===")
     print("  sim:           {:.0f} deg vertical, {:.0f} deg horizontal, "
-          "rectilinear (iGibson's LoCoBot default)".format(
+          "rectilinear (as configured)".format(
               sim["intrinsics"]["vertical_fov_deg"], sim["horizontal_fov_deg"]))
     print("  GoStanford:    no intrinsics in the dataset — it ships frames and "
           "odometry, nothing about the rig")
-    print("  so:            the figure's bottom two bands are the comparison. "
-          "The same sim pose is")
-    print("                 rendered at {} and put above real training "
-          "frames.".format(", ".join(
-              "{:.0f} deg".format(degrees) for degrees in sim["fov_sweep_deg"])))
+    print("  so:            the figure's bottom two bands show it; the "
+          "encoder measures it:")
+    width, height = sim["intrinsics"]["width"], sim["intrinsics"]["height"]
+    print_camera_measurement(
+        report["lens"], "vertical / horizontal",
+        lambda angle: "{} / {:.0f} deg".format(
+            angle, horizontal_fov_deg(angle, width, height)))
 
     print("\n=== camera height ===")
     print("  sim:           {:.2f} m above the floor ({})".format(
         sim["camera_height_m"], report["robot"]))
     print("  GoStanford:    not recoverable from the dataset — it ships frames "
           "and odometry, no rig")
+
+
+def print_camera_measurement(measurement, header, label):
+    """A sweep as a table — the model's own reading of each camera setting.
+
+    `label(setting)` is the setting as the first column shows it.
+    """
+    print("\n    {:>22}  {:>13}  {:>12}".format(header, "nearest_ratio",
+                                                 "centroid_gap"))
+    for setting, row in measurement["by_setting"].items():
+        print("    {:>22}  {:>13.3f}  {:>12.3f}{}".format(
+            label(setting), row["nearest_ratio"], row["centroid_gap"],
+            "   <- chosen" if setting == measurement["chosen"] else ""))
+    baseline = measurement["training_against_itself"]
+    print("    {:>22}  {:>13.3f}  {:>12.3f}   (what indistinguishable looks "
+          "like)".format("GoStanford vs itself", baseline["nearest_ratio"],
+                         baseline["centroid_gap"]))
+    print("\n    rule, fixed before running: lowest nearest_ratio -> {}; the "
+          "centroid gap {}.".format(
+              label(measurement["chosen"]).strip(),
+              "agrees" if measurement["centroid_agrees"]
+              else "DISAGREES — read both"))
 
 
 def parse_args():
@@ -382,6 +507,12 @@ def parse_args():
                         help="GoStanford root (default: %(default)s)")
     parser.add_argument("--frames", type=int, default=SAMPLE_FRAMES,
                         help="frames per source in the strip (default: %(default)s)")
+    parser.add_argument("--lens-poses", type=int, default=LENS_SIM_POSES,
+                        help="sim poses rendered at every angle for the lens "
+                             "measurement (default: %(default)s)")
+    parser.add_argument("--lens-frames", type=int, default=LENS_DATASET_FRAMES,
+                        help="GoStanford frames for the lens measurement, half "
+                             "of them held out (default: %(default)s)")
     parser.add_argument("--seed", type=int, default=0,
                         help="which frames and poses are sampled (default: %(default)s)")
     parser.add_argument("--figure", type=Path, default=DEFAULT_FIGURE,
@@ -417,13 +548,27 @@ def main():
         height = camera_height_m(body)
         robot_name = type(body.robot).__name__
         sim_strip = sim_frames(body, args.frames)
-        # The sweep comes last, from wherever the strip left the robot, so the
+        # The sweep comes next, from wherever the strip left the robot, so the
         # lens band and the pipeline band above it are the same room.
         sweep = fov_sweep(body, FOV_SWEEP_DEG)
+        sim_lens = camera_sweep(
+            body, args.lens_poses, lambda b: fov_sweep(b, FOV_SWEEP_DEG))
     finally:
         body.close()
 
-    dataset_strip = dataset_frames(args.dataset, args.frames, rng)
+    dataset_lens = dataset_frames(args.dataset, args.lens_frames, rng)
+    dataset_strip = dataset_lens[:args.frames]
+
+    import torch
+
+    from nomad_policy import NomadPolicy
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    policy = NomadPolicy(spec, device)
+    dataset_embeddings = policy.embed_frames(dataset_lens)
+    lens = camera_measurement(
+        {angle: policy.embed_frames(frames) for angle, frames in sim_lens.items()},
+        dataset_embeddings)
 
     sim = describe_source("simulator", sim_strip[0], spec.image_size)
     sim.update({
@@ -443,6 +588,8 @@ def main():
         "world": str(args.world),
         "dataset": dataset,
         "sim": sim,
+        "lens": dict(lens, sim_poses=args.lens_poses,
+                     dataset_frames=len(dataset_lens), seed=args.seed),
     }
     print_report(report)
 

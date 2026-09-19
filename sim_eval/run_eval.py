@@ -52,7 +52,7 @@ class EvalConfig:
     """`configs/eval.yaml`: which problems, which arms, and when an episode ends."""
 
     def __init__(self, tasks, task_directory, rules, floor, checkpoint_names,
-                 output_dir, recording, driver):
+                 output_dir, recording, driver, seed_offset=0):
         self.tasks = tasks
         self.task_directory = task_directory
         self.rules = rules
@@ -67,6 +67,8 @@ class EvalConfig:
         # driver, not to the problem: the same task set is faced with it, and
         # every row of the table records which settings faced it.
         self.driver = driver
+        # 0 for anything that is scored; see `EpisodeRunner.seed_offset`.
+        self.seed_offset = int(seed_offset)
 
     @classmethod
     def from_dict(cls, data):
@@ -86,6 +88,7 @@ class EvalConfig:
             output_dir=resolve_path(data.get("output_dir", "outputs")),
             recording=RecordingConfig.from_dict(record_section),
             driver=DriverConfig.from_dict(data.get("driver")),
+            seed_offset=data.get("seed_offset", 0),
         )
 
     @classmethod
@@ -213,7 +216,8 @@ def score_checkpoint(config, tasks, policy, checkpoint_name, table,
         try:
             body.verify_gpu(selected_gpu)
             runner = episode_runner.EpisodeRunner(
-                policy, body, rules=config.rules)
+                policy, body, rules=config.rules,
+                seed_offset=config.seed_offset)
             run_scene(scene, scene_tasks, runner, checkpoint_name, table,
                       film, verbose=verbose)
         finally:

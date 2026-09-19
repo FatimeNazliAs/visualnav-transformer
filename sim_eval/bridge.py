@@ -81,6 +81,27 @@ def waypoint_scale_m(model_params, limits):
     return limits.max_v / limits.frame_rate
 
 
+def contact_bearings_deg(points_xy, pose):
+    """Where each contact is, as a bearing from the robot's heading, in degrees.
+
+    0 is dead ahead, +90 the robot's left, -90 its right, +-180 behind it —
+    the ROS convention everything else here uses. P5 needs it to tell a robot
+    that drove into something it could see from one that clipped something at
+    its shoulder, outside the camera: the difference between a model that
+    ignored an obstacle and a camera that never showed it one.
+
+    Pure arithmetic, so it is pinned without a simulator; `SimBody` supplies
+    the points.
+    """
+    x, y, yaw = pose
+    bearings = []
+    for point_x, point_y in points_xy:
+        world = np.arctan2(point_y - y, point_x - x)
+        relative = (world - yaw + np.pi) % (2 * np.pi) - np.pi
+        bearings.append(float(np.degrees(relative)))
+    return bearings
+
+
 def load_topomap(topomap_dir):
     """Load a topomap directory of 0.png, 1.png, ... in node order.
 
@@ -271,6 +292,18 @@ class SimBody:
         _state, _reward, _done, _info = self._env.step(action)
         return len(self._env.collision_links) > 0
 
+    def contact_points(self):
+        """Where the robot is touching something right now, as world (x, y).
+
+        iGibson keeps the last physics step's contacts as pybullet contact
+        tuples queried with the robot as body A, so field 5 is the point on
+        the robot's own surface. Already filtered by the world config's
+        `collision_ignore_link_a_ids` — the same filter that decides whether
+        `command` reports a collision at all, so the two cannot disagree.
+        """
+        return [(float(item[5][0]), float(item[5][1]))
+                for item in self._env.collision_links]
+
     @property
     def pose(self):
         """(x, y, yaw) in scene coordinates."""
@@ -307,7 +340,8 @@ class TickRecord:
     `episode_runner.Episode`.
     """
 
-    def __init__(self, index, frame, pose, step, waypoint_m, v, w, collided):
+    def __init__(self, index, frame, pose, step, waypoint_m, v, w, collided,
+                 contact_bearings_deg=()):
         self.index = index
         self.frame = frame
         self.pose = pose
@@ -318,6 +352,9 @@ class TickRecord:
         self.v = v
         self.w = w
         self.collided = collided
+        # Where the contact was, relative to the heading after the tick's
+        # motion — see `contact_bearings_deg`. Empty on a tick with no contact.
+        self.contact_bearings_deg = list(contact_bearings_deg)
 
     def summary(self):
         return ("tick {:3d}  node {:>2} -> subgoal {:>2}  waypoint "
@@ -387,10 +424,13 @@ class NomadBridge:
         waypoint_m = self._waypoint_to_metres(step.waypoint)
         v, w = pd_controller(waypoint_m, self.limits)
         collided = self.body.command(v, w)
+        bearings = (contact_bearings_deg(self.body.contact_points(), self.body.pose)
+                    if collided else [])
 
         self.context.push(self.body.observe())
         record = TickRecord(
             index=self._tick_index, frame=frame, pose=pose, step=step,
-            waypoint_m=waypoint_m, v=float(v), w=float(w), collided=collided)
+            waypoint_m=waypoint_m, v=float(v), w=float(w), collided=collided,
+            contact_bearings_deg=bearings)
         self._tick_index += 1
         return record
