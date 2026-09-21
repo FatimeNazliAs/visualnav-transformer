@@ -262,24 +262,113 @@ class MetricsTable:
         self.rows = 0
 
     def open(self, resume=False):
-        """Create the table (or keep appending to an existing one)."""
+        """Create the table, or reopen an existing one to carry on from it.
+
+        Resuming first repairs what an interrupted run can leave behind — see
+        `_repair` — so the table that is appended to holds only whole episodes.
+        """
         self.csv_path.parent.mkdir(parents=True, exist_ok=True)
         if resume and self.csv_path.exists():
+            self._repair()
             return self
-        with open(self.csv_path, "w", newline="") as handle:
-            csv.DictWriter(handle, fieldnames=CSV_COLUMNS).writeheader()
-        self.trace_path.write_text("")
+        self._write([], [])
         return self
 
     def append(self, metrics, trace=None):
-        """Append one scored episode, and flush it — see the class docstring."""
-        with open(self.csv_path, "a", newline="") as handle:
-            csv.DictWriter(handle, fieldnames=CSV_COLUMNS).writerow(metrics.as_row())
+        """Append one scored episode, and flush it — see the class docstring.
+
+        The trace goes first and the CSV row last: the row is the commit
+        marker. A run killed between the two leaves a trace with no row, which
+        `_repair` drops and the resumed run re-scores — never a row whose
+        evidence is missing.
+        """
         if trace is not None:
             with open(self.trace_path, "a") as handle:
                 handle.write(json.dumps(trace) + "\n")
+        with open(self.csv_path, "a", newline="") as handle:
+            csv.DictWriter(handle, fieldnames=CSV_COLUMNS).writerow(metrics.as_row())
         self.rows += 1
         return self
+
+    def completed(self):
+        """The episodes already scored, as `episode_key`s — what a resumed run skips."""
+        return {episode_key(row) for row in read_table(self.csv_path)}
+
+    def _repair(self):
+        """Keep the whole episodes of an interrupted table, and nothing else.
+
+        A process killed mid-write can leave a truncated last row, and one
+        killed between an episode's trace and its row leaves a trace with no
+        row. Both are dropped, so the episode they belonged to is simply not
+        done yet. A header that is not this module's is refused rather than
+        repaired: that table was written under different columns, and
+        appending to it would mix two schemas in one file.
+        """
+        reader = csv.DictReader(_whole_lines(self.csv_path))
+        if tuple(reader.fieldnames or ()) != CSV_COLUMNS:
+            raise ValueError(
+                "{} has different columns from this scorer's, so it cannot "
+                "be resumed. Move it aside and start the table over."
+                .format(self.csv_path))
+        rows = [row for row in reader if _is_whole(row)]
+
+        keys = {episode_key(row) for row in rows}
+        traces = {}
+        for trace in _read_traces(self.trace_path):
+            if episode_key(trace) in keys:
+                traces[episode_key(trace)] = trace
+        self._write(rows, [traces[episode_key(row)] for row in rows
+                           if episode_key(row) in traces])
+        self.rows = len(rows)
+
+    def _write(self, rows, traces):
+        with open(self.csv_path, "w", newline="") as handle:
+            writer = csv.DictWriter(handle, fieldnames=CSV_COLUMNS)
+            writer.writeheader()
+            writer.writerows(rows)
+        self.trace_path.write_text(
+            "".join(json.dumps(trace) + "\n" for trace in traces))
+
+
+def episode_key(row):
+    """What identifies one episode: which arm ran which task under which seed.
+
+    The seed is part of it because the fairness protocol (plan §7) is about the
+    pair, not the task alone — the same task rerun under another seed is a
+    different episode, and must not be skipped as if it were already done.
+    """
+    return (str(row["checkpoint"]), str(row["task_id"]), int(row["seed"]))
+
+
+def _whole_lines(path):
+    """The lines of a file that were finished, i.e. ended with a newline.
+
+    A write cut off by a crash is always the last line and never ends in one —
+    and it can look complete: a row truncated inside its final column still
+    has every field, just the wrong number in the last.
+    """
+    lines = Path(path).read_text().splitlines(keepends=True)
+    if lines and not lines[-1].endswith("\n"):
+        return lines[:-1]
+    return lines
+
+
+def _is_whole(row):
+    """False for a row with fields missing (None) or extra (under key None)."""
+    return None not in row.values() and None not in row
+
+
+def _read_traces(trace_path):
+    """Every finished, parseable trace line."""
+    if not Path(trace_path).exists():
+        return []
+    traces = []
+    for line in _whole_lines(trace_path):
+        try:
+            traces.append(json.loads(line))
+        except ValueError:
+            continue
+    return traces
 
 
 def read_table(csv_path):
@@ -288,62 +377,95 @@ def read_table(csv_path):
         return list(csv.DictReader(handle))
 
 
-def aggregate(rows):
-    """Roll per-episode rows up into the headline numbers for one checkpoint.
+# The statistics a checkpoint is summarized by: (name, CSV column, which
+# episodes it averages over). This table is the only definition of each name.
+# The comparison table and the block a scoring run ends with both read it, so a
+# name means the same number wherever it is printed.
+#
+# Every statistic is a mean over episodes of a per-episode column, never a
+# ratio of totals. Each arm runs each task once, so a mean over episodes is a
+# mean over tasks: every task counts once, and the mean has a standard error
+# across tasks, which is what a difference between arms is read against. A
+# ratio of totals (sum of contact ticks / sum of ticks) lets one long timeout
+# outweigh several short successes, and has no per-task spread to put beside it.
+#
+# Success rate and SPL average over every episode: a failure is a zero, not a
+# row left out. Time to goal averages the successes only (plan section 6),
+# because a mean that took in timeouts would describe the timeout formula, not
+# the agent.
+EPISODE_STATISTICS = (
+    ("success_rate", "success", "all"),
+    ("spl", "spl", "all"),
+    ("collision_events", "collision_events", "all"),
+    ("collision_events_per_m", "collision_events_per_m", "all"),
+    ("contact_tick_fraction", "contact_tick_fraction", "all"),
+    ("final_geodesic_distance_m", "final_geodesic_distance_m", "all"),
+    ("path_length_m", "path_length_m", "all"),
+    ("ticks", "ticks", "all"),
+    ("ticks_to_goal", "ticks", "successes"),
+)
 
-    P6 reports these; P3 prints them so a scoring run can be read at a glance.
-    Success rate and mean SPL average over *all* episodes (a failure is a zero,
-    not an omission), while time-to-goal averages over the successes only —
-    plan §6 defines it that way, and a mean that mixed in timeouts would say
-    more about the timeout formula than about the agent.
+
+def mean_se(values):
+    """(mean, standard error, n) of a sample; SE is None below two values.
+
+    The standard error of the mean, `s / sqrt(n)` with the sample standard
+    deviation (ddof=1): the spread of the *mean* over a redraw of the tasks,
+    which is what a difference between two arms has to be read against. One
+    value has no spread to estimate, so it gets none rather than a zero.
+    """
+    values = np.asarray([float(value) for value in values], dtype=float)
+    count = len(values)
+    if count == 0:
+        return None, None, 0
+    if count == 1:
+        return float(values[0]), None, 1
+    return (float(values.mean()),
+            float(values.std(ddof=1) / np.sqrt(count)), count)
+
+
+def summarize(rows):
+    """Every `EPISODE_STATISTICS` entry for one checkpoint's rows, as mean_se.
+
+    Blank cells (an episode that ended off the nav mesh has no geodesic
+    distance) are left out of that one statistic rather than counted as zero,
+    so each statistic carries its own `n`.
     """
     rows = list(rows)
-    if not rows:
-        return {}
-    successes = [row for row in rows if int(row["success"])]
-    total_distance = sum(float(row["path_length_m"]) for row in rows)
-    total_ticks = sum(int(row["ticks"]) for row in rows)
-    contact_ticks = sum(int(row["collision_ticks"]) for row in rows)
-    events = sum(int(row["collision_events"]) for row in rows)
-    return {
-        "episodes": len(rows),
-        "success_rate": len(successes) / len(rows),
-        "spl": float(np.mean([float(row["spl"]) for row in rows])),
-        "collision_events_per_episode": events / len(rows),
-        "collision_events_per_m": _rate(events, total_distance),
-        "contact_tick_fraction": _rate(contact_ticks, total_ticks),
-        # An episode that ended off the traversable component has no geodesic
-        # distance, and it must not turn the whole column into a blank: those
-        # rows are skipped rather than counted as zero or as NaN.
-        "final_distance_m": _mean_distance(rows),
-        "ticks_to_goal": (float(np.mean([int(row["ticks"]) for row in successes]))
-                          if successes else None),
-    }
+    summary = {}
+    for name, column, over in EPISODE_STATISTICS:
+        chosen = [row for row in rows
+                  if over == "all" or int(row["success"])]
+        summary[name] = mean_se(row[column] for row in chosen
+                                if row[column] not in ("", None))
+    return summary
 
 
-def _mean_distance(rows):
-    """Mean final distance over the episodes that have one."""
-    distances = [float(row["final_geodesic_distance_m"]) for row in rows
-                 if row["final_geodesic_distance_m"] not in ("", None)]
-    return float(np.mean(distances)) if distances else None
+def format_summary(checkpoint, summary):
+    """`summarize`'s means as a short block: what a scoring run ends with.
 
-
-def format_aggregate(checkpoint, summary):
-    """The rolled-up numbers as a short block — what a scoring run ends with."""
-    if not summary:
+    Means only, so it reads at a glance; the standard errors are in the
+    comparison table. Both come from the same `summarize`, so the numbers here
+    are the table's means.
+    """
+    episodes = summary["success_rate"][2]
+    if not episodes:
         return "{}: no episodes".format(checkpoint)
-    ticks = ("n/a (no successes)" if summary["ticks_to_goal"] is None
-             else "{:.0f}".format(summary["ticks_to_goal"]))
-    distance = ("n/a (none on the nav mesh)" if summary["final_distance_m"] is None
-                else "{:.2f} m from the goal".format(summary["final_distance_m"]))
+    mean = {name: value[0] for name, value in summary.items()}
+    ticks = ("n/a (no successes)" if mean["ticks_to_goal"] is None
+             else "{:.0f}".format(mean["ticks_to_goal"]))
+    distance = ("n/a (none on the nav mesh)"
+                if mean["final_geodesic_distance_m"] is None
+                else "{:.2f} m from the goal".format(
+                    mean["final_geodesic_distance_m"]))
     return "\n".join([
-        "{} over {} episodes".format(checkpoint, summary["episodes"]),
-        "  success rate:   {:.0%}".format(summary["success_rate"]),
-        "  SPL:            {:.3f}".format(summary["spl"]),
+        "{} over {} episodes (means per episode)".format(checkpoint, episodes),
+        "  success rate:   {:.0%}".format(mean["success_rate"]),
+        "  SPL:            {:.3f}".format(mean["spl"]),
         "  collisions:     {:.1f} per episode, {:.3f} per metre".format(
-            summary["collision_events_per_episode"],
-            summary["collision_events_per_m"]),
-        "  in contact:     {:.0%} of ticks".format(summary["contact_tick_fraction"]),
+            mean["collision_events"], mean["collision_events_per_m"]),
+        "  in contact:     {:.0%} of an episode's ticks".format(
+            mean["contact_tick_fraction"]),
         "  final distance: {}".format(distance),
         "  ticks to goal:  {} (successes only)".format(ticks),
     ])

@@ -399,6 +399,10 @@ class EpisodeRunner:
         geodesic = self._geodesic_distance(goal_xy)
         return geodesic is not None and geodesic <= self.rules.success_radius_m
 
+    def seed_for(self, task):
+        """The seed this runner gives a task — the one its row will record."""
+        return task.seed + self.seed_offset
+
     def episode(self, task, checkpoint_name, seed=None):
         """Build the episode for one task. Iterate it to run it.
 
@@ -406,4 +410,4 @@ class EpisodeRunner:
         wants; it is an argument only so a rerun can deliberately vary it.
         """
         return Episode(self, task, checkpoint_name,
-                       task.seed + self.seed_offset if seed is None else int(seed))
+                       self.seed_for(task) if seed is None else int(seed))

@@ -14,7 +14,7 @@
 #
 #     --checkpoint NAME   which arm (default: the first in configs/eval.yaml)
 #     --build-only        build the shared task set and stop
-#     --resume            append to an existing CSV instead of restarting it
+#     --resume            carry on an existing CSV: skip episodes already in it
 #     --quiet             one line per episode instead of one per tick
 #
 # One checkpoint per GPU is how P6 runs the headline pair in parallel:

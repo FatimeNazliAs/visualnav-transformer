@@ -20,6 +20,7 @@ table can be read with `tail -f` while it fills.
 """
 
 import argparse
+import traceback
 from pathlib import Path
 
 import yaml
@@ -46,6 +47,36 @@ def resolve_path(path):
     thing wherever it is run from."""
     path = Path(path)
     return path if path.is_absolute() else SIM_EVAL_DIR / path
+
+
+def read_layered_yaml(path):
+    """A config file laid over the one it names in `extends:`, if any.
+
+    What lets a run say only what is different about it. P6's config extends
+    `eval.yaml` and changes where things go, which houses and what is filmed —
+    so the episode rules and the driver both arms face have one definition
+    shared with every earlier phase, not a copy that could drift from it.
+    `extends` is relative to the file that names it.
+    """
+    path = Path(path)
+    with open(path, "r") as handle:
+        data = yaml.safe_load(handle) or {}
+    base = data.pop("extends", None)
+    if base is None:
+        return data
+    return deep_merge(read_layered_yaml(path.parent / base), data)
+
+
+def deep_merge(base, override):
+    """`override` laid over `base`: mappings merge key by key, anything else
+    (a list included) is replaced whole."""
+    merged = dict(base)
+    for key, value in override.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = deep_merge(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
 
 
 class EvalConfig:
@@ -93,8 +124,7 @@ class EvalConfig:
 
     @classmethod
     def from_yaml(cls, path=DEFAULT_CONFIG):
-        with open(path, "r") as handle:
-            return cls.from_dict(yaml.safe_load(handle))
+        return cls.from_dict(read_layered_yaml(path))
 
     def csv_path(self, checkpoint_name):
         return self.output_dir / "{}.csv".format(checkpoint_name)
@@ -119,8 +149,9 @@ def parse_args():
     parser.add_argument("--build-only", action="store_true",
                         help="build the task set and stop, without scoring")
     parser.add_argument("--resume", action="store_true",
-                        help="append to an existing metrics CSV instead of "
-                             "starting it over")
+                        help="carry on an existing metrics CSV instead of "
+                             "starting it over: episodes already in it are "
+                             "skipped, and a half-written last row is dropped")
     parser.add_argument("--quiet", action="store_true",
                         help="one line per episode instead of one per tick")
     parser.add_argument("--gpu", type=int, default=None,
@@ -170,9 +201,24 @@ def build_task_set(config, directory, rebuild=False):
                 entry["nodes"], entry["seed"])))
 
 
-def run_scene(scene, tasks, runner, checkpoint_name, table, film,
-              verbose=True):
-    """Score every task in one scene, through one already-open simulator.
+class EpisodeCrashError(RuntimeError):
+    """Raised at the end of a run in which some episodes crashed.
+
+    At the end, not at the crash: the episodes after it still ran and scored.
+    The crashed ones have no row, so a `--resume` run retries exactly those.
+    """
+
+    def __init__(self, task_ids):
+        self.task_ids = list(task_ids)
+        super().__init__(
+            "{} episode(s) crashed and were left unscored: {}. Every other "
+            "episode is in the table; rerun with --resume to retry only these."
+            .format(len(self.task_ids), ", ".join(self.task_ids)))
+
+
+def score_task(task, task_index, runner, checkpoint_name, table, film,
+               verbose=True):
+    """Run one task as an episode, film it if asked, and append its row.
 
     The tick loop is here, in the consumer, rather than inside the runner —
     which is the seam P4's recorder attaches to. Recording is one line of it
@@ -182,27 +228,59 @@ def run_scene(scene, tasks, runner, checkpoint_name, table, film,
     is drawn, printed and released, so a scene's worth of episodes never
     accumulates frames.
     """
-    print("\n=== {}: {} tasks ===".format(scene, len(tasks)))
+    episode = runner.episode(task, checkpoint_name)
+    with film.episode(task, checkpoint_name, runner.body.scene,
+                      task_index=task_index) as video:
+        for record in episode:
+            video.capture(record)
+            if verbose:
+                print(record.summary())
+    result = episode.result()
+    table.append(result.metrics, trace=result.trace())
+    print(result.metrics.summary())
+    if video.path is not None:
+        print(video.summary())
 
+
+def run_scene(scene, tasks, runner, checkpoint_name, table, film,
+              verbose=True):
+    """Score every task in one scene not already in the table. Returns the
+    ids of the ones that crashed.
+
+    A task whose (checkpoint, task, seed) already has a row is skipped, which
+    is what makes a run resumable: rerun it and it picks up where it stopped.
+    A crash inside one episode is printed and the scene carries on — twenty
+    slow rollouts must not hang on one — but it is never swallowed: it has no
+    row, so it is retried on resume, and the run ends in `EpisodeCrashError`.
+    """
+    print("\n=== {}: {} tasks ===".format(scene, len(tasks)))
+    scored = table.completed()
+    crashed = []
+
+    # Indexed before skipping: "film the first N tasks" counts from the
+    # scene's first task, not from wherever a resumed run starts.
     for task_index, task in enumerate(tasks):
+        key = (checkpoint_name, task.task_id, runner.seed_for(task))
+        if key in scored:
+            print("\n--- {} ({}) already scored, skipped ---".format(
+                task.task_id, checkpoint_name))
+            continue
         print("\n--- {} ({}) ---".format(task.summary(), checkpoint_name))
-        episode = runner.episode(task, checkpoint_name)
-        with film.episode(task, checkpoint_name, runner.body.scene,
-                          task_index=task_index) as video:
-            for record in episode:
-                video.capture(record)
-                if verbose:
-                    print(record.summary())
-        result = episode.result()
-        table.append(result.metrics, trace=result.trace())
-        print(result.metrics.summary())
-        if video.path is not None:
-            print(video.summary())
+        try:
+            score_task(task, task_index, runner, checkpoint_name, table, film,
+                       verbose=verbose)
+        except Exception:  # noqa: BLE001 — isolated, reported, and retried
+            traceback.print_exc()
+            print("CRASHED:    {} ({}) — left unscored".format(
+                task.task_id, checkpoint_name))
+            crashed.append(task.task_id)
+    return crashed
 
 
 def score_checkpoint(config, tasks, policy, checkpoint_name, table,
                      selected_gpu, film, verbose=True):
     """Run every task for one checkpoint, one scene's simulator at a time.
+    Returns the ids of the episodes that crashed.
 
     The world is opened from the first task's own `world.yaml` — the file P2
     wrote when it drove the trail — so an episode runs in the world its task
@@ -210,6 +288,7 @@ def score_checkpoint(config, tasks, policy, checkpoint_name, table,
     """
     import bridge
 
+    crashed = []
     for scene, scene_tasks in task_set.group_by_scene(tasks).items():
         body = bridge.SimBody(config_path=scene_tasks[0].world_config,
                               floor=config.floor)
@@ -218,10 +297,11 @@ def score_checkpoint(config, tasks, policy, checkpoint_name, table,
             runner = episode_runner.EpisodeRunner(
                 policy, body, rules=config.rules,
                 seed_offset=config.seed_offset)
-            run_scene(scene, scene_tasks, runner, checkpoint_name, table,
-                      film, verbose=verbose)
+            crashed += run_scene(scene, scene_tasks, runner, checkpoint_name,
+                                 table, film, verbose=verbose)
         finally:
             body.close()
+    return crashed
 
 
 def build_recorder(config, policy):
@@ -267,15 +347,20 @@ def evaluate(config, checkpoint_name, csv_path, selected_gpu, task_directory=Non
     policy = NomadPolicy(spec, device, config.driver)
 
     table = metrics.MetricsTable(csv_path).open(resume=resume)
-    score_checkpoint(config, tasks, policy, checkpoint_name, table,
-                     selected_gpu, build_recorder(config, policy), verbose=verbose)
+    if table.rows:
+        print("resuming:   {} episode(s) already scored".format(table.rows))
+    crashed = score_checkpoint(config, tasks, policy, checkpoint_name, table,
+                               selected_gpu, build_recorder(config, policy),
+                               verbose=verbose)
 
     print()
-    print(metrics.format_aggregate(
-        checkpoint_name, metrics.aggregate(metrics.read_table(csv_path))))
+    print(metrics.format_summary(
+        checkpoint_name, metrics.summarize(metrics.read_table(csv_path))))
     print()
     print("wrote:      {}".format(csv_path))
     print("            {}".format(table.trace_path))
+    if crashed:
+        raise EpisodeCrashError(crashed)
     return table
 
 
@@ -315,5 +400,5 @@ if __name__ == "__main__":
     try:
         main()
     except (gpu.GpuSelectionError, checkpoints.CheckpointError, TaskSetError,
-            TopomapError) as error:
+            TopomapError, EpisodeCrashError) as error:
         raise SystemExit("FAILED: {}".format(error))

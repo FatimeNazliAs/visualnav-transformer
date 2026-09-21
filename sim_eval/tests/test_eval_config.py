@@ -171,3 +171,45 @@ def test_one_csv_per_checkpoint_under_the_output_dir():
     config = load(MINIMAL + "\noutput_dir: outputs/p3_2_metrics\n")
     assert config.csv_path("clean_stock") == \
         SIM_EVAL_DIR / "outputs/p3_2_metrics/clean_stock.csv"
+
+
+
+# --- layering: a run says only what is different about it (P6) --------------
+
+def test_a_config_that_extends_another_overrides_only_what_it_names(tmp_path):
+    (tmp_path / "base.yaml").write_text(MINIMAL + """
+episode:
+  success_radius_m: 1.5
+output_dir: outputs/base
+""")
+    (tmp_path / "run.yaml").write_text("""
+extends: base.yaml
+task_set:
+  scenes: [Rs, Other]
+  directory: outputs/run_task_set
+output_dir: outputs/run
+""")
+    config = run_eval.EvalConfig.from_yaml(tmp_path / "run.yaml")
+    assert config.tasks.scenes == ["Rs", "Other"]
+    assert config.tasks.tasks_per_scene == 3
+    assert config.task_directory == SIM_EVAL_DIR / "outputs/run_task_set"
+    assert config.rules.success_radius_m == 1.5
+    assert config.output_dir == SIM_EVAL_DIR / "outputs/run"
+
+
+def test_a_list_is_replaced_whole_not_merged():
+    merged = run_eval.deep_merge({"a": {"b": [1, 2], "c": 1}}, {"a": {"b": [3]}})
+    assert merged == {"a": {"b": [3], "c": 1}}
+
+
+def test_the_p6_config_shares_the_rules_and_driver_of_eval_yaml():
+    """P6 faces both arms with the deployment settings — inherited, not copied."""
+    base = run_eval.EvalConfig.from_yaml()
+    headline = run_eval.EvalConfig.from_yaml(
+        SIM_EVAL_DIR / "configs" / "p6_headline.yaml")
+    assert headline.driver.is_deployment_default()
+    assert headline.driver.label() == base.driver.label()
+    assert headline.rules.as_dict() == base.rules.as_dict()
+    assert headline.tasks.tasks_per_scene == 10 and len(headline.tasks.scenes) == 2
+    assert headline.recording.enabled and headline.recording.tasks == "all"
+    assert headline.checkpoint_names == ["best_combined", "clean_stock"]

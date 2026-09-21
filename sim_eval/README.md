@@ -64,6 +64,10 @@ both depend on P6 facing the real robot's settings.
 | `diagnosis.py` | why an episode failed — a name, from the evidence in its trace |
 | `p5_2_diagnose.py` | run a few episodes, filmed, and name each failure |
 | `run_p5_2_diagnose.sh` | run the above in the container, pinned to one GPU |
+| `configs/p6_headline.yaml` | the headline run: 2 houses x 10 trails, both arms, all filmed (P6) |
+| `run_p6_headline.sh` | build the task set once, score both arms (one per free GPU), resume on crash |
+| `p6_2_compare.py` | check the tables are a fair comparison, then mean ± SE per arm |
+| `run_p6_2_compare.sh` | run the above in the container |
 | `run_tests.sh` | the GPU-free unit tests, in the container |
 | `tests/` | GPU-free unit tests (`./sim_eval/run_tests.sh`) |
 | `outputs/` | all generated files (gitignored, numbered `pN_M_*`) |
@@ -180,6 +184,30 @@ themselves — you never need to enter the container.
    flat per-tick CSV per episode under `ticks/`, the videos under `videos/`,
    and `p5_2_diagnosis.csv`. `--tasks 5` runs more; `--checkpoint clean_stock`
    diagnoses the other arm.
+
+11. Run the headline comparison (P6). Long and unattended, so launch it in
+   the existing screen session:
+   ```
+   screen -S nomad_sim -X screen -t p6 bash -c \
+       'cd /home/nazli/projects/nomad && ./sim_eval/run_p6_headline.sh; exec bash'
+   ```
+   It checks which GPUs nobody is computing on, builds the 20-task set once
+   (`outputs/p6_0_task_set/`), then scores `best_combined` and `clean_stock`
+   against it: one per GPU in parallel when both are free, one after the other
+   otherwise (`P6_GPUS=1` pins it). Progress is one line per episode in
+   `outputs/p6_1_metrics/<checkpoint>.log`; videos land in
+   `outputs/p6_1_videos/<checkpoint>/`.
+
+   **It is resumable.** Each episode's row is written as it finishes, and a
+   rerun skips every (checkpoint, task, seed) already in the table and drops a
+   half-written last row. A rollout that crashes is logged and the rest of the
+   run continues; the script then retries the arm (`MAX_ATTEMPTS`, default 3),
+   which re-runs only the missing episodes. If anything stops it, run it again.
+
+   It ends with `./sim_eval/run_p6_2_compare.sh`, which refuses unless both
+   arms ran exactly the task set under the same seeds and settings, then writes
+   `outputs/p6_1_metrics/p6_2_comparison.md` (mean ± SE per arm),
+   `p6_2_comparison.csv` and `p6_2_episodes.csv` (every row, task by task).
 
 `SIM_GPU=0 ./sim_eval/run_p0_smoke_test.sh` picks the other GPU. Default is 1,
 because GPU 0 also drives the machine's X server.
