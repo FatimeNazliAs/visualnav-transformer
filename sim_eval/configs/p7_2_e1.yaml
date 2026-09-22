@@ -1,0 +1,53 @@
+# ==============================================================================
+# sim_eval/configs/p7_2_e1.yaml — E1: does the best-combined recipe gain what
+# its two changes gain, added up?
+#
+# A 2x2 of 30-epoch, seed-0 runs around the stock recipe:
+#
+#                    stride 1       stride 3
+#     96x96          ctx03          stride3
+#     160x120        img160x120     bc30
+#
+# ctx03 is the baseline — context 3 is stock NoMaD's own, so it is stock at 30
+# epochs. All four are 30 epochs, so none of them is compared with the 100-epoch
+# headline pair: bc30 against best_combined is the epoch contrast, and is not
+# this experiment.
+#
+# P6's task set and seeds, three seeds per task, the same three for every arm.
+# Each arm renders at, and strides its context by, its own training config
+# (checkpoints.yaml -> the run's log); the driver and episode rules are
+# eval.yaml's for every arm. Nothing here is tuned per arm.
+#
+#     ./sim_eval/run_arms.sh sim_eval/configs/p7_2_e1.yaml
+# ==============================================================================
+extends: p6_headline.yaml
+
+# Three runs of every task: its own seed, and two replays under other
+# diffusion noise. Offsets this large never land on another task's seed.
+seed_offsets: [0, 100000, 200000]
+
+# A fresh directory: stride3 and bc30 are stride-3 arms, scored with the fixed
+# feeding, and must never resume onto a table scored without it.
+output_dir: outputs/p7_2_e1_metrics
+
+# Off for the runs; clips are chosen afterwards and filmed on their own.
+recording:
+  enabled: false
+
+# Dealt round-robin across the free GPUs: with two, GPU A scores ctx03 then
+# img160x120, GPU B stride3 then bc30.
+checkpoints: [ctx03, stride3, img160x120, bc30]
+
+comparison:
+  name: p7_2_e1
+  title: "P7 E1 — additivity, 30-epoch 2x2 (3 seeds per task)"
+
+contrasts:
+  pairs:
+    - [stride3, ctx03]
+    - [img160x120, ctx03]
+    - [bc30, ctx03]
+  additivity:
+    baseline: ctx03
+    parts: [stride3, img160x120]
+    combined: bc30

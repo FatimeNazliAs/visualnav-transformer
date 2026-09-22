@@ -1,0 +1,31 @@
+# ==============================================================================
+# sim_eval/configs/p7_3_epoch.yaml — bc30 against best_combined: 30 epochs
+# against 100 at a fixed recipe (160x120, context 3, stride 3).
+#
+# Nothing is scored here; it pairs two tables already written. bc30 ran in E1
+# on P6's 2x10 set, and best_combined ran in E2 on the 3x20 one. They share
+# Rs_00-09 and Maben_00-09 under the same three seeds, and those are the same
+# trails — E2's task set adopted them from P6's unchanged. So this is the P6
+# set, with best_combined's table cut down to it (`restrict_to_task_set`).
+#
+#     ./sim_eval/run_p7_contrasts.sh --config sim_eval/configs/p7_3_epoch.yaml
+# ==============================================================================
+extends: p7_2_e1.yaml
+
+# E1's task set and seeds (P6's 2x10, three seeds) come with `extends`. The
+# files go beside E2's, which is where best_combined's table lives.
+output_dir: outputs/p7_3_e2_metrics
+checkpoints: []
+
+comparison:
+  name: p7_3_epoch
+  title: "P7 — the epoch contrast: best_combined (100 ep) vs bc30 (30 ep), P6's 2x10, 3 seeds"
+
+contrasts:
+  tables:
+    best_combined: outputs/p7_3_e2_metrics/best_combined.csv
+    bc30: outputs/p7_2_e1_metrics/bc30.csv
+  pairs:
+    - [best_combined, bc30]
+  additivity: null
+  restrict_to_task_set: true

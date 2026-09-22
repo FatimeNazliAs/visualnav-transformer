@@ -1,0 +1,51 @@
+# ==============================================================================
+# sim_eval/configs/p7_3_e2.yaml — E2: the headline pair, firmed up.
+#
+# best_combined (stride fix on) against clean_stock@100 — the P6 comparison —
+# on three houses x 20 trails, three seeds per trail, the same three for both.
+# Denmark is the third house: single floor, an 8192^2 texture, 0.53 of its
+# pairs in the sampler's 3-8 m band, 17.7 m^2 against Rs's 14.9 and Maben's
+# 17.0, and never used before (P7 step 3a).
+#
+# Everything else is P6's: the episode rules, the driver, the acceptance rules
+# a trail is built under. Nothing is tuned per arm.
+#
+#     ./sim_eval/run_arms.sh sim_eval/configs/p7_3_e2.yaml
+# ==============================================================================
+extends: p6_headline.yaml
+
+# Three houses at scene indices 0, 1, 2: seeds Rs 1000-1019, Maben 2000-2019,
+# Denmark 3000-3019. A new directory, because a task set is immutable once
+# scored against and this is a different set — but most of its trails already
+# exist. Rs_00-09 and Maben_00-09 are P6's own, and Denmark_00-19 are the
+# probe's; each is adopted (copied, not driven again) only after the builder
+# has checked it is exactly the task this config describes. Only Rs_10-19 and
+# Maben_10-19 are new drives.
+task_set:
+  scenes: [Rs, Maben, Denmark]
+  tasks_per_scene: 20
+  directory: outputs/p7_3_task_set
+  adopt_from:
+    - outputs/p6_0_task_set
+    - outputs/p7_3_probe_Denmark
+
+seed_offsets: [0, 100000, 200000]
+
+# A fresh directory: best_combined is a stride-3 arm and must never resume onto
+# rows scored before the fix. clean_stock (stride 1, feeding unchanged) starts
+# from P6's seed-0 rows on Rs_00-09 and Maben_00-09, copied in, which are valid
+# here because those trails are adopted unchanged; resume skips them.
+output_dir: outputs/p7_3_e2_metrics
+
+recording:
+  enabled: false
+
+checkpoints: [best_combined, clean_stock]
+
+comparison:
+  name: p7_3_e2
+  title: "P7 E2 — best_combined vs clean_stock@100, 3 houses x 20 (3 seeds per task)"
+
+contrasts:
+  pairs:
+    - [best_combined, clean_stock]

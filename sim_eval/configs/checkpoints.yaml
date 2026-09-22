@@ -28,3 +28,31 @@ clean_stock:
   description: matched-compute comparator — stock NoMaD at 96x96, 100 epochs
   weights: /outputs/nomad_capstone/stock100_s0_2026_09_09_12_54_12/ema_99.pth
   train_log: /outputs/nomad_capstone/logs/stock100_s0_20260909_155410.log
+
+# --- the individual arms (P7, experiment E1: additivity) ---------------------
+# All four are 30-epoch runs, seed 0, so they compare only with each other: the
+# headline pair above is 100 epochs, and mixing the two would credit training
+# length to a recipe. ctx03 is the baseline — context 3 is stock NoMaD's own,
+# so it is stock at 30 epochs, not a change under test. Each run's
+# image_size and context_stride come from its train_log, like the pair above.
+# `ema_29.pth`: the last epoch of a 30-epoch run, EMA as above.
+
+ctx03:
+  description: 30-epoch baseline — stock recipe (96x96, context 3, stride 1)
+  weights: /outputs/nomad_ctx_ablation/ctx03_2026_08_31_17_47_18/ema_29.pth
+  train_log: /outputs/nomad_ctx_ablation/sweep_logs/nomad_ctx03_20260831_174716.log
+
+stride3:
+  description: 30-epoch arm — the baseline with context_stride 3
+  weights: /outputs/nomad_stride_ablation/stride3_2026_09_01_15_21_50/ema_29.pth
+  train_log: /outputs/nomad_stride_ablation/sweep_logs/nomad_stride3_20260901_152148.log
+
+img160x120:
+  description: 30-epoch arm — the baseline at 160x120
+  weights: /outputs/nomad_img_ablation/img160x120_2026_09_02_16_29_26/ema_29.pth
+  train_log: /outputs/nomad_img_ablation/sweep_logs/nomad_img160x120_20260902_162925.log
+
+bc30:
+  description: 30-epoch arm — both changes (160x120, context_stride 3)
+  weights: /outputs/nomad_capstone/bc30_s0_2026_09_09_12_54_42/ema_29.pth
+  train_log: /outputs/nomad_capstone/logs/bc30_s0_20260909_155440.log
