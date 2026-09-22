@@ -129,7 +129,8 @@ class FakePolicy:
     """Always points straight ahead, and claims whatever node it is told to."""
 
     def __init__(self, context_size=3, claims_goal_from=None, distances=()):
-        self.spec = types.SimpleNamespace(context_size=context_size)
+        self.spec = types.SimpleNamespace(context_size=context_size,
+                                          context_stride=1)
         # What the distance head "said" this tick, by window offset. Empty by
         # default: most of these tests are about when an episode stops, and a
         # step with no scores is the blank case the trace has to survive.
@@ -410,7 +411,7 @@ def test_an_episode_is_seeded_from_its_task_so_every_arm_faces_the_same_one(task
 
 
 def test_a_seed_offset_replays_the_task_under_other_noise_and_says_so(task):
-    """Offset 0 is the fairness protocol; anything else is a replicate, and the
+    """Offset 0 is the task's own noise; anything else is a replicate, and the
     row records the seed it actually ran with so the two cannot be confused."""
     runner = episode_runner.EpisodeRunner(
         FakePolicy(), FakeBody(), rules=episode_runner.EpisodeRules(

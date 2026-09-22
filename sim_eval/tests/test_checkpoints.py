@@ -104,3 +104,20 @@ def test_the_spec_exposes_image_size_as_transform_images_wants_it():
         model_params=yaml.safe_load("image_size: [160, 120]\ncontext_size: 3\n"))
     assert spec.image_size == [160, 120]
     assert spec.context_size == 3
+
+
+def test_the_spec_reads_the_context_stride_the_run_was_trained_with():
+    """best_combined and stride3 were trained on context three ticks apart."""
+    params = checkpoints.parse_train_config(
+        CONFIG_LINE[:-1] + ", 'context_stride': 3}")
+    spec = checkpoints.CheckpointSpec(
+        name="fake", weights_path=Path("/nowhere"), model_params=params)
+    assert spec.context_stride == 3
+
+
+def test_a_log_without_context_stride_means_stride_one():
+    """Stock runs predate the knob; train.py and vint_dataset both default it to 1."""
+    spec = checkpoints.CheckpointSpec(
+        name="fake", weights_path=Path("/nowhere"),
+        model_params=checkpoints.parse_train_config(CONFIG_LINE))
+    assert spec.context_stride == 1

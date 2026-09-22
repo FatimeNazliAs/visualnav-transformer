@@ -15,6 +15,10 @@ training time, rather than a number re-typed from memory into a new file.
 
     spec = load("best_combined")
     spec.model_params["image_size"]  # -> [160, 120]
+
+The same holds for `context_stride`: best-combined was trained on context
+frames three ticks apart, and feeding it consecutive ticks shows it a window it
+never saw. So the stride comes from the log too (`CheckpointSpec.context_stride`).
 """
 
 import ast
@@ -81,11 +85,29 @@ class CheckpointSpec:
         """Number of *past* frames; the observation is this many plus the current one."""
         return int(self.model_params["context_size"])
 
+    @property
+    def context_stride(self):
+        """How many ticks apart the context frames are — the run's own, like image_size.
+
+        Training samples the context at `curr - k * waypoint_spacing *
+        context_stride` (vint_dataset.py `_context_times`). go_stanford's
+        waypoint_spacing is train.py's default of 1 frame, and its frames are
+        the same 4 Hz as a control tick — which is why stock NoMaD is fed
+        consecutive ticks — so one stride unit is one tick.
+
+        Absent means 1, and that is not a guess: runs trained before the knob
+        existed were stock (stride 1), and both train.py and vint_dataset
+        default it to 1. The stride-1 arms' logs do not carry the key; the
+        stride-3 arms' logs all do.
+        """
+        return int(self.model_params.get("context_stride", 1))
+
     def summary(self):
-        return "{} — {}x{}, context {}, {} diffusion steps\n  weights: {}".format(
+        return ("{} — {}x{}, context {} (stride {}), {} diffusion steps\n"
+                "  weights: {}").format(
             self.name, self.image_size[0], self.image_size[1],
-            self.context_size, self.model_params["num_diffusion_iters"],
-            self.weights_path)
+            self.context_size, self.context_stride,
+            self.model_params["num_diffusion_iters"], self.weights_path)
 
 
 def read_registry(registry_path=REGISTRY_PATH):

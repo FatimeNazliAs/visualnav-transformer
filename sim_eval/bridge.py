@@ -12,9 +12,10 @@ only the two ends swapped (plan §4):
 The tick, in order:
 
     grab RGB -> resize to the checkpoint's own image_size -> rolling context
-    queue (context_size+1) -> goal mask 0 -> distance head localizes in the
-    topomap -> subgoal -> 8 diffusion samples -> waypoint #2 -> un-normalize
-    into metres -> PD controller -> (v, w) -> step the sim one 4 Hz period
+    queue (context_size+1 frames, at the checkpoint's own stride) -> goal
+    mask 0 -> distance head localizes in the topomap -> subgoal -> 8
+    diffusion samples -> waypoint #2 -> un-normalize into metres -> PD
+    controller -> (v, w) -> step the sim one 4 Hz period
 
 Two things the sim forces on us, both recorded here rather than buried:
 
@@ -150,32 +151,43 @@ class ContextQueue:
     """The rolling observation window: context_size past frames plus the current.
 
     navigate.py's `context_queue` and `callback_obs`, with `seed` added for the
-    cold start (see the module docstring).
+    cold start (see the module docstring), and `stride` added for checkpoints
+    trained on spaced-out context: the frames fed are the current tick and the
+    ones `stride`, `2 * stride`, ... `context_size * stride` ticks before it —
+    training's `_context_times`. To serve that it keeps every tick of the last
+    `context_size * stride`, and feeds `capacity` of them. At stride 1 the two
+    are the same thing and this is navigate.py's queue exactly.
     """
 
-    def __init__(self, context_size):
+    def __init__(self, context_size, stride=1):
+        if stride < 1:
+            raise ValueError("context stride must be >= 1, got {}".format(stride))
         self.capacity = context_size + 1
-        self._frames = []
+        self.stride = int(stride)
+        self._history_length = context_size * self.stride + 1
+        self._history = []
 
     def seed(self, frame):
-        """Start an episode with no history by repeating the first frame."""
-        self._frames = [frame] * self.capacity
+        """Start an episode with no history by repeating the first frame.
+
+        Every tick of the history is frame 0, so every spaced slot is too, and
+        the first `context_size * stride` pushes displace it at training's spacing.
+        """
+        self._history = [frame] * self._history_length
 
     def push(self, frame):
-        if len(self._frames) < self.capacity:
-            self._frames.append(frame)
-        else:
-            self._frames.pop(0)
-            self._frames.append(frame)
+        self._history.append(frame)
+        if len(self._history) > self._history_length:
+            self._history.pop(0)
 
     @property
     def frames(self):
         """Oldest first, which is the order the vision encoder expects."""
-        return list(self._frames)
+        return self._history[::-1][::self.stride][::-1]
 
     @property
     def is_ready(self):
-        return len(self._frames) == self.capacity
+        return len(self._history) == self._history_length
 
 
 class SimBody:
@@ -445,7 +457,8 @@ class NomadBridge:
         self.policy = policy
         self.body = body
         self.limits = body.limits
-        self.context = ContextQueue(policy.spec.context_size)
+        self.context = ContextQueue(policy.spec.context_size,
+                                    policy.spec.context_stride)
         self._encoded_topomap = None
         self._goal_node = None
         self._closest_node = 0
