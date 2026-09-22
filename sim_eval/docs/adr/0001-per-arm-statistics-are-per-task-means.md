@@ -1,5 +1,7 @@
 # Per-arm statistics are means over tasks, not pooled rates
 
+_Extended by [ADR-0002](0002-under-several-seeds-the-task-stays-the-unit.md): once a task is run under several seeds, "a mean over episodes" and "a mean over tasks" part ways, and the task is the one kept._
+
 Every per-arm statistic is the mean, over episodes, of a value computed per episode. Because each arm runs each task exactly once, that is a mean over tasks, and it comes with a standard error across tasks. This includes the two ratios, collision events per metre and the fraction of ticks in contact. It is never a ratio of totals pooled across episodes. We chose this because a comparison between arms is read against the spread across tasks, and a pooled ratio has no such spread. A pooled ratio also lets one long timeout outweigh several short successes: in P6's data, a 338-tick timeout counts about six times as much as a 58-tick success. The plan said only "collisions per episode / per meter" and did not choose.
 
 ## Considered Options
