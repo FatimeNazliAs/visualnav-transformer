@@ -288,3 +288,88 @@ def test_a_task_reads_its_goal_from_the_pose_the_goal_image_was_taken_at(tmp_pat
     position, orientation = task.start_pose(floor_height=0.7)
     assert position == [0.0, 0.0, 0.7]
     assert orientation == [0.0, 0.0, 1.0]
+
+
+# --- adopting trails another set already built (P7) --------------------------
+# E2's three-house set takes P6's Rs/Maben trails and the Denmark probe's rather
+# than driving them again: a copied trail is exactly the task, so the rows
+# already scored on it stay valid. Adoption is refused on any doubt.
+
+
+def build_source(tmp_path, monkeypatch, name, **config_values):
+    """A built task set with real world.yaml files, as the adopter reads them."""
+    bodies = []
+    built, open_body = stub_build(monkeypatch, bodies)
+    config = make_config(tmp_path, **config_values)
+    directory = tmp_path / name
+    task_set.build(config, directory, open_body)
+    for task in task_set.load(directory)[1]:
+        task.directory.mkdir(parents=True, exist_ok=True)
+        (task.directory / "world.yaml").write_text(yaml.safe_dump(
+            config.topomap_config_for(task.scene, config.scenes.index(task.scene),
+                                      int(task.task_id.split("_")[1])).world_config()))
+        (task.directory / "0.png").write_text("trail " + task.task_id)
+    return built
+
+
+def test_tasks_already_built_elsewhere_are_adopted_not_driven(tmp_path, monkeypatch):
+    build_source(tmp_path, monkeypatch, "p6", tasks_per_scene=2)
+    bodies = []
+    built, open_body = stub_build(monkeypatch, bodies)
+    config = make_config(tmp_path, tasks_per_scene=4, adopt_from=[tmp_path / "p6"])
+
+    manifest, tasks = task_set.build(config, tmp_path / "e2", open_body)
+
+    assert [entry["seed"] for entry in built] == [1002, 1003]
+    assert [task.task_id for task in tasks] == ["Rs_00", "Rs_01", "Rs_02", "Rs_03"]
+    adopted = [entry for entry in manifest["tasks"] if "adopted_from" in entry]
+    assert [entry["task_id"] for entry in adopted] == ["Rs_00", "Rs_01"]
+    assert (tmp_path / "e2" / "Rs_00" / "0.png").read_text() == "trail Rs_00"
+
+
+def test_a_scene_fully_adopted_opens_no_simulator(tmp_path, monkeypatch):
+    build_source(tmp_path, monkeypatch, "probe", tasks_per_scene=2)
+    bodies = []
+    built, open_body = stub_build(monkeypatch, bodies)
+    config = make_config(tmp_path, tasks_per_scene=2, adopt_from=[tmp_path / "probe"])
+    task_set.build(config, tmp_path / "e2", open_body)
+    assert built == [] and bodies == []
+
+
+def test_a_source_built_from_other_knobs_is_not_adopted(tmp_path, monkeypatch):
+    build_source(tmp_path, monkeypatch, "old", tasks_per_scene=2,
+                 topomap={"spacing_ticks": 8})
+    bodies = []
+    built, open_body = stub_build(monkeypatch, bodies)
+    config = make_config(tmp_path, tasks_per_scene=2, adopt_from=[tmp_path / "old"])
+    task_set.build(config, tmp_path / "e2", open_body)
+    assert [entry["seed"] for entry in built] == [1000, 1001]
+
+
+def test_a_task_under_another_seed_is_not_adopted(tmp_path, monkeypatch):
+    """Same task id, different seed block: a different trail."""
+    build_source(tmp_path, monkeypatch, "other", tasks_per_scene=1, base_seed=5000)
+    bodies = []
+    built, open_body = stub_build(monkeypatch, bodies)
+    config = make_config(tmp_path, tasks_per_scene=1, adopt_from=[tmp_path / "other"])
+    task_set.build(config, tmp_path / "e2", open_body)
+    assert [entry["seed"] for entry in built] == [1000]
+
+
+def test_a_task_driven_in_another_world_is_not_adopted(tmp_path, monkeypatch):
+    build_source(tmp_path, monkeypatch, "src", tasks_per_scene=1)
+    world = tmp_path / "src" / "Rs_00" / "world.yaml"
+    changed = yaml.safe_load(world.read_text())
+    changed["vertical_fov"] = 120
+    world.write_text(yaml.safe_dump(changed))
+    bodies = []
+    built, open_body = stub_build(monkeypatch, bodies)
+    config = make_config(tmp_path, tasks_per_scene=1, adopt_from=[tmp_path / "src"])
+    task_set.build(config, tmp_path / "e2", open_body)
+    assert [entry["seed"] for entry in built] == [1000]
+
+
+def test_where_trails_come_from_does_not_change_which_tasks_exist(tmp_path):
+    plain = make_config(tmp_path)
+    adopting = make_config(tmp_path, adopt_from=[tmp_path / "anywhere"])
+    assert plain.fingerprint() == adopting.fingerprint()

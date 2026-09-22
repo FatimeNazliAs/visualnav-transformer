@@ -210,9 +210,12 @@ def build_task_set(config, directory, rebuild=False):
     return task_set.ensure(
         config.tasks, directory, topomap_builder.open_body, rebuild=rebuild,
         on_task=lambda entry: print(
-            "  built {:<8} geodesic {:.2f} m, {} nodes, seed {}".format(
+            "  {} {:<8} geodesic {:.2f} m, {} nodes, seed {}{}".format(
+                "adopted" if "adopted_from" in entry else "built",
                 entry["task_id"], entry["geodesic_length_m"],
-                entry["nodes"], entry["seed"])))
+                entry["nodes"], entry["seed"],
+                " (from {})".format(Path(entry["adopted_from"]).name)
+                if "adopted_from" in entry else "")))
 
 
 class EpisodeCrashError(RuntimeError):

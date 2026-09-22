@@ -25,6 +25,7 @@ Two properties are worth knowing, because both are load-bearing:
 
 import hashlib
 import json
+import shutil
 from pathlib import Path
 
 import yaml
@@ -137,7 +138,7 @@ class TaskSetConfig:
     """
 
     def __init__(self, topomap_config, scenes, tasks_per_scene=10, base_seed=1000,
-                 overrides=None):
+                 overrides=None, adopt_from=None):
         self.topomap_config = Path(topomap_config)
         if not self.topomap_config.is_absolute():
             self.topomap_config = SIM_EVAL_DIR / self.topomap_config
@@ -145,6 +146,11 @@ class TaskSetConfig:
         self.tasks_per_scene = int(tasks_per_scene)
         self.base_seed = int(base_seed)
         self.overrides = dict(overrides or {})
+        # Built task sets whose trails this one may take over rather than
+        # drive again — see `adoptable`. Provenance, not identity: an adopted
+        # task is the task this config would build, so it is left out of the
+        # fingerprint, and the manifest records where each one came from.
+        self.adopt_from = [_resolve(directory) for directory in (adopt_from or [])]
 
         if not self.scenes:
             raise TaskSetError("a task set needs at least one scene")
@@ -154,6 +160,36 @@ class TaskSetConfig:
     @classmethod
     def from_dict(cls, values):
         return cls(**values)
+
+    def adoptable(self, topomap_config, identifier):
+        """(source directory, manifest entry) of a built task that is exactly
+        the one `topomap_config` describes, or None.
+
+        Exactly, and checked three ways, because an adopted trail is scored as
+        if this config had driven it:
+
+          * the source set was built from the same P2 knobs (its manifest
+            records them all, `max_ticks` included, which a task's own metadata
+            does not);
+          * it has this task id under this task's seed;
+          * the world saved beside the trail is the world this task loads.
+
+        The build is deterministic in the seed (`topomap_builder.build_topomap`),
+        so a task that passes all three is the trail a rebuild would drive.
+        """
+        knobs = _normalized(self.base_knobs())
+        for source in self.adopt_from:
+            manifest, _tasks = load(source)
+            if _normalized(manifest["topomap_config"]) != knobs:
+                continue
+            for entry in manifest["tasks"]:
+                if entry["task_id"] != identifier or entry["seed"] != topomap_config.seed:
+                    continue
+                world = source / entry["directory"] / topomap_builder.WORLD_CONFIG_NAME
+                if world.exists() and yaml.safe_load(world.read_text()) == \
+                        topomap_config.world_config():
+                    return source, entry
+        return None
 
     def base_knobs(self):
         """P2's topomap knobs, with this task set's overrides applied."""
@@ -217,6 +253,26 @@ class TaskSetConfig:
             self.topomap_config.name)
 
 
+def _resolve(directory):
+    directory = Path(directory)
+    return directory if directory.is_absolute() else SIM_EVAL_DIR / directory
+
+
+def _normalized(knobs):
+    """Knobs as JSON would store them, so a manifest compares with a config."""
+    return json.loads(json.dumps(knobs, sort_keys=True, default=str))
+
+
+def adopt(source, entry, directory):
+    """Copy an adopted task into `directory`; return its manifest entry,
+    marked with where it came from."""
+    target = directory / entry["task_id"]
+    if target.exists():
+        shutil.rmtree(target)
+    shutil.copytree(source / entry["directory"], target)
+    return dict(entry, directory=entry["task_id"], adopted_from=str(source))
+
+
 def load(directory):
     """Read a built task set back off disk."""
     directory = Path(directory)
@@ -239,7 +295,9 @@ def build(config, directory, open_body, on_task=None):
     One simulator per scene, not one per task: opening iGibson costs tens of
     seconds and the whole scene's tasks are driven in the same world. Each task
     still gets its own `world.yaml` written beside it, so a task directory
-    stays self-contained.
+    stays self-contained. A task found already built under `adopt_from` is
+    copied instead of driven, and a scene whose tasks are all adopted never
+    opens a simulator at all.
 
     `open_body` is passed in rather than imported so that the caller owns the
     GPU (it has already pinned and verified it) and so this stays testable
@@ -257,6 +315,13 @@ def build(config, directory, open_body, on_task=None):
                 task_dir = directory / identifier
                 topomap_config = config.topomap_config_for(
                     scene, scene_index, task_index)
+
+                found = config.adoptable(topomap_config, identifier)
+                if found is not None:
+                    entries.append(adopt(*found, directory))
+                    if on_task is not None:
+                        on_task(entries[-1])
+                    continue
 
                 # The first task in a scene opens the simulator; the rest reuse
                 # it. `open_body` also writes the world config into the task
