@@ -191,7 +191,7 @@ def main():
     config.recording.enabled = args.record
     config.recording.tasks = "all"
     config.recording.directory = args.bundle / "videos"
-    config.seed_offset = args.seed_offset
+    config.seed_offsets = [args.seed_offset]
 
     bundle = args.bundle
     bundle.mkdir(parents=True, exist_ok=True)

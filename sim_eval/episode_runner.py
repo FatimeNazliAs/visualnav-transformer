@@ -144,6 +144,16 @@ def _rounded(value, places=3):
     return None if value is None else round(float(value), places)
 
 
+def episode_seed(task, seed_offset=0):
+    """The seed one episode of `task` runs under — the one its row records.
+
+    The task's own seed plus the run's offset. The one place this rule lives:
+    the runner seeds an episode with it and resume keys on it, and the
+    comparison uses it to say which episodes every arm must have run.
+    """
+    return task.seed + int(seed_offset)
+
+
 def seed_episode(seed):
     """Fix everything stochastic in an episode, so two arms face the same one.
 
@@ -362,11 +372,11 @@ class EpisodeRunner:
         self.policy = policy
         self.body = body
         self.rules = rules or EpisodeRules()
-        # Added to every task's seed. 0 — every scoring run — is the fairness
-        # protocol: each arm meets each task with that task's own noise. A
-        # non-zero offset replays the same task under different diffusion noise,
-        # which is how P5 measures run-to-run variation rather than a setting's
-        # effect. The seed actually used is in every row's `seed` column.
+        # Added to every task's seed. 0 is the task's own noise. A non-zero
+        # offset replays the same task under different diffusion noise — how P5
+        # measured run-to-run variation, and how P7 scores several seeds per
+        # task. Fair either way as long as every arm runs the same offsets
+        # (plan §7). The seed actually used is in every row's `seed` column.
         self.seed_offset = int(seed_offset)
 
     def _euclidean_distance(self, goal_xy):
@@ -401,7 +411,7 @@ class EpisodeRunner:
 
     def seed_for(self, task):
         """The seed this runner gives a task — the one its row will record."""
-        return task.seed + self.seed_offset
+        return episode_seed(task, self.seed_offset)
 
     def episode(self, task, checkpoint_name, seed=None):
         """Build the episode for one task. Iterate it to run it.

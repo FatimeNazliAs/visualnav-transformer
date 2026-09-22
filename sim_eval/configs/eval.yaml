@@ -30,6 +30,20 @@ task_set:
   # Where the built set lives. Numbered like every other output, and gitignored.
   directory: outputs/p3_0_task_set
 
+# --- how many times each task is run ------------------------------------------
+# Each task is run once per offset, the episode seeded `task seed + offset`, so
+# the diffusion noise differs between runs and the task does not. Every arm runs
+# the same offsets, so the comparison stays paired episode by episode (plan §7);
+# p6_2_compare.py refuses a table short of tasks x offsets.
+#
+# Outside `task_set` on purpose: seeds change how often a problem is posed, not
+# which problems exist, so a multi-seed run reuses an existing task set as-is.
+#
+# [0] is one run per task under its own seed — every phase up to P6. P5's
+# replays used 100000 and 200000; offsets that large can never land on another
+# task's own seed (those sit within 1000 of each other per scene).
+seed_offsets: [0]
+
 # --- when an episode is over (plan §6) ---------------------------------------
 # Success and timeout, and nothing else. Collisions are counted every tick and
 # never end an episode.

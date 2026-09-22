@@ -69,17 +69,18 @@ class FakeEpisode:
 
 
 class FakeRunner:
-    def __init__(self, crash_on=()):
+    def __init__(self, crash_on=(), seed_offset=0):
         self.crash_on = set(crash_on)
+        self.seed_offset = seed_offset
         self.ran = []
         self.body = type("Body", (), {"scene": None})()
 
     def seed_for(self, task):
-        return task.seed
+        return task.seed + self.seed_offset
 
     def episode(self, task, checkpoint_name):
         self.ran.append(task.task_id)
-        return FakeEpisode(task, checkpoint_name, task.seed,
+        return FakeEpisode(task, checkpoint_name, self.seed_for(task),
                            crash=task.task_id in self.crash_on)
 
 
@@ -99,7 +100,7 @@ def test_a_crashed_rollout_costs_that_episode_and_nothing_else(tmp_path):
 
     crashed = run(table, runner)
 
-    assert crashed == ["Rs_01"]
+    assert crashed == ["Rs_01 (seed 1001)"]
     assert runner.ran == ["Rs_00", "Rs_01", "Rs_02", "Rs_03"]
     assert scored_ids(table) == ["Rs_00", "Rs_02", "Rs_03"]
 
@@ -126,8 +127,9 @@ def test_a_complete_table_reruns_nothing(tmp_path):
 
 
 def test_the_crash_is_reported_by_name_rather_than_swallowed():
-    error = run_eval.EpisodeCrashError(["Rs_01", "Rs_07"])
-    assert "Rs_01, Rs_07" in str(error) and "--resume" in str(error)
+    error = run_eval.EpisodeCrashError(["Rs_01 (seed 1001)", "Rs_07 (seed 1007)"])
+    assert "Rs_01 (seed 1001), Rs_07 (seed 1007)" in str(error)
+    assert "--resume" in str(error)
 
 
 def test_an_interrupt_is_not_mistaken_for_a_crashed_rollout(tmp_path):
@@ -139,3 +141,47 @@ def test_an_interrupt_is_not_mistaken_for_a_crashed_rollout(tmp_path):
 
     with pytest.raises(KeyboardInterrupt):
         run(metrics.MetricsTable(tmp_path / "scores.csv").open(), Interrupting())
+
+
+# --- several seeds per task (P7) ---------------------------------------------
+# One table holds every seed of every task, keyed on (checkpoint, task, seed),
+# so a seed replicate is a different episode, never a duplicate.
+
+
+def run_seeds(path, offsets, resume=False, crash_on=()):
+    """What `score_checkpoint` does inside one scene: one pass per offset."""
+    table = metrics.MetricsTable(path).open(resume=resume)
+    runners = [FakeRunner(crash_on=crash_on, seed_offset=offset) for offset in offsets]
+    crashed = [episode for runner in runners for episode in run(table, runner, count=2)]
+    return runners, crashed
+
+
+def scored_episodes(path):
+    return sorted((row["task_id"], int(row["seed"]))
+                  for row in metrics.read_table(path))
+
+
+def test_each_seed_offset_is_its_own_episode_in_one_table(tmp_path):
+    path = tmp_path / "scores.csv"
+    run_seeds(path, [0, 100000])
+    assert scored_episodes(path) == [
+        ("Rs_00", 1000), ("Rs_00", 101000), ("Rs_01", 1001), ("Rs_01", 101001)]
+
+
+def test_a_resume_retries_the_crashed_seed_and_not_the_others(tmp_path):
+    path = tmp_path / "scores.csv"
+    _runners, crashed = run_seeds(path, [0, 100000], crash_on={"Rs_01"})
+    assert crashed == ["Rs_01 (seed 1001)", "Rs_01 (seed 101001)"]
+
+    runners, crashed = run_seeds(path, [0, 100000], resume=True)
+    assert crashed == []
+    assert [runner.ran for runner in runners] == [["Rs_01"], ["Rs_01"]]
+    assert len(scored_episodes(path)) == 4
+
+
+def test_adding_a_seed_to_a_finished_run_scores_only_the_new_seed(tmp_path):
+    """How P6's one-seed tables grow into P7's three without rerunning seed 0."""
+    path = tmp_path / "scores.csv"
+    run_seeds(path, [0])
+    runners, _crashed = run_seeds(path, [0, 100000], resume=True)
+    assert [runner.ran for runner in runners] == [[], ["Rs_00", "Rs_01"]]

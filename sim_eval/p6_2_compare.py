@@ -2,92 +2,68 @@
 
 P6's last step, and GPU-free: it reads the per-episode tables the scoring runs
 wrote and nothing else. Before it reports a number it checks the comparison is
-one (plan §7) — every arm has a row for every task in the task set, under the
-same seed, and every row was steered and judged under the same settings. A
-table that fails that check is refused, not printed with a footnote.
+one (plan §7) — every arm has a row for every task in the task set under every
+seed offset of the run, the same seeds for every arm, and every row was steered
+and judged under the same settings. A table that fails that check is refused,
+not printed with a footnote (`comparison.load_fair_tables`, the check
+`p7_contrasts.py` makes too). Any number of arms: one column each.
 
     ./sim_eval/run_p6_headline.sh           # runs this at the end
     ./sim_eval/run_p6_2_compare.sh          # or on its own, after the fact
 
-Writes three files beside the metrics:
+Writes three files beside the metrics, named by the config's `comparison:`
+section (P6's own names when it has none):
 
-    p6_2_comparison.md    the table to read: mean ± SE (n) per checkpoint
-    p6_2_comparison.csv   the same numbers, one row per (statistic, checkpoint)
-    p6_2_episodes.csv     every per-episode row of every arm, task by task
+    <name>_comparison.md    the table to read: mean ± SE (n) per checkpoint,
+                            over every house and then house by house
+    <name>_comparison.csv   the same numbers, one row per
+                            (scope, statistic, checkpoint) — scope is `all` or
+                            a house
+    <name>_episodes.csv     every per-episode row of every arm, task by task
+    <name>_tasks.csv        each arm's value per task, its seeds averaged —
+                            the unit every mean and SE here is taken over
+
+The task, not the episode, is the unit (`task_stats`): a task's seeds are
+averaged first, and the mean ± SE is across tasks. With one seed per task —
+every run up to P6 — that is the same number the episodes give.
 """
 
 import argparse
-import csv
 from pathlib import Path
 
 import checkpoints
+import comparison
 import metrics
 import run_eval
 import task_set
+import task_stats
+from comparison import ALL_HOUSES, ComparisonNaming
 
 DEFAULT_CONFIG = run_eval.SIM_EVAL_DIR / "configs" / "p6_headline.yaml"
-COMPARISON_MD = "p6_2_comparison.md"
-COMPARISON_CSV = "p6_2_comparison.csv"
-EPISODES_CSV = "p6_2_episodes.csv"
-
-# Columns that must read the same in every row of every arm: what steered the
-# robot and what counted as arriving. A difference in any of them means the
-# arms were not measured with the same ruler.
-SHARED_SETTINGS = ("driver", "success_radius_m", "success_metric")
 
 
-class ComparisonError(RuntimeError):
-    """Raised when the tables do not add up to a fair comparison."""
-
-
-def expected_episodes(tasks, seed_offset):
-    """(task_id, seed) for every task in the set — what each arm must have run."""
-    return {(task.task_id, task.seed + seed_offset) for task in tasks}
-
-
-def fairness_problems(tables, expected):
-    """Everything that stops `tables` ({checkpoint: rows}) being a comparison.
-
-    An empty list means every arm ran exactly the task set, once per task,
-    under the same seeds and the same settings.
-    """
-    problems = []
-    for name, rows in tables.items():
-        ran = [(row["task_id"], int(row["seed"])) for row in rows]
-        missing = sorted(expected - set(ran))
-        extra = sorted(set(ran) - expected)
-        repeated = sorted({episode for episode in ran if ran.count(episode) > 1})
-        for label, episodes in (("missing", missing), ("not in the task set", extra),
-                                ("scored twice", repeated)):
-            if episodes:
-                problems.append("{}: {} episode(s) {}: {}".format(
-                    name, len(episodes), label,
-                    ", ".join("{} (seed {})".format(*episode) for episode in episodes)))
-
-    all_rows = [row for rows in tables.values() for row in rows]
-    for column in SHARED_SETTINGS:
-        values = sorted({str(row[column]) for row in all_rows})
-        if len(values) > 1:
-            problems.append("`{}` differs between rows: {}".format(
-                column, ", ".join(values)))
-    return problems
-
-
-def comparison_rows(tables):
-    """One row per (statistic, checkpoint): mean, SE and n, for the CSV."""
+def comparison_rows(tables, scope=ALL_HOUSES):
+    """One row per (statistic, checkpoint): mean, SE and n tasks, for the CSV."""
     rows = []
-    summaries = {name: metrics.summarize(table)
+    summaries = {name: task_stats.summarize(table)
                  for name, table in tables.items()}
     for statistic, _column, _over in metrics.EPISODE_STATISTICS:
         for name, summary in summaries.items():
             mean, se, count = summary[statistic]
-            rows.append({"statistic": statistic, "checkpoint": name,
-                         "mean": _round(mean), "se": _round(se), "n": count})
+            rows.append({"scope": scope, "statistic": statistic, "checkpoint": name,
+                         "mean": comparison.round_cell(mean), "se": comparison.round_cell(se), "n": count})
     return rows
 
 
-def _round(value, places=4):
-    return "" if value is None else round(value, places)
+def per_house_rows(tables):
+    """`comparison_rows` again for each house on its own: whether a ranking
+    holds in every house or is carried by one."""
+    rows = []
+    for house in comparison.houses(tables):
+        in_house = {name: [row for row in table if row["scene"] == house]
+                    for name, table in tables.items()}
+        rows += comparison_rows(in_house, scope=house)
+    return rows
 
 
 def format_cell(mean, se, count):
@@ -99,63 +75,88 @@ def format_cell(mean, se, count):
     return "{:.3f} ± {:.3f} ({})".format(float(mean), float(se), count)
 
 
-def markdown_table(rows, names, provenance):
-    """The comparison as a Markdown table, one column per checkpoint."""
+def statistics_table(rows, names):
+    """One scope's rows as Markdown table lines, one column per checkpoint."""
     cells = {(row["statistic"], row["checkpoint"]): row for row in rows}
-    lines = ["# P6 headline comparison", "", "mean ± SE across tasks (n)", ""]
-    lines += ["- **{}**: {}".format(name, provenance[name]) for name in names]
-    lines += ["", "| statistic | " + " | ".join(names) + " |",
-              "|---" * (len(names) + 1) + "|"]
+    lines = ["| statistic | " + " | ".join(names) + " |",
+             "|---" * (len(names) + 1) + "|"]
     for statistic, _column, _over in metrics.EPISODE_STATISTICS:
         lines.append("| {} | {} |".format(statistic, " | ".join(
             format_cell(cells[statistic, name]["mean"], cells[statistic, name]["se"],
                         cells[statistic, name]["n"])
             for name in names)))
+    return lines
+
+
+def markdown_table(rows, names, provenance, title=ComparisonNaming().title):
+    """The comparison as Markdown: every house together, then each alone."""
+    lines = ["# " + title, "",
+             "mean ± SE across tasks (n = tasks); a task's seeds are averaged first", ""]
+    lines += ["- **{}**: {}".format(name, provenance[name]) for name in names]
+    scopes = list(dict.fromkeys(row["scope"] for row in rows))
+    for scope in scopes:
+        heading = "All houses" if scope == ALL_HOUSES else "House: " + scope
+        lines += ["", "## " + heading, ""]
+        lines += statistics_table([row for row in rows if row["scope"] == scope], names)
     return "\n".join(lines) + "\n"
 
 
 def episodes_side_by_side(tables):
-    """Every arm's rows in one list, ordered task by task, then by arm."""
+    """Every arm's rows in one list, ordered task by task and seed by seed,
+    then by arm — so one episode's arms sit on adjacent rows."""
     order = {name: index for index, name in enumerate(tables)}
     rows = [row for table in tables.values() for row in table]
-    return sorted(rows, key=lambda row: (row["task_id"], order[row["checkpoint"]]))
+    return sorted(rows, key=lambda row: (row["task_id"], int(row["seed"]),
+                                         order[row["checkpoint"]]))
 
 
-def write_csv(path, rows, columns):
-    with open(path, "w", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=columns)
-        writer.writeheader()
-        writer.writerows(rows)
+def per_task_rows(tables):
+    """Each arm's per-task value of every statistic: what the means average."""
+    rows = []
+    for name, table in tables.items():
+        scene_of = {row["task_id"]: row["scene"] for row in table}
+        seeds = task_stats.seed_counts(table)
+        values = {statistic: task_stats.task_values(table, statistic)
+                  for statistic, _column, _over in metrics.EPISODE_STATISTICS}
+        for task in sorted(scene_of):
+            row = {"checkpoint": name, "scene": scene_of[task], "task_id": task,
+                   "seeds": seeds[task]}
+            row.update({statistic: comparison.round_cell(per_task.get(task))
+                        for statistic, per_task in values.items()})
+            rows.append(row)
+    return rows
 
 
 def provenance(name):
-    """What an arm is, in one line — its render resolution read from its own
-    training config (plan §7), not typed in."""
+    """What an arm is, in one line — its render resolution and context
+    stride read from its own training config (plan §7), not typed in."""
     spec = checkpoints.load(name)
-    return "{}x{}, context {} — {}".format(
+    return "{}x{}, context {} (stride {}) — {}".format(
         spec.image_size[0], spec.image_size[1], spec.context_size,
-        spec.weights_path)
+        spec.context_stride, spec.weights_path)
 
 
-def compare(config):
-    """Check the run is a comparison, then write the three files. Returns the
+def compare(config, naming=None):
+    """Check the run is a comparison, then write the four files. Returns the
     Markdown table."""
-    _manifest, tasks = task_set.load(config.task_directory)
+    naming = naming or ComparisonNaming()
     names = config.checkpoint_names
-    tables = {name: metrics.read_table(config.csv_path(name)) for name in names}
+    tables = comparison.load_fair_tables(
+        config, {name: config.csv_path(name) for name in names})
 
-    problems = fairness_problems(
-        tables, expected_episodes(tasks, config.seed_offset))
-    if problems:
-        raise ComparisonError(
-            "these tables are not a fair comparison yet:\n  " + "\n  ".join(problems))
-
-    rows = comparison_rows(tables)
-    table = markdown_table(rows, names, {name: provenance(name) for name in names})
+    rows = comparison_rows(tables) + per_house_rows(tables)
+    table = markdown_table(rows, names, {name: provenance(name) for name in names},
+                           title=naming.title)
     output = config.output_dir
-    (output / COMPARISON_MD).write_text(table)
-    write_csv(output / COMPARISON_CSV, rows, ("statistic", "checkpoint", "mean", "se", "n"))
-    write_csv(output / EPISODES_CSV, episodes_side_by_side(tables), metrics.CSV_COLUMNS)
+    (output / naming.markdown).write_text(table)
+    comparison.write_csv(output / naming.csv, rows,
+                         ("scope", "statistic", "checkpoint", "mean", "se", "n"))
+    comparison.write_csv(output / naming.episodes, episodes_side_by_side(tables),
+                         metrics.CSV_COLUMNS)
+    comparison.write_csv(output / naming.tasks, per_task_rows(tables),
+                         ("checkpoint", "scene", "task_id", "seeds")
+                         + tuple(statistic for statistic, _c, _o
+                                 in metrics.EPISODE_STATISTICS))
     return table
 
 
@@ -166,14 +167,15 @@ def main():
     args = parser.parse_args()
 
     config = run_eval.EvalConfig.from_yaml(args.config)
-    print(compare(config))
-    for name in (COMPARISON_MD, COMPARISON_CSV, EPISODES_CSV):
+    naming = ComparisonNaming.from_yaml(args.config)
+    print(compare(config, naming))
+    for name in naming.files:
         print("wrote:      {}".format(config.output_dir / name))
 
 
 if __name__ == "__main__":
     try:
         main()
-    except (ComparisonError, task_set.TaskSetError, checkpoints.CheckpointError,
+    except (comparison.ComparisonError, task_set.TaskSetError, checkpoints.CheckpointError,
             FileNotFoundError) as error:
         raise SystemExit("FAILED: {}".format(error))

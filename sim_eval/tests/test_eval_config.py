@@ -213,3 +213,33 @@ def test_the_p6_config_shares_the_rules_and_driver_of_eval_yaml():
     assert headline.tasks.tasks_per_scene == 10 and len(headline.tasks.scenes) == 2
     assert headline.recording.enabled and headline.recording.tasks == "all"
     assert headline.checkpoint_names == ["best_combined", "clean_stock"]
+
+
+
+# --- seeds per task (P7) -----------------------------------------------------
+
+def test_one_run_per_task_under_its_own_seed_is_the_default():
+    assert load(MINIMAL).seed_offsets == [0]
+
+
+def test_seed_offsets_are_read_as_a_list():
+    config = load(MINIMAL + "seed_offsets: [0, 100000, 200000]\n")
+    assert config.seed_offsets == [0, 100000, 200000]
+
+
+def test_an_empty_seed_list_is_refused():
+    with pytest.raises(ValueError):
+        load(MINIMAL + "seed_offsets: []\n")
+
+
+def test_a_repeated_seed_offset_is_refused():
+    """It would score the same episode twice."""
+    with pytest.raises(ValueError):
+        load(MINIMAL + "seed_offsets: [0, 100000, 0]\n")
+
+
+def test_the_checked_in_configs_still_run_one_seed_per_task():
+    """P3-P6 were one seed per task; the new knob must not change them."""
+    for name in ("eval.yaml", "p6_headline.yaml"):
+        config = run_eval.EvalConfig.from_yaml(SIM_EVAL_DIR / "configs" / name)
+        assert config.seed_offsets == [0], name

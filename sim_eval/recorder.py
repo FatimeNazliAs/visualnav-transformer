@@ -553,12 +553,18 @@ class Recorder:
         self.waypoint_scale_m = waypoint_scale_m
         self.success_radius_m = success_radius_m
 
-    def video_path(self, checkpoint_name, task_id):
-        """One directory per arm, one file per task — so the same task under
-        two checkpoints is two files that can be watched side by side."""
-        return self.config.directory / checkpoint_name / "{}.mp4".format(task_id)
+    def video_path(self, checkpoint_name, task_id, seed_offset=0):
+        """One directory per arm, one file per episode — so the same task under
+        two checkpoints is two files that can be watched side by side.
 
-    def episode(self, task, checkpoint_name, scene, task_index=0):
+        The task under its own seed is `<task_id>.mp4`, as every run before P7
+        named it; a replay under another offset adds it (`Rs_00+100000.mp4`),
+        so filming several seeds of one task never overwrites a film.
+        """
+        name = task_id if seed_offset == 0 else "{}+{}".format(task_id, seed_offset)
+        return self.config.directory / checkpoint_name / "{}.mp4".format(name)
+
+    def episode(self, task, checkpoint_name, scene, task_index=0, seed_offset=0):
         """The film for one episode, or a null one if it is not being recorded.
 
         `scene` is the `SimScene` the episode runs in — the floor is already
@@ -571,7 +577,7 @@ class Recorder:
             waypoint_scale_m=self.waypoint_scale_m,
             success_radius_m=self.success_radius_m)
         return EpisodeRecording(
-            self.video_path(checkpoint_name, task.task_id),
+            self.video_path(checkpoint_name, task.task_id, seed_offset),
             fps=self.config.fps, panels=panels)
 
 

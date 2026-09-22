@@ -83,7 +83,7 @@ class EvalConfig:
     """`configs/eval.yaml`: which problems, which arms, and when an episode ends."""
 
     def __init__(self, tasks, task_directory, rules, floor, checkpoint_names,
-                 output_dir, recording, driver, seed_offset=0):
+                 output_dir, recording, driver, seed_offsets=(0,)):
         self.tasks = tasks
         self.task_directory = task_directory
         self.rules = rules
@@ -98,8 +98,11 @@ class EvalConfig:
         # driver, not to the problem: the same task set is faced with it, and
         # every row of the table records which settings faced it.
         self.driver = driver
-        # 0 for anything that is scored; see `EpisodeRunner.seed_offset`.
-        self.seed_offset = int(seed_offset)
+        # Every task is run once per offset, and every arm runs the same ones:
+        # the task set is tasks x seeds episodes. [0] is one episode per task
+        # under its own seed, which is every run before P7. See
+        # `EpisodeRunner.seed_offset`.
+        self.seed_offsets = validate_seed_offsets(seed_offsets)
 
     @classmethod
     def from_dict(cls, data):
@@ -119,7 +122,7 @@ class EvalConfig:
             output_dir=resolve_path(data.get("output_dir", "outputs")),
             recording=RecordingConfig.from_dict(record_section),
             driver=DriverConfig.from_dict(data.get("driver")),
-            seed_offset=data.get("seed_offset", 0),
+            seed_offsets=data.get("seed_offsets", [0]),
         )
 
     @classmethod
@@ -128,6 +131,17 @@ class EvalConfig:
 
     def csv_path(self, checkpoint_name):
         return self.output_dir / "{}.csv".format(checkpoint_name)
+
+
+def validate_seed_offsets(offsets):
+    """The offsets as ints, or a message: at least one, and no repeats — a
+    repeated offset would score the same episode twice."""
+    offsets = [int(offset) for offset in offsets]
+    if not offsets:
+        raise ValueError("seed_offsets is empty: nothing would be scored")
+    if len(set(offsets)) != len(offsets):
+        raise ValueError("seed_offsets repeats an offset: {}".format(offsets))
+    return offsets
 
 
 def parse_args():
@@ -208,12 +222,12 @@ class EpisodeCrashError(RuntimeError):
     The crashed ones have no row, so a `--resume` run retries exactly those.
     """
 
-    def __init__(self, task_ids):
-        self.task_ids = list(task_ids)
+    def __init__(self, episodes):
+        self.episodes = list(episodes)
         super().__init__(
             "{} episode(s) crashed and were left unscored: {}. Every other "
             "episode is in the table; rerun with --resume to retry only these."
-            .format(len(self.task_ids), ", ".join(self.task_ids)))
+            .format(len(self.episodes), ", ".join(self.episodes)))
 
 
 def score_task(task, task_index, runner, checkpoint_name, table, film,
@@ -230,7 +244,8 @@ def score_task(task, task_index, runner, checkpoint_name, table, film,
     """
     episode = runner.episode(task, checkpoint_name)
     with film.episode(task, checkpoint_name, runner.body.scene,
-                      task_index=task_index) as video:
+                      task_index=task_index,
+                      seed_offset=runner.seed_offset) as video:
         for record in episode:
             video.capture(record)
             if verbose:
@@ -244,8 +259,8 @@ def score_task(task, task_index, runner, checkpoint_name, table, film,
 
 def run_scene(scene, tasks, runner, checkpoint_name, table, film,
               verbose=True):
-    """Score every task in one scene not already in the table. Returns the
-    ids of the ones that crashed.
+    """Score every task in one scene not already in the table, under the
+    runner's seed offset. Returns the episodes that crashed, as `task (seed)`.
 
     A task whose (checkpoint, task, seed) already has a row is skipped, which
     is what makes a run resumable: rerun it and it picks up where it stopped.
@@ -253,34 +268,40 @@ def run_scene(scene, tasks, runner, checkpoint_name, table, film,
     slow rollouts must not hang on one — but it is never swallowed: it has no
     row, so it is retried on resume, and the run ends in `EpisodeCrashError`.
     """
-    print("\n=== {}: {} tasks ===".format(scene, len(tasks)))
+    print("\n=== {}: {} tasks, seed offset {} ===".format(
+        scene, len(tasks), runner.seed_offset))
     scored = table.completed()
     crashed = []
 
     # Indexed before skipping: "film the first N tasks" counts from the
     # scene's first task, not from wherever a resumed run starts.
     for task_index, task in enumerate(tasks):
-        key = (checkpoint_name, task.task_id, runner.seed_for(task))
-        if key in scored:
-            print("\n--- {} ({}) already scored, skipped ---".format(
-                task.task_id, checkpoint_name))
+        seed = runner.seed_for(task)
+        if (checkpoint_name, task.task_id, seed) in scored:
+            print("\n--- {} seed {} ({}) already scored, skipped ---".format(
+                task.task_id, seed, checkpoint_name))
             continue
-        print("\n--- {} ({}) ---".format(task.summary(), checkpoint_name))
+        print("\n--- {} · run seed {} ({}) ---".format(
+            task.summary(), seed, checkpoint_name))
         try:
             score_task(task, task_index, runner, checkpoint_name, table, film,
                        verbose=verbose)
         except Exception:  # noqa: BLE001 — isolated, reported, and retried
             traceback.print_exc()
+            episode = "{} (seed {})".format(task.task_id, seed)
             print("CRASHED:    {} ({}) — left unscored".format(
-                task.task_id, checkpoint_name))
-            crashed.append(task.task_id)
+                episode, checkpoint_name))
+            crashed.append(episode)
     return crashed
 
 
 def score_checkpoint(config, tasks, policy, checkpoint_name, table,
                      selected_gpu, film, verbose=True):
-    """Run every task for one checkpoint, one scene's simulator at a time.
-    Returns the ids of the episodes that crashed.
+    """Run every task under every seed offset for one checkpoint, one scene's
+    simulator at a time. Returns the episodes that crashed.
+
+    The offsets loop inside the scene, so a house is opened once per arm
+    however many seeds it is run under.
 
     The world is opened from the first task's own `world.yaml` — the file P2
     wrote when it drove the trail — so an episode runs in the world its task
@@ -294,11 +315,12 @@ def score_checkpoint(config, tasks, policy, checkpoint_name, table,
                               floor=config.floor)
         try:
             body.verify_gpu(selected_gpu)
-            runner = episode_runner.EpisodeRunner(
-                policy, body, rules=config.rules,
-                seed_offset=config.seed_offset)
-            crashed += run_scene(scene, scene_tasks, runner, checkpoint_name,
-                                 table, film, verbose=verbose)
+            for seed_offset in config.seed_offsets:
+                runner = episode_runner.EpisodeRunner(
+                    policy, body, rules=config.rules, seed_offset=seed_offset)
+                crashed += run_scene(scene, scene_tasks, runner,
+                                     checkpoint_name, table, film,
+                                     verbose=verbose)
         finally:
             body.close()
     return crashed
@@ -339,6 +361,8 @@ def evaluate(config, checkpoint_name, csv_path, selected_gpu, task_directory=Non
     spec = checkpoints.load(checkpoint_name)
     print("checkpoint: {}".format(spec.summary()))
     print("rules:      {}".format(config.rules.summary()))
+    print("seeds:      offsets {} — {} episodes".format(
+        config.seed_offsets, len(tasks) * len(config.seed_offsets)))
     print("driver:     {}".format(config.driver.summary()))
     print("recording:  {}".format(config.recording.summary()))
 

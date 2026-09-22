@@ -121,3 +121,18 @@ def test_the_view_box_covers_the_traversable_floor_plus_its_margin():
 
 def test_a_floor_with_no_traversable_pixels_has_no_view_box():
     assert recorder.traversable_bounds(fake_trav_map(size=20, patch=(0, 0)), 0.1) is None
+
+
+
+def test_a_task_under_its_own_seed_keeps_its_plain_video_name(tmp_path):
+    film = recorder.Recorder(recorder.RecordingConfig(directory=tmp_path),
+                             waypoint_scale_m=1.0, success_radius_m=1.0)
+    assert film.video_path("bc30", "Rs_00") == tmp_path / "bc30" / "Rs_00.mp4"
+
+
+def test_each_seed_of_a_task_is_filmed_to_its_own_file(tmp_path):
+    film = recorder.Recorder(recorder.RecordingConfig(directory=tmp_path),
+                             waypoint_scale_m=1.0, success_radius_m=1.0)
+    paths = {film.video_path("bc30", "Rs_00", offset) for offset in (0, 100000, 200000)}
+    assert len(paths) == 3
+    assert tmp_path / "bc30" / "Rs_00+100000.mp4" in paths
