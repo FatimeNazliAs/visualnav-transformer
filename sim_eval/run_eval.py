@@ -329,12 +329,13 @@ def score_checkpoint(config, tasks, policy, checkpoint_name, table,
     return crashed
 
 
-def build_recorder(config, policy):
+def build_recorder(config, policy, caption_for=None):
     """P4's recorder for this run, or a disabled one.
 
     The waypoint scale is read off the checkpoint that is about to drive — the
     overlay draws the model's own samples in metres, and a checkpoint trained
-    without normalization means them in metres already.
+    without normalization means them in metres already. `caption_for` is
+    `recorder.Recorder`'s optional per-episode caption.
     """
     import bridge
     import pd_control
@@ -345,7 +346,7 @@ def build_recorder(config, policy):
         config.recording,
         waypoint_scale_m=bridge.waypoint_scale_m(
             policy.model_params, pd_control.RobotLimits.from_config()),
-        success_radius_m=config.rules.success_radius_m)
+        success_radius_m=config.rules.success_radius_m, caption_for=caption_for)
 
 
 def evaluate(config, checkpoint_name, csv_path, selected_gpu, task_directory=None,

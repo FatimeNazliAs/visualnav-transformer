@@ -204,7 +204,7 @@ class PanelFigure:
     """
 
     def __init__(self, task, checkpoint_name, scene, node_images,
-                 waypoint_scale_m, success_radius_m):
+                 waypoint_scale_m, success_radius_m, caption=None):
         self.node_images = node_images
         self.waypoint_scale_m = float(waypoint_scale_m)
         self._waypoint_limit = None
@@ -228,6 +228,12 @@ class PanelFigure:
         # thing the eye should find.
         self.status = self.figure.text(0.5, 0.935, "", ha="center", va="top",
                                        fontsize=10, family="monospace")
+        # A line of context the episode itself cannot supply — P7's clips say
+        # how the whole task went across its seeds, so one episode is never
+        # read as the task. Static, so it is drawn once with the rest.
+        if caption:
+            self.figure.text(0.5, 0.012, caption, ha="center", va="bottom",
+                             fontsize=10)
 
         self._build_camera_panel(grid[:, 0])
         self._build_map_panel(grid[:, 1], metadata, scene, success_radius_m)
@@ -548,10 +554,13 @@ class Recorder:
     serves a whole run, exactly as one `EpisodeRunner` does.
     """
 
-    def __init__(self, config, waypoint_scale_m, success_radius_m):
+    def __init__(self, config, waypoint_scale_m, success_radius_m, caption_for=None):
         self.config = config
         self.waypoint_scale_m = waypoint_scale_m
         self.success_radius_m = success_radius_m
+        # Optional `(task, checkpoint_name, seed_offset) -> str | None`: a line
+        # printed along the bottom of every frame. None films what P4 filmed.
+        self.caption_for = caption_for
 
     def video_path(self, checkpoint_name, task_id, seed_offset=0):
         """One directory per arm, one file per episode — so the same task under
@@ -572,10 +581,12 @@ class Recorder:
         """
         if not self.config.records(task.task_id, task_index):
             return NullRecording()
+        caption = (None if self.caption_for is None
+                   else self.caption_for(task, checkpoint_name, seed_offset))
         panels = PanelFigure(
             task, checkpoint_name, scene, TrailImages(task),
             waypoint_scale_m=self.waypoint_scale_m,
-            success_radius_m=self.success_radius_m)
+            success_radius_m=self.success_radius_m, caption=caption)
         return EpisodeRecording(
             self.video_path(checkpoint_name, task.task_id, seed_offset),
             fps=self.config.fps, panels=panels)
