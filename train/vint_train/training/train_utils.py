@@ -695,9 +695,10 @@ def train_nomad(
 
             # Logging
             tepoch.set_postfix(loss=loss_cpu)
-            wandb.log({"total_loss": loss_cpu})
-            wandb.log({"dist_loss": dist_loss.item()})
-            wandb.log({"diffusion_loss": diffusion_loss.item()})
+            if use_wandb:
+                wandb.log({"total_loss": loss_cpu})
+                wandb.log({"dist_loss": dist_loss.item()})
+                wandb.log({"diffusion_loss": diffusion_loss.item()})
 
 
             if did_step and print_log_freq != 0 and optimizer_step % print_log_freq == 0:
@@ -899,9 +900,10 @@ def evaluate_nomad(
             loss_cpu = rand_mask_loss.item()
             tepoch.set_postfix(loss=loss_cpu)
 
-            wandb.log({"diffusion_eval_loss (random masking)": rand_mask_loss})
-            wandb.log({"diffusion_eval_loss (no masking)": no_mask_loss})
-            wandb.log({"diffusion_eval_loss (goal masking)": goal_mask_loss})
+            if use_wandb:
+                wandb.log({"diffusion_eval_loss (random masking)": rand_mask_loss})
+                wandb.log({"diffusion_eval_loss (no masking)": no_mask_loss})
+                wandb.log({"diffusion_eval_loss (goal masking)": goal_mask_loss})
 
             if i % print_log_freq == 0 and print_log_freq != 0:
                 losses = _compute_losses_nomad(

@@ -266,23 +266,25 @@ def train_eval_loop_nomad(
                     use_wandb=use_wandb,
                     eval_fraction=eval_fraction,
                 )
-        wandb.log({
-            "lr": optimizer.param_groups[0]["lr"],
-        }, commit=False)
+        if use_wandb:
+            wandb.log({
+                "lr": optimizer.param_groups[0]["lr"],
+            }, commit=False)
 
         if lr_scheduler is not None:
             lr_scheduler.step()
 
         # log average eval loss
-        wandb.log({}, commit=False)
+        if use_wandb:
+            wandb.log({}, commit=False)
+            wandb.log({
+                "lr": optimizer.param_groups[0]["lr"],
+            }, commit=False)
 
-        wandb.log({
-            "lr": optimizer.param_groups[0]["lr"],
-        }, commit=False)
 
-        
     # Flush the last set of eval logs
-    wandb.log({})
+    if use_wandb:
+        wandb.log({})
     print()
 
 def load_model(model, model_type, checkpoint: dict) -> None:
