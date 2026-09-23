@@ -304,7 +304,7 @@ def score_checkpoint(
         for batch_index, data in enumerate(batches):
             if max_batches is not None and batch_index >= max_batches:
                 break
-            obs_image, goal_image, actions, distance, _, _, action_mask = data
+            obs_image, goal_image, actions, distance, _, _, action_mask, _ = data
 
             obs_images = torch.split(obs_image, 3, dim=1)
             batch_obs_images = torch.cat(

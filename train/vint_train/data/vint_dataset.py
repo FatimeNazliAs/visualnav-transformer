@@ -17,6 +17,7 @@ from vint_train.data.data_utils import (
     get_data_path,
     to_local_coords,
 )
+from vint_train.data.clip_goal_utils import cache_key, l2_normalize, load_mu, prep
 
 class ViNT_Dataset(Dataset):
     def __init__(
@@ -42,6 +43,9 @@ class ViNT_Dataset(Dataset):
         normalize: bool = True,
         obs_type: str = "image",
         goal_type: str = "image",
+        clip_cache: Optional[str] = None,
+        clip_mu_img: Optional[str] = None,
+        clip_center: bool = True,
     ):
         """
         Main ViNT dataset class
@@ -71,7 +75,14 @@ class ViNT_Dataset(Dataset):
             end_slack (int): Number of timesteps to ignore at the end of the trajectory
             goals_per_obs (int): Number of goals to sample per observation
             normalize (bool): Whether to normalize the distances or actions
-            goal_type (str): What data type to use for the goal. The only one supported is "image" for now.
+            goal_type (str): What data type to use for the goal. "image" (the stock behaviour)
+                or "clip", which additionally returns the goal frame's CLIP image embedding.
+            clip_cache (str): LMDB of raw CLIP image embeddings written by
+                precompute_clip_embeddings.py. Required when goal_type is "clip".
+            clip_mu_img (str): mean normalised CLIP image embedding over the training frames.
+                Required when goal_type is "clip" and clip_center is set.
+            clip_center (bool): centre the goal embedding on clip_mu_img (closing the CLIP
+                modality gap); if False it is only L2-normalised.
         """
         self.data_folder = data_folder
         self.data_split_folder = data_split_folder
@@ -122,7 +133,14 @@ class ViNT_Dataset(Dataset):
         self.goals_per_obs = goals_per_obs
         self.normalize = normalize
         self.obs_type = obs_type
+        assert goal_type in {"image", "clip"}, f"goal_type must be image or clip, not {goal_type}"
         self.goal_type = goal_type
+        self.clip_cache_path = clip_cache
+        self.clip_center = clip_center
+        if self.goal_type == "clip":
+            assert clip_cache is not None, "goal_type clip needs clip_cache"
+            assert clip_mu_img is not None or not clip_center, "clip_center needs clip_mu_img"
+            self.clip_mu_img = load_mu(clip_mu_img) if clip_center else None
 
         # load data/data_config.yaml
         with open(
@@ -149,6 +167,7 @@ class ViNT_Dataset(Dataset):
     def __getstate__(self):
         state = self.__dict__.copy()
         state["_image_cache"] = None
+        state["_clip_cache"] = None
         return state
     
     def __setstate__(self, state):
@@ -202,6 +221,13 @@ class ViNT_Dataset(Dataset):
             cache_filename, readonly=True, lock=False
         )
 
+        # The CLIP embedding cache is prebuilt and read-only for the same reasons.
+        self._clip_cache: Optional[lmdb.Environment] = None
+        if self.goal_type == "clip":
+            self._clip_cache = lmdb.open(
+                self.clip_cache_path, readonly=True, lock=False
+            )
+
     def close(self):
         """Release the LMDB image cache.
 
@@ -212,6 +238,8 @@ class ViNT_Dataset(Dataset):
         constructing the next.
         """
         self._image_cache.close()
+        if self._clip_cache is not None:
+            self._clip_cache.close()
 
     def _build_index(self, use_tqdm: bool = False):
         """
@@ -283,6 +311,20 @@ class ViNT_Dataset(Dataset):
             return img_path_to_data(image_bytes, self.image_size)
         except TypeError:
             print(f"Failed to load image {image_path}")
+
+    def _load_goal_vec(self, trajectory_name, time) -> torch.Tensor:
+        """The goal frame's CLIP embedding, [512], ready for the goal adapter.
+
+        Centred on clip_mu_img (or only normalised if clip_center is off). In image mode
+        it is an empty placeholder, so the returned tuple has the same shape in both modes.
+        """
+        if self.goal_type != "clip":
+            return torch.zeros(0)
+        with self._clip_cache.begin() as txn:
+            buffer = txn.get(cache_key(trajectory_name, time))
+        assert buffer is not None, f"No CLIP embedding for {trajectory_name}/{time} in {self.clip_cache_path}"
+        embedding = torch.from_numpy(np.frombuffer(buffer, dtype=np.float32).copy())
+        return prep(embedding, self.clip_mu_img) if self.clip_center else l2_normalize(embedding)
 
     def _context_times(self, curr_time: int) -> List[int]:
         """Timesteps the context frames are read from.
@@ -370,6 +412,8 @@ class ViNT_Dataset(Dataset):
                 dist_label (torch.Tensor): tensor of shape (1,) containing the distance labels from the observation to the goal
                 action_label (torch.Tensor): tensor of shape (5, 2) or (5, 4) (if training with angle) containing the action labels from the observation to the goal
                 which_dataset (torch.Tensor): index of the datapoint in the dataset [for identifying the dataset for visualization when using multiple datasets]
+                action_mask (torch.Tensor): 1 if the action label is valid for this goal
+                goal_vec (torch.Tensor): [512] centred CLIP goal embedding if goal_type is "clip", else empty
         """
         f_curr, curr_time, max_goal_dist = self.index_to_data[i]
         f_goal, goal_time, goal_is_negative = self._sample_goal(f_curr, curr_time, max_goal_dist)
@@ -424,4 +468,5 @@ class ViNT_Dataset(Dataset):
             torch.as_tensor(goal_pos, dtype=torch.float32),
             torch.as_tensor(self.dataset_index, dtype=torch.int64),
             torch.as_tensor(action_mask, dtype=torch.float32),
+            self._load_goal_vec(f_goal, goal_time),
         )

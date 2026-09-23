@@ -94,6 +94,12 @@ def main(config):
     if "gradient_accumulation_steps" not in config:
         config["gradient_accumulation_steps"] = 1
 
+    # Only the NoMaD ViNT encoder has a CLIP goal adapter; any other model would silently
+    # train on the goal image instead.
+    if config["goal_type"] == "clip":
+        assert config["model_type"] == "nomad" and config["vision_encoder"] == "nomad_vint", \
+            "goal_type clip is only implemented for model_type nomad with vision_encoder nomad_vint"
+
     for dataset_name in config["datasets"]:
         data_config = config["datasets"][dataset_name]
         if "negative_mining" not in data_config:
@@ -128,6 +134,9 @@ def main(config):
                         goals_per_obs=data_config["goals_per_obs"],
                         normalize=config["normalize"],
                         goal_type=config["goal_type"],
+                        clip_cache=config.get("clip_cache"),
+                        clip_mu_img=config.get("clip_mu_img"),
+                        clip_center=config.get("clip_center", True),
                     )
                     if data_split_type == "train":
                         train_dataset.append(dataset)
@@ -190,6 +199,7 @@ def main(config):
                 mha_num_attention_heads=config["mha_num_attention_heads"],
                 mha_num_attention_layers=config["mha_num_attention_layers"],
                 mha_ff_dim_factor=config["mha_ff_dim_factor"],
+                goal_type=config["goal_type"],
             )
             vision_encoder = replace_bn_with_gn(vision_encoder)
         elif config["vision_encoder"] == "vib": 

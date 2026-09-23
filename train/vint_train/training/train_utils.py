@@ -245,6 +245,7 @@ def train(
             goal_pos,
             dataset_index,
             action_mask,
+            _,
         ) = data
 
         obs_images = torch.split(obs_image, 3, dim=1)
@@ -384,6 +385,7 @@ def evaluate(
                 goal_pos,
                 dataset_index,
                 action_mask,
+                _,
             ) = data
 
             obs_images = torch.split(obs_image, 3, dim=1)
@@ -445,6 +447,15 @@ def evaluate(
 
 # Train utils for NOMAD
 
+def _goal_vec_to_device(goal_vec: torch.Tensor, device: torch.device) -> Optional[torch.Tensor]:
+    """The batch's CLIP goal vectors on device, or None in image-goal mode.
+
+    The dataset returns an empty goal_vec per sample in image mode (so its tuple has the
+    same shape in both modes); a batch of those collates to [B, 0].
+    """
+    return goal_vec.to(device) if goal_vec.numel() > 0 else None
+
+
 def _compute_losses_nomad(
     ema_model,
     noise_scheduler,
@@ -454,6 +465,7 @@ def _compute_losses_nomad(
     batch_action_label: torch.Tensor,
     device: torch.device,
     action_mask: torch.Tensor,
+    batch_goal_vec: Optional[torch.Tensor] = None,
 ):
     """
     Compute losses for distance and action prediction.
@@ -471,6 +483,7 @@ def _compute_losses_nomad(
         action_dim,
         num_samples=1,
         device=device,
+        batch_goal_vec=batch_goal_vec,
     )
     uc_actions = model_output_dict['uc_actions']
     gc_actions = model_output_dict['gc_actions']
@@ -598,6 +611,8 @@ def train_nomad(
 
     optimizer_step = 0
     optimizer.zero_grad()
+    dist_loss_sum = 0.0
+    diffusion_loss_sum = 0.0
 
     with tqdm.tqdm(dataloader, desc="Train Batch", leave=False) as tepoch:
         for i, data in enumerate(tepoch):
@@ -609,6 +624,7 @@ def train_nomad(
                 goal_pos,
                 dataset_idx,
                 action_mask, 
+                goal_vec,
             ) = data
             
             obs_images = torch.split(obs_image, 3, dim=1)
@@ -617,13 +633,14 @@ def train_nomad(
             batch_obs_images = [transform(obs) for obs in obs_images]
             batch_obs_images = torch.cat(batch_obs_images, dim=1).to(device)
             batch_goal_images = transform(goal_image).to(device)
+            batch_goal_vec = _goal_vec_to_device(goal_vec, device)
             action_mask = action_mask.to(device)
 
             B = actions.shape[0]
 
             # Generate random goal mask
             goal_mask = (torch.rand((B,)) < goal_mask_prob).long().to(device)
-            obsgoal_cond = model("vision_encoder", obs_img=batch_obs_images, goal_img=batch_goal_images, input_goal_mask=goal_mask)
+            obsgoal_cond = model("vision_encoder", obs_img=batch_obs_images, goal_img=batch_goal_images, input_goal_mask=goal_mask, goal_vec=batch_goal_vec)
             
             # Get distance label
             distance = distance.float().to(device)
@@ -693,12 +710,18 @@ def train_nomad(
                 ema_model.step(model)
                 optimizer_step += 1
 
-            # Logging
+            # Logging. One wandb.log call per microbatch, so the three curves share a step.
+            dist_loss_cpu = dist_loss.item()
+            diffusion_loss_cpu = diffusion_loss.item()
+            dist_loss_sum += dist_loss_cpu
+            diffusion_loss_sum += diffusion_loss_cpu
             tepoch.set_postfix(loss=loss_cpu)
             if use_wandb:
-                wandb.log({"total_loss": loss_cpu})
-                wandb.log({"dist_loss": dist_loss.item()})
-                wandb.log({"diffusion_loss": diffusion_loss.item()})
+                wandb.log({
+                    "total_loss": loss_cpu,
+                    "dist_loss": dist_loss_cpu,
+                    "diffusion_loss": diffusion_loss_cpu,
+                })
 
 
             if did_step and print_log_freq != 0 and optimizer_step % print_log_freq == 0:
@@ -711,6 +734,7 @@ def train_nomad(
                             actions.to(device),
                             device,
                             action_mask.to(device),
+                            batch_goal_vec=batch_goal_vec,
                         )
                 
                 for key, value in losses.items():
@@ -745,7 +769,15 @@ def train_nomad(
                     num_images_log,
                     30,
                     use_wandb,
+                    batch_goal_vec=batch_goal_vec,
                 )
+
+    # Epoch means, printed so both loss terms stay visible in runs without wandb.
+    print(
+        f"(epoch {epoch}) train mean over {num_batches} microbatches: "
+        f"dist_loss {dist_loss_sum / num_batches:.4f}, "
+        f"diffusion_loss {diffusion_loss_sum / num_batches:.4f}"
+    )
 
 
 def evaluate_nomad(
@@ -832,6 +864,7 @@ def evaluate_nomad(
                 goal_pos,
                 dataset_idx,
                 action_mask,
+                goal_vec,
             ) = data
             
             obs_images = torch.split(obs_image, 3, dim=1)
@@ -840,6 +873,7 @@ def evaluate_nomad(
             batch_obs_images = [transform(obs) for obs in obs_images]
             batch_obs_images = torch.cat(batch_obs_images, dim=1).to(device)
             batch_goal_images = transform(goal_image).to(device)
+            batch_goal_vec = _goal_vec_to_device(goal_vec, device)
             action_mask = action_mask.to(device)
 
             B = actions.shape[0]
@@ -849,12 +883,12 @@ def evaluate_nomad(
             goal_mask = torch.ones_like(rand_goal_mask).long().to(device)
             no_mask = torch.zeros_like(rand_goal_mask).long().to(device)
 
-            rand_mask_cond = ema_model("vision_encoder", obs_img=batch_obs_images, goal_img=batch_goal_images, input_goal_mask=rand_goal_mask)
+            rand_mask_cond = ema_model("vision_encoder", obs_img=batch_obs_images, goal_img=batch_goal_images, input_goal_mask=rand_goal_mask, goal_vec=batch_goal_vec)
 
-            obsgoal_cond = ema_model("vision_encoder", obs_img=batch_obs_images, goal_img=batch_goal_images, input_goal_mask=no_mask)
+            obsgoal_cond = ema_model("vision_encoder", obs_img=batch_obs_images, goal_img=batch_goal_images, input_goal_mask=no_mask, goal_vec=batch_goal_vec)
             obsgoal_cond = obsgoal_cond.flatten(start_dim=1)
 
-            goal_mask_cond = ema_model("vision_encoder", obs_img=batch_obs_images, goal_img=batch_goal_images, input_goal_mask=goal_mask)
+            goal_mask_cond = ema_model("vision_encoder", obs_img=batch_obs_images, goal_img=batch_goal_images, input_goal_mask=goal_mask, goal_vec=batch_goal_vec)
 
             distance = distance.to(device)
 
@@ -915,6 +949,7 @@ def evaluate_nomad(
                             actions.to(device),
                             device,
                             action_mask.to(device),
+                            batch_goal_vec=batch_goal_vec,
                         )
                 
                 for key, value in losses.items():
@@ -949,6 +984,7 @@ def evaluate_nomad(
                     num_images_log,
                     30,
                     use_wandb,
+                    batch_goal_vec=batch_goal_vec,
                 )
 
 
@@ -1000,14 +1036,15 @@ def model_output(
     action_dim: int,
     num_samples: int,
     device: torch.device,
+    batch_goal_vec: Optional[torch.Tensor] = None,
 ):
     goal_mask = torch.ones((batch_goal_images.shape[0],)).long().to(device)
-    obs_cond = model("vision_encoder", obs_img=batch_obs_images, goal_img=batch_goal_images, input_goal_mask=goal_mask)
+    obs_cond = model("vision_encoder", obs_img=batch_obs_images, goal_img=batch_goal_images, input_goal_mask=goal_mask, goal_vec=batch_goal_vec)
     # obs_cond = obs_cond.flatten(start_dim=1)
     obs_cond = obs_cond.repeat_interleave(num_samples, dim=0)
 
     no_mask = torch.zeros((batch_goal_images.shape[0],)).long().to(device)
-    obsgoal_cond = model("vision_encoder", obs_img=batch_obs_images, goal_img=batch_goal_images, input_goal_mask=no_mask)
+    obsgoal_cond = model("vision_encoder", obs_img=batch_obs_images, goal_img=batch_goal_images, input_goal_mask=no_mask, goal_vec=batch_goal_vec)
     # obsgoal_cond = obsgoal_cond.flatten(start_dim=1)  
     obsgoal_cond = obsgoal_cond.repeat_interleave(num_samples, dim=0)
 
@@ -1083,6 +1120,7 @@ def visualize_diffusion_action_distribution(
     num_images_log: int,
     num_samples: int = 30,
     use_wandb: bool = True,
+    batch_goal_vec: Optional[torch.Tensor] = None,
 ):
     """Plot samples from the exploration model."""
 
@@ -1103,6 +1141,8 @@ def visualize_diffusion_action_distribution(
     batch_goal_images = batch_goal_images[:num_images_log]
     batch_action_label = batch_action_label[:num_images_log]
     batch_goal_pos = batch_goal_pos[:num_images_log]
+    if batch_goal_vec is not None:
+        batch_goal_vec = batch_goal_vec[:num_images_log]
     
     wandb_list = []
 
@@ -1112,12 +1152,16 @@ def visualize_diffusion_action_distribution(
     # split into batches
     batch_obs_images_list = torch.split(batch_obs_images, max_batch_size, dim=0)
     batch_goal_images_list = torch.split(batch_goal_images, max_batch_size, dim=0)
+    if batch_goal_vec is None:
+        batch_goal_vec_list = [None] * len(batch_obs_images_list)
+    else:
+        batch_goal_vec_list = torch.split(batch_goal_vec, max_batch_size, dim=0)
 
     uc_actions_list = []
     gc_actions_list = []
     gc_distances_list = []
 
-    for obs, goal in zip(batch_obs_images_list, batch_goal_images_list):
+    for obs, goal, goal_vec in zip(batch_obs_images_list, batch_goal_images_list, batch_goal_vec_list):
         model_output_dict = model_output(
             ema_model,
             noise_scheduler,
@@ -1127,6 +1171,7 @@ def visualize_diffusion_action_distribution(
             action_dim,
             num_samples,
             device,
+            batch_goal_vec=goal_vec,
         )
         uc_actions_list.append(to_numpy(model_output_dict['uc_actions']))
         gc_actions_list.append(to_numpy(model_output_dict['gc_actions']))
