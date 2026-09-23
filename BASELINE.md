@@ -27,3 +27,23 @@ NoMaD training on go_stanford, plus the evaluation tooling to compare runs fairl
 ## Promoted into baseline
 
 _Nothing since the 2026-09-23 restructure._ Add one line per promotion: what, from which task, commit hash.
+
+## Branches and tags (2026-09-23 restructure)
+
+Branches: `main` · `nwm-data` (local only) · `baseline` · `sim-eval` · `clip-language-goal`
+
+| Tag | Points at |
+|---|---|
+| `baseline-v0` | training setup only (32ef15e) |
+| `archive/capstone` | capstone final phase (phase6, d921ba2) |
+| `capstone/p0, p1, p2, p4, p5, p6` | each capstone phase (there was no p3) |
+| `archive/ablation-context` · `archive/ablation-image` · `archive/ablation-stride` | the three ablation branches |
+| `archive/visualization` | `feature/deeper-visualization` (b483d7a) |
+| `archive/visualization-presentation` | `feature/presentation-visuals` (fdaf17b) |
+| `archive/visualization-debug-inference` | `feature/debug-inference-pipeline` (ae32b32) |
+| `v0.1.0-debug-visuals` | `feature/debug-visual-explanations` (db3831d); older `v0.1.x-presentation-visuals` and `deeper-viz-v1` are kept |
+| `archive/behaviour-failure` | stopped experiment (086767d); `stopped/behaviour-failure-analysis` is kept |
+| `sim-eval/p0 … p7` (incl. `p3.5`) | each sim-eval phase; `sim-eval/p7` = where the `sim-eval` branch started |
+| `backup/2026-09-23/<branch>` | every pre-restructure branch — **local only, never pushed** |
+
+To restore an archived branch: `git branch <name> <tag>`.
