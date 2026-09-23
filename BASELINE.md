@@ -26,7 +26,9 @@ NoMaD training on go_stanford, plus the evaluation tooling to compare runs fairl
 
 ## Promoted into baseline
 
-_Nothing since the 2026-09-23 restructure._ Add one line per promotion: what, from which task, commit hash.
+Add one line per promotion: what, from which task, commit hash.
+
+- Train with `use_wandb: False` and/or `num_workers: 0`: `persistent_workers` only when workers > 0 (`train.py`), every NoMaD `wandb.log` guarded by `use_wandb` (`train_nomad`, `evaluate_nomad`, `train_eval_loop_nomad`). From the restructure smoke runs. 41dde75
 
 ## Branches and tags (2026-09-23 restructure)
 
