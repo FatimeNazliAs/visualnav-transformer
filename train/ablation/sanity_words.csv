@@ -1,0 +1,23 @@
+# labeled by visual inspection (Claude), candidate frames from CLIP ViT-B/32 zero-shot (seed=42);
+# test-split goal frames, one clearly visible GOAL_WORDS object each; for the Phase 2 sanity check only
+traj_id,frame_idx,word
+no14vc_16_1,43,poster
+sim4hF_0_8,58,column
+no28vcF_12_1,68,screen
+no28vcF_12_1,18,stairs
+sim3h_1_2,73,poster
+sim3h_1_2,23,column
+no2vcF_73_0,13,door
+sim31h_0_16,73,chair
+no23vc_24_0,28,window
+sim12hF_1_8,18,door
+no29vc_27_0,73,plant
+no4vc_5_0,73,chair
+no7vc_27_0,48,table
+no6vcF_90_0,478,whiteboard
+no13vcF_14_0,93,counter
+no9vcF_74_0,33,railing
+sim3h_1_3,23,window
+sim35hF_0_0,88,cabinet
+sim21h_2_1,163,sofa
+sim13hF_0_9,38,sofa
