@@ -1,22 +1,23 @@
 #!/usr/bin/env bash
-# Launch the Phase 2 CLIP-goal training run (config/nomad_clip.yaml). Run this from the
+# Launch the Phase 2b CLIP-goal training run (config/nomad_clip.yaml). Run this from the
 # HOST, from the repo root.
 #
-#   ./train/ablation/run_clip_train.sh            # launch in screen "nomad_clip"
+#   ./train/ablation/run_clip_train.sh            # launch in screen "nomad_clip_2b"
 #   ./train/ablation/run_clip_train.sh --status   # process, GPU and newest log
+#   CONFIG=... SCREEN_NAME=... ./train/ablation/run_clip_train.sh   # e.g. the diagnostic run
 #
 # The run lives in a detached screen session that holds a foreground docker exec, so it
 # survives SSH disconnects. train.py creates the run folder itself:
-#   /outputs/nomad_clip_v2/clip_vitb32_<timestamp>/   (checkpoints, ema_*.pth)
-# and the console log goes to /outputs/nomad_clip_v2/logs/train_<stamp>.log.
+#   /outputs/nomad_clip_v2b/<run_name>_<timestamp>/   (checkpoints, ema_*.pth)
+# and the console log goes to /outputs/nomad_clip_v2b/logs/train_<stamp>.log.
 set -euo pipefail
 
 CONTAINER=naz_nomad_clip
-SCREEN_NAME=nomad_clip
-CONFIG=config/nomad_clip.yaml
+SCREEN_NAME=${SCREEN_NAME:-nomad_clip_2b}
+CONFIG=${CONFIG:-config/nomad_clip.yaml}
 HOST_OUTPUTS=/mnt/shared_disk/nazli/nomad_outputs
-LOG_DIR=/outputs/nomad_clip_v2/logs
-HOST_LOG_DIR="${HOST_OUTPUTS}/nomad_clip_v2/logs"
+LOG_DIR=/outputs/nomad_clip_v2b/logs
+HOST_LOG_DIR="${HOST_OUTPUTS}/nomad_clip_v2b/logs"
 
 if [ "${1:-}" = "--status" ]; then
     echo "== training processes in ${CONTAINER} =="
@@ -67,13 +68,13 @@ echo \"[\$(date '+%F %T')] train.py exited with \${PIPESTATUS[0]}\" | tee -a ${l
 # printf %q quotes $inner for the screen's own bash, so it reaches the container's bash
 # verbatim ($(date) and PIPESTATUS expand there, not on the host). The trailing
 # `exec bash` keeps the screen open after training ends, so the last output stays
-# readable with `screen -r nomad_clip`.
+# readable with `screen -r ${SCREEN_NAME}`.
 screen -dmS "${SCREEN_NAME}" bash -c "docker exec ${CONTAINER} bash -c $(printf '%q' "${inner}"); exec bash"
 
 echo "Launched in screen ${SCREEN_NAME} (container ${CONTAINER}, GPU1)."
 echo
 echo "  Log     : ${HOST_LOG_DIR}/train_${stamp}.log"
-echo "  Run dir : ${HOST_OUTPUTS}/nomad_clip_v2/clip_vitb32_<timestamp>/"
+echo "  Run dir : ${HOST_OUTPUTS}/nomad_clip_v2b/<run_name>_<timestamp>/"
 echo "  Attach  : screen -r ${SCREEN_NAME}   (detach: Ctrl-a d)"
 echo "  Status  : $0 --status"
 echo "  Stop    : docker exec ${CONTAINER} pkill -f 'train.py -c ${CONFIG}'"

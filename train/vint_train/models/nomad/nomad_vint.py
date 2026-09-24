@@ -22,7 +22,7 @@ class NoMaD_ViNT(nn.Module):
         NoMaD ViNT Encoder class
 
         goal_type "image" builds the stock 6-channel obs+goal EfficientNet goal encoder.
-        goal_type "clip" builds only a Linear adapter from a precomputed, centred CLIP
+        goal_type "clip" builds only a Linear + LayerNorm adapter from a precomputed, centred CLIP
         embedding (clip_embed_dim) to the goal token, and expects goal_vec in forward.
         """
         super().__init__()
@@ -44,6 +44,9 @@ class NoMaD_ViNT(nn.Module):
         # Initialize the goal encoder
         if self.goal_type == "clip":
             self.clip_goal_proj = nn.Linear(clip_embed_dim, self.goal_encoding_size)
+            # Unit per-element variance -> token norm ~sqrt(goal_encoding_size) = 16, the scale of
+            # the positional encoding added to it (~11.3). The Linear alone gave ~0.8 (Phase 2).
+            self.clip_goal_norm = nn.LayerNorm(self.goal_encoding_size)
         else:
             self.goal_encoder = EfficientNet.from_name("efficientnet-b0", in_channels=6) # obs+goal
             self.goal_encoder = replace_bn_with_gn(self.goal_encoder)
@@ -91,7 +94,7 @@ class NoMaD_ViNT(nn.Module):
 
         # Get the goal encoding: one [B, 1, goal_encoding_size] token in either mode
         if goal_vec is not None:
-            goal_encoding = self.clip_goal_proj(goal_vec).unsqueeze(1)
+            goal_encoding = self.clip_goal_norm(self.clip_goal_proj(goal_vec)).unsqueeze(1)
         else:
             goal_encoding = self._encode_image_goal(obs_img, goal_img)
         assert goal_encoding.shape[1:] == (1, self.goal_encoding_size)

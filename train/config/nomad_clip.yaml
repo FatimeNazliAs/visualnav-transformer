@@ -1,8 +1,8 @@
-project_name: nomad_clip_v2
-run_name: clip_vitb32
+project_name: nomad_clip_v2b
+run_name: clip_vitb32_ln
 wandb_entity: fnazlias
 # training setup
-use_wandb: False # V2 run: console log only (WANDB_MODE=disabled also set by the launcher)
+use_wandb: False # V2b run: console log only (WANDB_MODE=disabled also set by the launcher)
 train: True
 batch_size: 32                    # microbatch; 32 x 8 = 256 effective
 gradient_accumulation_steps: 8    # effective batch = 32 x 8 = 256 (same in every arm)
@@ -38,7 +38,7 @@ down_dims: [64, 128, 256]
 # diffusion model params
 num_diffusion_iters: 10
 
-# goal: frozen CLIP embedding of the goal frame -> Linear(512 -> encoding_size) goal token,
+# goal: frozen CLIP embedding of the goal frame -> Linear(512 -> encoding_size) + LayerNorm goal token,
 # replacing the 6-channel obs+goal EfficientNet. Embeddings and the modality means come from
 # precompute_clip_embeddings.py (raw in the cache; centred at load by clip_goal_utils.prep).
 goal_type: clip

@@ -45,10 +45,9 @@ from sanity_clip_gap import load_case_inputs, read_cases, sample_waypoints
 ARMS = {
     "v1": ("config/nomad_ctx03.yaml",
            "/outputs/nomad_ctx_ablation/ctx03_2026_08_31_17_47_18/ema_29.pth"),
-    "clip": ("config/nomad_clip.yaml",
-             "/outputs/nomad_clip_v2/clip_vitb32_2026_09_23_17_58_18/ema_29.pth"),
+    "clip": ("config/nomad_clip.yaml", None),  # checkpoint from --clip-checkpoint
 }
-DEFAULT_OUTPUT_DIR = "/outputs/nomad_clip_v2/diag_goal_usage"
+DEFAULT_OUTPUT_DIR = "/outputs/nomad_clip_v2b/diag_goal_usage"
 
 
 def goal_vec_or_none(vec):
@@ -67,7 +66,8 @@ class TokenProbe:
     def __init__(self, encoder):
         self.encoder = encoder
         self.obs_norms, self.goal_norms, self.goal_attention = [], [], []
-        goal_module = encoder.clip_goal_proj if encoder.goal_type == "clip" else encoder.compress_goal_enc
+        # The module whose output is the goal token entering the transformer.
+        goal_module = encoder.clip_goal_norm if encoder.goal_type == "clip" else encoder.compress_goal_enc
         encoder.compress_obs_enc.register_forward_hook(
             lambda m, i, out: self.obs_norms.append(out.norm(dim=-1).flatten().cpu()))
         goal_module.register_forward_hook(
@@ -214,7 +214,12 @@ def main():
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--goal-offset", type=int, default=10)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--clip-checkpoint", required=True)
+    parser.add_argument("--v1-checkpoint", default=ARMS["v1"][1],
+                        help="e.g. V1's ema_1.pth, for a same-epoch reference")
     args = parser.parse_args()
+    ARMS["v1"] = (ARMS["v1"][0], args.v1_checkpoint)
+    ARMS["clip"] = (ARMS["clip"][0], args.clip_checkpoint)
 
     summary_path = os.path.join(args.output_dir, "summary.txt")
     if os.path.exists(summary_path):
