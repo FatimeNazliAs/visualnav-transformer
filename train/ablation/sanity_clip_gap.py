@@ -110,7 +110,8 @@ def load_case_inputs(dataset, case, goal_offset, device):
         [IMAGENET_TRANSFORM(obs) for obs in torch.split(obs_image, 3, dim=0)]
     ).unsqueeze(0).to(device)
     goal_image = IMAGENET_TRANSFORM(dataset._load_image(traj_id, goal_time)).unsqueeze(0).to(device)
-    img_goal_vec = dataset._load_goal_vec(traj_id, goal_time).unsqueeze(0).to(device)
+    # The current frame is only read when the dataset's clip_fusion is set.
+    img_goal_vec = dataset._load_goal_vec(traj_id, goal_time, traj_id, curr_time).unsqueeze(0).to(device)
     gt_actions, _ = dataset._compute_actions(traj_data, curr_time, goal_time)
     return obs_image, goal_image, img_goal_vec, np.asarray(gt_actions[:, :2], dtype=np.float64)
 

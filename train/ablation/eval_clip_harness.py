@@ -235,6 +235,10 @@ def score_model(config, checkpoint, goal_sources, device, max_batches):
                         vec = goal_vec.to(device)
                     else:
                         vec = source[first:first + size].to(device)
+                        if goal_vec.dim() == 3:
+                            # Fused (clip_fusion) model: goal_vec is (current, goal); keep the
+                            # loader's current frame and swap in this config's goal.
+                            vec = torch.stack([goal_vec[:, 0].to(device), vec], dim=1)
                     # Same sampler noise for every config on this batch.
                     _seed_sampler(SEED, batch_index)
                     outputs = model_output(

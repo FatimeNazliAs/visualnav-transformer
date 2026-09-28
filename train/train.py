@@ -137,6 +137,7 @@ def main(config):
                         clip_cache=config.get("clip_cache"),
                         clip_mu_img=config.get("clip_mu_img"),
                         clip_center=config.get("clip_center", True),
+                        clip_fusion=config.get("clip_fusion", "none"),
                     )
                     if data_split_type == "train":
                         train_dataset.append(dataset)
@@ -200,6 +201,7 @@ def main(config):
                 mha_num_attention_layers=config["mha_num_attention_layers"],
                 mha_ff_dim_factor=config["mha_ff_dim_factor"],
                 goal_type=config["goal_type"],
+                clip_fusion=config.get("clip_fusion", "none"),
             )
             vision_encoder = replace_bn_with_gn(vision_encoder)
         elif config["vision_encoder"] == "vib": 

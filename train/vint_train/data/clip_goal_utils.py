@@ -107,6 +107,22 @@ def modality_mean(embeddings: torch.Tensor) -> torch.Tensor:
     return l2_normalize(embeddings).mean(dim=0)
 
 
+# clip_fusion modes: how the current frame's embedding o joins the goal embedding g.
+# "none" is the Phase 2b goal-only token; the others feed the adapter fusion_features-style
+# inputs (see NoMaD_ViNT).
+CLIP_FUSIONS = ("none", "interaction", "concat_linear")
+
+
+def fusion_features(o: torch.Tensor, g: torch.Tensor) -> torch.Tensor:
+    """[o, g, o*g, o-g] over the last dim (4 x 512 = 2048 for ViT-B/32).
+
+    Both inputs are centred embeddings (prep). The product and difference terms let a
+    downstream MLP read obs<->goal similarity directly, which a Linear over [o, g] (purely
+    additive: W1 o + W2 g) cannot express.
+    """
+    return torch.cat([o, g, o * g, o - g], dim=-1)
+
+
 def cache_key(traj_name: str, time: int) -> bytes:
     """LMDB key of one frame's CLIP image embedding."""
     return f"{traj_name}/{time}".encode()

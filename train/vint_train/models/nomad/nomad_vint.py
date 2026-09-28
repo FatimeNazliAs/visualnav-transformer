@@ -5,6 +5,7 @@ import torchvision
 from typing import List, Dict, Optional, Tuple, Callable
 from efficientnet_pytorch import EfficientNet
 from vint_train.models.vint.self_attention import PositionalEncoding
+from vint_train.data.clip_goal_utils import CLIP_FUSIONS, fusion_features
 
 class NoMaD_ViNT(nn.Module):
     def __init__(
@@ -17,6 +18,7 @@ class NoMaD_ViNT(nn.Module):
         mha_ff_dim_factor: Optional[int] = 4,
         goal_type: str = "image",
         clip_embed_dim: int = 512,
+        clip_fusion: str = "none",
     ) -> None:
         """
         NoMaD ViNT Encoder class
@@ -24,6 +26,11 @@ class NoMaD_ViNT(nn.Module):
         goal_type "image" builds the stock 6-channel obs+goal EfficientNet goal encoder.
         goal_type "clip" builds only a Linear + LayerNorm adapter from a precomputed, centred CLIP
         embedding (clip_embed_dim) to the goal token, and expects goal_vec in forward.
+        clip_fusion (goal_type "clip" only) says whether that token also sees the current frame:
+            "none"           goal_vec [B, clip_embed_dim]; Linear + LayerNorm (Phase 2b).
+            "interaction"    goal_vec [B, 2, clip_embed_dim] = (current frame o, goal g);
+                             MLP([o, g, o*g, o-g]) + LayerNorm.
+            "concat_linear"  same goal_vec; Linear([o, g]) + LayerNorm (additive only).
         """
         super().__init__()
         self.obs_encoding_size = obs_encoding_size
@@ -31,6 +38,10 @@ class NoMaD_ViNT(nn.Module):
         self.context_size = context_size
         assert goal_type in {"image", "clip"}, f"goal_type must be image or clip, not {goal_type}"
         self.goal_type = goal_type
+        assert clip_fusion in CLIP_FUSIONS, f"clip_fusion must be one of {CLIP_FUSIONS}, not {clip_fusion}"
+        assert clip_fusion == "none" or goal_type == "clip", "clip_fusion needs goal_type clip"
+        self.clip_fusion = clip_fusion
+        self.clip_embed_dim = clip_embed_dim
 
         # Initialize the observation encoder
         if obs_encoder.split("-")[0] == "efficientnet":
@@ -43,7 +54,18 @@ class NoMaD_ViNT(nn.Module):
         
         # Initialize the goal encoder
         if self.goal_type == "clip":
-            self.clip_goal_proj = nn.Linear(clip_embed_dim, self.goal_encoding_size)
+            if self.clip_fusion == "none":
+                self.clip_goal_proj = nn.Linear(clip_embed_dim, self.goal_encoding_size)
+            elif self.clip_fusion == "interaction":
+                # The product/difference terms give the token obs<->goal similarity, the
+                # current-frame signal the distance head lacked in Phase 2b.
+                self.clip_fusion_proj = nn.Sequential(
+                    nn.Linear(4 * clip_embed_dim, 512),
+                    nn.GELU(),
+                    nn.Linear(512, self.goal_encoding_size),
+                )
+            else:
+                self.clip_fusion_proj = nn.Linear(2 * clip_embed_dim, self.goal_encoding_size)
             # Unit per-element variance -> token norm ~sqrt(goal_encoding_size) = 16, the scale of
             # the positional encoding added to it (~11.3). The Linear alone gave ~0.8 (Phase 2).
             self.clip_goal_norm = nn.LayerNorm(self.goal_encoding_size)
@@ -94,7 +116,7 @@ class NoMaD_ViNT(nn.Module):
 
         # Get the goal encoding: one [B, 1, goal_encoding_size] token in either mode
         if goal_vec is not None:
-            goal_encoding = self.clip_goal_norm(self.clip_goal_proj(goal_vec)).unsqueeze(1)
+            goal_encoding = self._encode_clip_goal(goal_vec)
         else:
             goal_encoding = self._encode_image_goal(obs_img, goal_img)
         assert goal_encoding.shape[1:] == (1, self.goal_encoding_size)
@@ -132,6 +154,19 @@ class NoMaD_ViNT(nn.Module):
         obs_encoding_tokens = torch.mean(obs_encoding_tokens, dim=1)
 
         return obs_encoding_tokens
+
+    def _encode_clip_goal(self, goal_vec: torch.Tensor) -> torch.Tensor:
+        """CLIP goal token [B, 1, goal_encoding_size] from goal_vec (shape per clip_fusion)."""
+        if self.clip_fusion == "none":
+            return self.clip_goal_norm(self.clip_goal_proj(goal_vec)).unsqueeze(1)
+        assert goal_vec.shape[1:] == (2, self.clip_embed_dim), \
+            f"clip_fusion {self.clip_fusion} needs goal_vec [B, 2, {self.clip_embed_dim}], got {tuple(goal_vec.shape)}"
+        o, g = goal_vec[:, 0], goal_vec[:, 1]
+        if self.clip_fusion == "interaction":
+            features = fusion_features(o, g)
+        else:
+            features = torch.cat([o, g], dim=-1)
+        return self.clip_goal_norm(self.clip_fusion_proj(features)).unsqueeze(1)
 
     def _encode_image_goal(self, obs_img: torch.Tensor, goal_img: torch.Tensor) -> torch.Tensor:
         """Stock goal token: the 6-channel EfficientNet over the current frame + goal image."""

@@ -46,6 +46,7 @@ class ViNT_Dataset(Dataset):
         clip_cache: Optional[str] = None,
         clip_mu_img: Optional[str] = None,
         clip_center: bool = True,
+        clip_fusion: str = "none",
     ):
         """
         Main ViNT dataset class
@@ -83,6 +84,9 @@ class ViNT_Dataset(Dataset):
                 Required when goal_type is "clip" and clip_center is set.
             clip_center (bool): centre the goal embedding on clip_mu_img (closing the CLIP
                 modality gap); if False it is only L2-normalised.
+            clip_fusion (str): "none" returns the goal embedding alone as goal_vec [512];
+                anything else stacks the current frame's (the last context frame's) embedding
+                in front of it, goal_vec [2, 512] = (current, goal), for NoMaD_ViNT's fusion.
         """
         self.data_folder = data_folder
         self.data_split_folder = data_split_folder
@@ -137,6 +141,8 @@ class ViNT_Dataset(Dataset):
         self.goal_type = goal_type
         self.clip_cache_path = clip_cache
         self.clip_center = clip_center
+        assert clip_fusion == "none" or goal_type == "clip", "clip_fusion needs goal_type clip"
+        self.clip_fusion = clip_fusion
         if self.goal_type == "clip":
             assert clip_cache is not None, "goal_type clip needs clip_cache"
             assert clip_mu_img is not None or not clip_center, "clip_center needs clip_mu_img"
@@ -312,14 +318,23 @@ class ViNT_Dataset(Dataset):
         except TypeError:
             print(f"Failed to load image {image_path}")
 
-    def _load_goal_vec(self, trajectory_name, time) -> torch.Tensor:
+    def _load_goal_vec(self, trajectory_name, time, curr_trajectory_name=None, curr_time=None) -> torch.Tensor:
         """The goal frame's CLIP embedding, [512], ready for the goal adapter.
 
+        With clip_fusion set, the current frame's embedding is stacked in front: [2, 512].
         Centred on clip_mu_img (or only normalised if clip_center is off). In image mode
         it is an empty placeholder, so the returned tuple has the same shape in both modes.
         """
         if self.goal_type != "clip":
             return torch.zeros(0)
+        goal = self._load_clip_embedding(trajectory_name, time)
+        if self.clip_fusion == "none":
+            return goal
+        assert curr_trajectory_name is not None, f"clip_fusion {self.clip_fusion} needs the current frame"
+        return torch.stack([self._load_clip_embedding(curr_trajectory_name, curr_time), goal])
+
+    def _load_clip_embedding(self, trajectory_name, time) -> torch.Tensor:
+        """One frame's cached CLIP image embedding, centred: [512]."""
         with self._clip_cache.begin() as txn:
             buffer = txn.get(cache_key(trajectory_name, time))
         assert buffer is not None, f"No CLIP embedding for {trajectory_name}/{time} in {self.clip_cache_path}"
@@ -413,7 +428,8 @@ class ViNT_Dataset(Dataset):
                 action_label (torch.Tensor): tensor of shape (5, 2) or (5, 4) (if training with angle) containing the action labels from the observation to the goal
                 which_dataset (torch.Tensor): index of the datapoint in the dataset [for identifying the dataset for visualization when using multiple datasets]
                 action_mask (torch.Tensor): 1 if the action label is valid for this goal
-                goal_vec (torch.Tensor): [512] centred CLIP goal embedding if goal_type is "clip", else empty
+                goal_vec (torch.Tensor): [512] centred CLIP goal embedding if goal_type is "clip"
+                    ([2, 512] with the current frame's in front if clip_fusion is set), else empty
         """
         f_curr, curr_time, max_goal_dist = self.index_to_data[i]
         f_goal, goal_time, goal_is_negative = self._sample_goal(f_curr, curr_time, max_goal_dist)
@@ -468,5 +484,6 @@ class ViNT_Dataset(Dataset):
             torch.as_tensor(goal_pos, dtype=torch.float32),
             torch.as_tensor(self.dataset_index, dtype=torch.int64),
             torch.as_tensor(action_mask, dtype=torch.float32),
-            self._load_goal_vec(f_goal, goal_time),
+            # curr_time is the last context frame (_context_times ends at it).
+            self._load_goal_vec(f_goal, goal_time, f_curr, curr_time),
         )

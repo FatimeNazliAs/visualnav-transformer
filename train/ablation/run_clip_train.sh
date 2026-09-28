@@ -5,19 +5,22 @@
 #   ./train/ablation/run_clip_train.sh            # launch in screen "nomad_clip_2b"
 #   ./train/ablation/run_clip_train.sh --status   # process, GPU and newest log
 #   CONFIG=... SCREEN_NAME=... ./train/ablation/run_clip_train.sh   # e.g. the diagnostic run
+#   PROJECT=nomad_clip_v6 CONFIG=config/nomad_clip_v6.yaml SCREEN_NAME=nomad_clip_6 ...   # Phase 6
 #
 # The run lives in a detached screen session that holds a foreground docker exec, so it
 # survives SSH disconnects. train.py creates the run folder itself:
-#   /outputs/nomad_clip_v2b/<run_name>_<timestamp>/   (checkpoints, ema_*.pth)
-# and the console log goes to /outputs/nomad_clip_v2b/logs/train_<stamp>.log.
+#   /outputs/<PROJECT>/<run_name>_<timestamp>/   (checkpoints, ema_*.pth)
+# and the console log goes to /outputs/<PROJECT>/logs/train_<stamp>.log. PROJECT must match
+# the config's project_name (default nomad_clip_v2b).
 set -euo pipefail
 
 CONTAINER=naz_nomad_clip
 SCREEN_NAME=${SCREEN_NAME:-nomad_clip_2b}
 CONFIG=${CONFIG:-config/nomad_clip.yaml}
 HOST_OUTPUTS=/mnt/shared_disk/nazli/nomad_outputs
-LOG_DIR=/outputs/nomad_clip_v2b/logs
-HOST_LOG_DIR="${HOST_OUTPUTS}/nomad_clip_v2b/logs"
+PROJECT=${PROJECT:-nomad_clip_v2b}
+LOG_DIR=/outputs/${PROJECT}/logs
+HOST_LOG_DIR="${HOST_OUTPUTS}/${PROJECT}/logs"
 
 if [ "${1:-}" = "--status" ]; then
     echo "== training processes in ${CONTAINER} =="
@@ -74,7 +77,7 @@ screen -dmS "${SCREEN_NAME}" bash -c "docker exec ${CONTAINER} bash -c $(printf 
 echo "Launched in screen ${SCREEN_NAME} (container ${CONTAINER}, GPU1)."
 echo
 echo "  Log     : ${HOST_LOG_DIR}/train_${stamp}.log"
-echo "  Run dir : ${HOST_OUTPUTS}/nomad_clip_v2b/<run_name>_<timestamp>/"
+echo "  Run dir : ${HOST_OUTPUTS}/${PROJECT}/<run_name>_<timestamp>/"
 echo "  Attach  : screen -r ${SCREEN_NAME}   (detach: Ctrl-a d)"
 echo "  Status  : $0 --status"
 echo "  Stop    : docker exec ${CONTAINER} pkill -f 'train.py -c ${CONFIG}'"

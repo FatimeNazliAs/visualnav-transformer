@@ -215,11 +215,13 @@ def main():
     parser.add_argument("--goal-offset", type=int, default=10)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--clip-checkpoint", required=True)
+    parser.add_argument("--clip-config", default=ARMS["clip"][0],
+                        help="e.g. config/nomad_clip_v6.yaml for the fused (V4) model")
     parser.add_argument("--v1-checkpoint", default=ARMS["v1"][1],
                         help="e.g. V1's ema_1.pth, for a same-epoch reference")
     args = parser.parse_args()
     ARMS["v1"] = (ARMS["v1"][0], args.v1_checkpoint)
-    ARMS["clip"] = (ARMS["clip"][0], args.clip_checkpoint)
+    ARMS["clip"] = (args.clip_config, args.clip_checkpoint)
 
     summary_path = os.path.join(args.output_dir, "summary.txt")
     if os.path.exists(summary_path):

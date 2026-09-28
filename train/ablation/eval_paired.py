@@ -159,6 +159,7 @@ def build_model(config, device):
             mha_num_attention_layers=config["mha_num_attention_layers"],
             mha_ff_dim_factor=config["mha_ff_dim_factor"],
             goal_type=config["goal_type"],
+            clip_fusion=config.get("clip_fusion", "none"),
         )
     )
     noise_pred_net = ConditionalUnet1D(
@@ -208,6 +209,7 @@ def build_test_loader(config, batch_size):
         clip_cache=config.get("clip_cache"),
         clip_mu_img=config.get("clip_mu_img"),
         clip_center=config.get("clip_center", True),
+        clip_fusion=config.get("clip_fusion", "none"),
     )
     # shuffle=False and num_workers=0 keep the sample order, the sampled goals and the
     # negatives identical across runs, which is what makes the paired comparison valid.
