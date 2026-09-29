@@ -1,0 +1,35 @@
+# ==============================================================================
+# sim_eval/configs/p7_4_clips.yaml — the P7 clips: exact episodes, re-filmed.
+#
+# Each clip is one task under one seed offset, run by each arm it names under
+# that arm's own scoring config — so the film is the scored episode again, not
+# a new draw. p7_4_film.py checks every re-film against its logged row and
+# flags any that differ. The caption on every frame gives the task's success
+# across all its seeds, read from the scored tables, so one episode is never
+# read as the whole task.
+#
+#     ./sim_eval/run_p7_4_film.sh
+# ==============================================================================
+directory: outputs/p7_4_clips
+fps: 10
+
+clips:
+  - task: Denmark_14          # the Denmark null: every seed goes clean_stock's way
+    seed_offset: 0
+    arms: {best_combined: p7_3_e2.yaml, clean_stock: p7_3_e2.yaml}
+
+  - task: Rs_16               # the Rs edge: every seed goes best_combined's way
+    seed_offset: 0
+    arms: {best_combined: p7_3_e2.yaml, clean_stock: p7_3_e2.yaml}
+
+  - task: Maben_19            # the Maben edge: bc 3/3, clean_stock wedges every seed
+    seed_offset: 0
+    arms: {best_combined: p7_3_e2.yaml, clean_stock: p7_3_e2.yaml}
+
+  - task: Rs_05               # shared failure: both leave the corridor (>1.3 m) and wedge
+    seed_offset: 100000
+    arms: {best_combined: p7_3_e2.yaml, clean_stock: p7_3_e2.yaml}
+
+  - task: Rs_04               # the epoch contrast: bc30 3/3, best_combined@100 1/3.
+    seed_offset: 0            # E1's set holds P6's Rs_04; E2 adopted the same trail.
+    arms: {bc30: p7_2_e1.yaml, best_combined: p7_3_e2.yaml}

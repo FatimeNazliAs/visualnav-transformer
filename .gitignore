@@ -152,3 +152,6 @@ dmypy.json
 train/logs
 # ablation per-sample score caches (live under /outputs, never in the repo)
 *.npz
+
+# closed-loop sim evaluation: rendered frames, videos, metric logs
+sim_eval/outputs/

@@ -1,0 +1,83 @@
+# ==============================================================================
+# sim_eval/configs/topomap.yaml — how a reference-path topomap gets built.
+#
+# Every knob P2 has is here (plan §5): which house, where the trail starts and
+# ends, and how far apart its nodes are. Scaling to more houses and more trails
+# (plan §9, P6/P7) is edits to this file, not to `topomap_builder.py`.
+# ==============================================================================
+
+# --- the world ---------------------------------------------------------------
+# `scene_config` is the iGibson world the trail is driven in — the same file
+# the bridge drives in, so the topomap and the rollout share one physics,
+# camera and robot setup by construction.
+#
+# `scene_id` overrides that file's own scene, so a second house costs one line
+# here rather than a copied world config. The resolved world is written beside
+# the trail as `world.yaml`, which is what actually gets loaded, so a topomap
+# always carries the exact world it was built in.
+scene_config: configs/locobot_rs_bridge.yaml
+scene_id: null          # null = whatever scene_config says (Rs)
+floor: 0
+
+# --- where the trail runs ----------------------------------------------------
+# Both null = sample a start/goal pair (see `sampler`). Give both as [x, y] in
+# world metres to pin a specific trail; the builder refuses one without the
+# other, because half a pair is not a task.
+start: null
+goal: null
+
+# The sampler's RNG, and the whole trail's reproducibility: iGibson samples
+# points through numpy's global RNG, so the same seed in the same scene gives
+# the same trail. P3 fixes one seed per task (plan §7).
+seed: 0
+
+sampler:
+  # "Connected by the nav mesh, and neither trivial nor impossible" (plan §5).
+  # Rs is ~10x10 m and its longest geodesic is about 7.7 m, so 3-8 m keeps
+  # roughly the top half of the distribution. A larger house wants larger
+  # numbers — that is what makes this a knob.
+  min_geodesic_m: 3.0
+  max_geodesic_m: 8.0
+  max_attempts: 200
+
+# --- the difficulty dial -----------------------------------------------------
+# The "edge length": one topomap node every N control ticks. At the robot's
+# 4 Hz this is N/4 seconds of driving per node, which is exactly what
+# create_topomap.py's `--dt` means on the real robot (its default is 1.0 s, so
+# 4 ticks). Fewer ticks = a denser trail = an easier task; more = a sparser
+# trail the model has to bridge on its own.
+spacing_ticks: 4
+
+# Safety cap on driving the reference path. 400 ticks is 100 s at 4 Hz — far
+# past what an 8 m path needs at 0.2 m/s, so hitting it means something is
+# wrong, not that the path was long.
+max_ticks: 400
+
+# --- what counts as a usable trail -------------------------------------------
+# A pair that *plans* is not automatically a pair that *drives*. Gibson's
+# traversability maps come from floor plans and do not always know about the
+# furniture in the mesh — Rs marks a patch of living room traversable that the
+# robot physically climbs onto — so a trail is accepted on the evidence of the
+# drive, and a sampled pair that fails is simply thrown back.
+acceptance:
+  # Only for sampled pairs; a configured pair gets exactly one try. About one
+  # planned path in three to one in nine survives the drive in Rs, so this is
+  # 25 rather than a handful — a rejected attempt costs a few seconds of sim,
+  # a rejected seed costs a task.
+  drive_attempts: 25
+  max_collision_ticks: 0   # the reference path is the perfect path
+  # 5 s at 4 Hz having neither moved nor turned = wedged, give up early.
+  # Turning has to count: lining up with the path from a start pose facing the
+  # wrong way takes up to pi / max_w = 7.9 s of pure rotation, which on
+  # translation alone looks exactly like being stuck.
+  stuck_ticks: 20
+  stuck_progress_m: 0.05
+  stuck_progress_rad: 0.2
+
+# --- how the path is followed ------------------------------------------------
+# Not a tuned policy and not NoMaD's controller: the smallest follower that
+# tracks the planned polyline inside the robot's own limits. See path_follow.py.
+follower:
+  lookahead_m: 0.5
+  arrival_radius_m: 0.2
+  turn_in_place_rad: 0.5

@@ -1,0 +1,57 @@
+# ==============================================================================
+# sim_eval/configs/p6_headline.yaml — the headline run (plan §9, P6).
+#
+# best_combined@100 against clean_stock@100 on 2 houses x 10 trails. Only what
+# is different about this run is written here; everything else — the episode
+# rules, the timeout formula, the driver — comes from `eval.yaml`, so both arms
+# and every earlier phase share one definition of them (plan §7).
+#
+# Run with ./sim_eval/run_p6_headline.sh, which builds the task set once and
+# then scores each checkpoint against it, one per free GPU.
+# ==============================================================================
+extends: eval.yaml
+
+# --- which problems ----------------------------------------------------------
+# Plan decision B: two houses, ten trails each, one fixed seeded set that both
+# checkpoints face. Rs is scene index 0 (seeds 1000-1009), the second house
+# index 1 (seeds 2000-2009) — see task_set.SEEDS_PER_SCENE. A new directory,
+# not P3's: a task set is immutable once scored against, and this is a
+# different set.
+task_set:
+  scenes: [Rs, Maben]
+  tasks_per_scene: 10
+  directory: outputs/p6_0_task_set
+
+  # Raised from topomap.yaml's 25, which is tuned to Rs and is too small for
+  # Maben. The first build of this set refused at Maben_04, and that task turns
+  # out to need 37 attempts: 36 sampled pairs in a row plan a route through
+  # something the traversability map does not know about. Maben's nav mesh
+  # disagrees with its furniture more often than Rs's does, and the drive is
+  # what settles it, so the budget has to cover the worst task rather than the
+  # typical one. Verified deterministic — the same seed rejects the same 36
+  # pairs and accepts the same trail on every run.
+  #
+  # `overrides` is a shallow update over topomap.yaml's knobs, so the whole
+  # `acceptance` block is restated: naming only `drive_attempts` would drop the
+  # rest. Every other value is topomap.yaml's own. It applies to both houses
+  # equally, so it changes which trails exist, never how an arm is measured.
+  overrides:
+    acceptance:
+      drive_attempts: 100
+      max_collision_ticks: 0
+      stuck_ticks: 20
+      stuck_progress_m: 0.05
+      stuck_progress_rad: 0.2
+
+# --- watching the runs (plan §11: a watchable video for every run) -----------
+recording:
+  enabled: true
+  tasks: all
+  directory: outputs/p6_1_videos
+
+# --- what gets scored --------------------------------------------------------
+# In GPU order: with both GPUs free the launcher puts the first on GPU 0 and
+# the second on GPU 1 (plan §3c).
+checkpoints: [best_combined, clean_stock]
+
+output_dir: outputs/p6_1_metrics

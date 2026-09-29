@@ -1,0 +1,101 @@
+# ==============================================================================
+# sim_eval/configs/word_goal.yaml — the language-goal sim (Phase 7): does the
+# robot drive to a *word*?
+#
+# Single-goal mode (run_eval.py `mode: object_goal`): every episode is one
+# start pose and one goal — a word, a photo of the target, or no goal — with
+# no topomap. Success is object-reach: within 1 m (geodesic) of the outline of
+# the nearest instance of the task's word, before the timeout. Objects are the
+# hand-annotated footprints in object_annotations.yaml.
+#
+# The pilot (for the 2026-10-01 advisor meeting): one house, two words, the
+# three arms below on the same tasks and seeds.
+#
+#     clip_v2b+word    the model given the word (V3, the headline)
+#     clip_v2b+masked  the same model given no goal (the key control: does the
+#                      word do anything?)
+#     ctx03+photo      vanilla NoMaD given a photo of the target (V1, the
+#                      reference; it is told *which* instance)
+#
+# G7.2 calibrates the tasks first with ctx03+photo vs ctx03+masked, passed as
+# --arm; ctx03+masked is a calibration arm only and is not in `arms:`.
+#
+#     ./sim_eval/run_lg7.sh run_eval.py --config sim_eval/configs/word_goal.yaml --build-only
+#     ./sim_eval/run_lg7.sh run_eval.py --config sim_eval/configs/word_goal.yaml \
+#         --arm clip_v2b+word --output-dir /outputs/nomad_clip_sim/pilot_<timestamp>
+#
+# The episode rules, the driver (n8w2r4t3: navigate.py's defaults) and the
+# camera are eval.yaml's and the P6/P7 topomap runs', unchanged.
+# ==============================================================================
+extends: eval.yaml
+
+mode: object_goal
+
+object_tasks:
+  scenes: [Rs]
+  # Words the Rs annotations have, with headline-tier counts (Phase 5):
+  # chair n=309, sofa n=245. Table (n=32) is annotated but dropped: Rs has
+  # no table start at >= 2.5 m with line of sight and clearance.
+  words: [chair, sofa]
+  tasks_per_word: 5
+  # Word task seeds: base + 1000 * house + 100 * word + task. Well away from the
+  # topomap tasks' 1000-series.
+  base_seed: 7000
+  world_config: configs/locobot_rs_bridge.yaml
+  # Plan: 2-5 m geodesic from the nearest instance, target in view or one turn
+  # away. Here >= min_geodesic_m to the nearest instance, which is >= it to
+  # every instance. G7.2 may move these; a re-freeze goes to a new folder.
+  #
+  # D1 (2026-09-29), a recorded deviation from the start-grid selection rule
+  # (largest min_geodesic_m giving chair >= 2 targets with >= 5 starts each,
+  # which picked 2.0 m / 0.2 m): 2.5 m is kept, because the floor protects the
+  # word-vs-masked contrast. At 2.5 m every chair start's nearest chair is
+  # chair_3, so the pilot has one chair target and one sofa (sofa_0); target
+  # variety moves to the full run's second house.
+  start:
+    min_geodesic_m: 2.5
+    max_geodesic_m: 5.0
+    yaw_offset_deg: 90
+    line_of_sight: true
+    # The trav map misses some furniture, so starts also clear the house mesh
+    # by this much at robot-body height (objects.MeshClearance), and a start
+    # the robot is touching something at is redrawn from the same seed.
+    min_clearance_m: 0.2
+    # A word's five starts are at least this far apart (straight line). 1.0 m
+    # was infeasible in Rs at 2.5 m: each word's starts lie in one ~1 m^2
+    # region (largest seeded spacing: chair 0.5 m, sofa 0.3 m), so 0.3 m for
+    # both — five jittered starts per word, not five places.
+    min_pairwise_start_m: 0.3
+    # Of a word's five starts, at least one sees the target and at least four
+    # do not (it is one turn away), by task index; see StartRules.view_class.
+    # G7.2 on pilot_b (2 in / 2 out, no forward rule) failed: V1+masked 4/10,
+    # in-view starts solved by driving straight, out-of-view ones pinned
+    # against a wall from the first ticks. Hence 1/4 and the forward rule.
+    min_in_view: 1
+    min_out_of_view: 4
+    # The start heading looks down open floor: 1.0 m ahead free on the trav
+    # map, clearing the mesh by min_clearance_m along it.
+    forward_clear_m: 1.0
+  # Sofa's single start region (~1 m^2) cannot hold 5 starts under the rules
+  # above (1 in / 4 out ran out at its 4th start; 2 in / 3 out at its 5th):
+  # 4 sofa tasks, 2 in view / 2 out.
+  per_word:
+    sofa: {tasks: 4, min_in_view: 2, min_out_of_view: 2}
+  # Frozen once, from reviewed code; a re-freeze goes to a new folder.
+  # VOID, builds that stopped half way: outputs/p7_task_set_pilot,
+  # outputs/p7_task_set_pilot_c. outputs/p7_task_set_pilot_b failed G7.2
+  # (sim_eval/outputs/p7_2_calibration).
+  directory: outputs/p7_task_set_pilot_d
+
+# Three runs of every task, the same three for every arm (single seeds are
+# unreliable in this harness — P5).
+seed_offsets: [0, 100000, 200000]
+
+arms: [ctx03+photo, clip_v2b+word, clip_v2b+masked]
+
+output_dir: outputs/p7_pilot
+
+# Off for scoring; clips are re-filmed afterwards and match-checked.
+recording:
+  enabled: false
+  directory: outputs/p7_videos

@@ -1,0 +1,69 @@
+# ==============================================================================
+# The checkpoints this workstream evaluates.
+#
+# Nothing here is trained by sim_eval — these are the ablation runs from the
+# open-loop study, reused as-is (plan §2: no retraining, no fine-tuning).
+#
+# Paths are container paths: /outputs is the shared-disk mount
+# /mnt/shared_disk/nazli/nomad_outputs (see lib.sh).
+#
+# `train_log` is not decoration. train.py prints the merged config dict on
+# startup and writes no config file next to the weights, so that log line is
+# the only surviving record of what a run was trained with — and the fairness
+# protocol (plan §7) requires each arm to be evaluated at *its own*
+# image_size. checkpoints.py reads it from there rather than from a number
+# typed in by hand.
+#
+# `ema_99.pth` rather than `latest.pth`: the exponential moving average is the
+# weight set the project reports, and both runs completed all 100 epochs.
+# ==============================================================================
+
+# --- the headline pair (plan §7) ---------------------------------------------
+best_combined:
+  description: best arm of the open-loop study — 160x120, the P1/P6 default
+  weights: /outputs/nomad_capstone/bc100_s0_2026_09_09_18_39_12/ema_99.pth
+  train_log: /outputs/nomad_capstone/logs/bc100_s0_20260909_213910.log
+
+clean_stock:
+  description: matched-compute comparator — stock NoMaD at 96x96, 100 epochs
+  weights: /outputs/nomad_capstone/stock100_s0_2026_09_09_12_54_12/ema_99.pth
+  train_log: /outputs/nomad_capstone/logs/stock100_s0_20260909_155410.log
+
+# --- the individual arms (P7, experiment E1: additivity) ---------------------
+# All four are 30-epoch runs, seed 0, so they compare only with each other: the
+# headline pair above is 100 epochs, and mixing the two would credit training
+# length to a recipe. ctx03 is the baseline — context 3 is stock NoMaD's own,
+# so it is stock at 30 epochs, not a change under test. Each run's
+# image_size and context_stride come from its train_log, like the pair above.
+# `ema_29.pth`: the last epoch of a 30-epoch run, EMA as above.
+
+ctx03:
+  description: 30-epoch baseline — stock recipe (96x96, context 3, stride 1)
+  weights: /outputs/nomad_ctx_ablation/ctx03_2026_08_31_17_47_18/ema_29.pth
+  train_log: /outputs/nomad_ctx_ablation/sweep_logs/nomad_ctx03_20260831_174716.log
+
+stride3:
+  description: 30-epoch arm — the baseline with context_stride 3
+  weights: /outputs/nomad_stride_ablation/stride3_2026_09_01_15_21_50/ema_29.pth
+  train_log: /outputs/nomad_stride_ablation/sweep_logs/nomad_stride3_20260901_152148.log
+
+img160x120:
+  description: 30-epoch arm — the baseline at 160x120
+  weights: /outputs/nomad_img_ablation/img160x120_2026_09_02_16_29_26/ema_29.pth
+  train_log: /outputs/nomad_img_ablation/sweep_logs/nomad_img160x120_20260902_162925.log
+
+bc30:
+  description: 30-epoch arm — both changes (160x120, context_stride 3)
+  weights: /outputs/nomad_capstone/bc30_s0_2026_09_09_12_54_42/ema_29.pth
+  train_log: /outputs/nomad_capstone/logs/bc30_s0_20260909_155440.log
+
+# --- the language-goal task (clip-language-goal, Phase 7) --------------------
+# ctx03 above is its V1 (vanilla, photo goal). clip_v2b is Phase 2b's CLIP-goal
+# model: frozen CLIP ViT-B/32 goal embedding, centred, Linear + LayerNorm
+# adapter, no current-frame fusion. Fed a word it is V3, a photo V2. Its log
+# predates `clip_fusion` and `context_stride`; checkpoints.load_goal_arm
+# establishes both (weights; train.py's default) and says so.
+clip_v2b:
+  description: Phase 2b CLIP-goal model (V2 with a photo, V3 with a word)
+  weights: /outputs/nomad_clip_v2b/clip_vitb32_ln_2026_09_24_04_30_33/ema_29.pth
+  train_log: /outputs/nomad_clip_v2b/logs/train_20260924_073032.log

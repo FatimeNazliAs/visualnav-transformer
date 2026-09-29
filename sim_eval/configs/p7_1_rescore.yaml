@@ -1,0 +1,42 @@
+# ==============================================================================
+# sim_eval/configs/p7_1_rescore.yaml — P6's headline arm, rescored with the
+# context_stride fix.
+#
+# best_combined was trained on context frames three ticks apart, and P6 fed it
+# consecutive ticks. This reruns it — and only it — on the exact P6 task set,
+# one seed per task, so the result drops into P6's comparison in place of the
+# old row set. clean_stock is stride 1, its feeding is byte-identical under the
+# fix, and its P6 table is compared as it stands.
+#
+# Everything is P6's except where the new rows go and that nothing is filmed:
+# the task set, its seeds, the episode rules and the driver are inherited.
+# ==============================================================================
+extends: p6_headline.yaml
+
+# A fresh table. Never resume onto p6_1_metrics/best_combined.csv — those rows
+# were scored with the pre-fix feeding.
+output_dir: outputs/p7_1_metrics
+
+recording:
+  enabled: false
+
+# best_combined is scored here. clean_stock's table is P6's own, copied beside
+# it byte for byte (it is stride 1, so the fix leaves its feeding unchanged),
+# because the comparison reads every arm's table from `output_dir`.
+checkpoints: [best_combined, clean_stock]
+
+# p6_2_compare.py writes its files under this name.
+comparison:
+  name: p7_1_rescore
+  title: "P7 step 1 — best_combined rescored with the stride fix vs P6's clean_stock"
+
+# p7_contrasts.py: the paired evidence behind the P6 erratum. One seed per
+# task, so McNemar is defined here. P6's own best_combined table — pre-fix
+# feeding — is read, never resumed onto or rewritten: it is the "before".
+contrasts:
+  tables:
+    best_combined_p6: outputs/p6_1_metrics/best_combined.csv
+  pairs:
+    - [best_combined, clean_stock]        # the headline, stride fix on
+    - [best_combined, best_combined_p6]   # what the fix changed
+    - [best_combined_p6, clean_stock]     # P6 as it was reported

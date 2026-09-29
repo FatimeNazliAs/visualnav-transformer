@@ -1,0 +1,423 @@
+"""NoMaD's brain: load a checkpoint, and turn one observation into one waypoint.
+
+This is the policy half of `deployment/src/navigate.py`, ported verbatim. Only
+the ends change (plan §4): the observation arrives as a list of PIL frames
+instead of off a ROS topic, and the waypoint is returned instead of published.
+Everything between — the transform, the goal mask, the localization window, the
+diffusion loop, `get_action`, waypoint #2 — is the deployment code, in the
+deployment order, with the deployment defaults.
+
+Ported alongside it, from `deployment/src/utils.py`, are `transform_images`,
+`to_numpy` and the NoMaD branch of `load_model`. They are copied rather than
+imported because that module does `from sensor_msgs.msg import Image` at the
+top, and ROS message packages are not installed in the sim container (nor
+should they be: there is no ROS graph here).
+
+The defaults below are `navigate.py`'s own argparse defaults, which is what the
+real robot runs with. Plan decision E says mirror them and tune nothing.
+"""
+
+import numpy as np
+import torch
+from diffusers.schedulers.scheduling_ddpm import DDPMScheduler
+from torchvision import transforms
+
+from diffusion_policy.model.diffusion.conditional_unet1d import ConditionalUnet1D
+from vint_train.models.nomad.nomad import NoMaD, DenseNetwork
+from vint_train.models.nomad.nomad_vint import NoMaD_ViNT, replace_bn_with_gn
+from vint_train.training.train_utils import get_action
+
+from driver import DriverConfig
+
+# ImageNet statistics, as in deployment/src/utils.py.
+IMAGENET_NORMALIZE = transforms.Compose([
+    transforms.ToTensor(),
+    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+])
+
+
+def to_numpy(tensor):
+    return tensor.cpu().detach().numpy()
+
+
+def transform_images(pil_imgs, image_size):
+    """Transforms a list of PIL image to a torch tensor.
+
+    `deployment/src/utils.py`, minus the `center_crop` branch: navigate.py
+    calls it with `center_crop=False` for NoMaD, and the sim camera is already
+    rendered at the aspect ratio the checkpoint wants.
+    """
+    if not isinstance(pil_imgs, list):
+        pil_imgs = [pil_imgs]
+    transf_imgs = []
+    for pil_img in pil_imgs:
+        pil_img = pil_img.resize(image_size)
+        transf_img = IMAGENET_NORMALIZE(pil_img)
+        transf_img = torch.unsqueeze(transf_img, 0)
+        transf_imgs.append(transf_img)
+    return torch.cat(transf_imgs, dim=1)
+
+
+def build_model(model_params):
+    """Instantiate NoMaD from a training config — `load_model`'s nomad branch."""
+    if model_params["vision_encoder"] != "nomad_vint":
+        raise ValueError(
+            "vision encoder {!r} is not supported here. Every checkpoint in "
+            "configs/checkpoints.yaml is nomad_vint; wiring up another encoder "
+            "without one to test against would be untested code."
+            .format(model_params["vision_encoder"]))
+
+    vision_encoder = NoMaD_ViNT(
+        obs_encoding_size=model_params["encoding_size"],
+        context_size=model_params["context_size"],
+        mha_num_attention_heads=model_params["mha_num_attention_heads"],
+        mha_num_attention_layers=model_params["mha_num_attention_layers"],
+        mha_ff_dim_factor=model_params["mha_ff_dim_factor"],
+        # train.py's own arguments. Absent (every pre-CLIP run) they are the
+        # constructor's defaults, the stock image-goal encoder.
+        goal_type=model_params.get("goal_type", "image"),
+        clip_fusion=model_params.get("clip_fusion", "none"),
+    )
+    vision_encoder = replace_bn_with_gn(vision_encoder)
+
+    noise_pred_net = ConditionalUnet1D(
+        input_dim=2,
+        global_cond_dim=model_params["encoding_size"],
+        down_dims=model_params["down_dims"],
+        cond_predict_scale=model_params["cond_predict_scale"],
+    )
+    dist_pred_network = DenseNetwork(embedding_dim=model_params["encoding_size"])
+
+    return NoMaD(
+        vision_encoder=vision_encoder,
+        noise_pred_net=noise_pred_net,
+        dist_pred_net=dist_pred_network,
+    )
+
+
+def load_model(weights_path, model_params, device):
+    """Load NoMaD weights — `load_model`'s nomad path, including strict=False.
+
+    `strict=False` is the deployment behaviour and is deliberate: the training
+    checkpoint carries keys the inference model has no place for.
+    """
+    model = build_model(model_params)
+    checkpoint = torch.load(str(weights_path), map_location=device)
+    loaded = model.load_state_dict(checkpoint, strict=False)
+    # strict=False forgives *unexpected* keys, which is its purpose here, but
+    # it forgives missing ones too — and a CLIP adapter left at its random
+    # init still drives. So a CLIP-goal model must have loaded every weight.
+    if model_params.get("goal_type", "image") == "clip" and loaded.missing_keys:
+        raise ValueError("{} left {} weights uninitialized: {}".format(
+            weights_path, len(loaded.missing_keys), loaded.missing_keys[:5]))
+    return model.to(device)
+
+
+def localization_window(closest_node, goal_node, radius):
+    """The slice of the trail the distance head scores, as (start, end) inclusive.
+
+    navigate.py's two clamps, verbatim. `start` floors at the first node and
+    `end` ceilings at the goal, so the window shrinks rather than running off
+    either end of the trail.
+    """
+    start = max(closest_node - radius, 0)
+    end = min(closest_node + radius + 1, goal_node)
+    return start, end
+
+
+def window_size(start, end):
+    """How many nodes `localization_window` selected — the slice is [start:end+1]."""
+    return end + 1 - start
+
+
+def localize(distances, start, num_window_nodes, close_threshold):
+    """Pick the current node and the subgoal from the distance head's scores.
+
+    Returns `(closest_node, subgoal_offset)`, and the two are deliberately
+    different kinds of index:
+
+      * `closest_node` is an **absolute** trail index — it is what the next tick
+        centres its window on, and what "reached the goal" is tested against.
+      * `subgoal_offset` is **relative to the window** — it indexes the encoder
+        output for this window, which has `num_window_nodes` rows.
+
+    Confusing the two is not hypothetical. Upstream shipped exactly that bug and
+    fixed it in commit 7b5b24c ("Fix closest node update for topomap
+    localization"), which replaced `closest_node = np.argmin(distances)` with
+    `start + min_dist_idx`. An off-by-one here does not crash: it steers the
+    robot confidently at the wrong node, which looks fine in a replay and
+    quietly invalidates every metric downstream. Hence this function exists
+    apart from the model, where `tests/test_localization.py` can pin it without
+    torch, a checkpoint or a GPU.
+
+    The arithmetic itself is navigate.py's, unchanged.
+    """
+    min_idx = int(np.argmin(distances))
+    closest_node = min_idx + start
+    subgoal_offset = min(min_idx + int(distances[min_idx] < close_threshold),
+                         num_window_nodes - 1)
+    return closest_node, subgoal_offset
+
+
+class PolicyStep:
+    """What one policy call decided, and what it saw when deciding."""
+
+    def __init__(self, waypoint, closest_node, subgoal_node, distances, samples):
+        # Normalized units, straight out of get_action. The caller scales it
+        # into metres — see bridge.NomadBridge._waypoint_to_metres.
+        self.waypoint = waypoint
+        self.closest_node = closest_node
+        self.subgoal_node = subgoal_node
+        # Predicted temporal distance to each node in the localization window.
+        self.distances = distances
+        # All num_samples action sequences, for inspection and overlays.
+        self.samples = samples
+
+    def window_start(self):
+        """Which absolute trail index `distances[0]` scored.
+
+        The step names its two nodes by *absolute* trail index but carries the
+        distance head's scores by window offset, so anything reading a score
+        back out has to recover the window. `localize` chose `closest_node` as
+        the window entry the head scored lowest, which fixes the origin.
+
+        Returns None when there are no scores to index.
+        """
+        distances = np.asarray(self.distances, dtype=float)
+        if distances.size == 0:
+            return None
+        return int(self.closest_node) - int(np.argmin(distances))
+
+    def _score(self, node):
+        """The head's reading for one absolute trail index, or None.
+
+        None rather than a guess: a mislabelled temporal distance is worse than
+        a blank, whether it is printed under a picture or logged in a trace.
+        """
+        start = self.window_start()
+        if start is None:
+            return None
+        distances = np.asarray(self.distances, dtype=float)
+        offset = int(node) - start
+        if not 0 <= offset < distances.size:
+            return None
+        return float(distances[offset])
+
+    def closest_distance(self):
+        """How far the head thinks the node it localized onto is.
+
+        The minimum of the window by construction, and the number that decides
+        whether the subgoal advances (`close_threshold`). Logged per tick from
+        P5 on, because a run whose readings sit far above that threshold is
+        one where the trail never advances — a failure mode no metric names.
+        """
+        return self._score(self.closest_node)
+
+    def subgoal_distance(self):
+        """How far the head thinks the node being steered at is."""
+        return self._score(self.subgoal_node)
+
+
+class NomadPolicy:
+    """A loaded NoMaD checkpoint that answers "where next" for one observation."""
+
+    def __init__(self, spec, device, driver=None):
+        self.spec = spec
+        self.device = device
+        # The four steering knobs, as one config object — see DriverConfig for
+        # why they are not four keyword arguments any more.
+        self.driver = driver or DriverConfig()
+
+        self.model_params = spec.model_params
+        self.model = load_model(spec.weights_path, self.model_params, device)
+        self.model.eval()
+
+        # Frozen CLIP for a CLIP-goal arm (Phase 7): its goals, and the current
+        # frame for a fused one. An image-goal arm never loads it.
+        self.clip = None
+        if self.model_params.get("goal_type", "image") == "clip":
+            from goals import ClipEncoder
+
+            self.clip = ClipEncoder(self.model_params, device)
+
+        self.num_diffusion_iters = self.model_params["num_diffusion_iters"]
+        self.noise_scheduler = DDPMScheduler(
+            num_train_timesteps=self.num_diffusion_iters,
+            beta_schedule="squaredcos_cap_v2",
+            clip_sample=True,
+            prediction_type="epsilon",
+        )
+
+    def embed_frames(self, frames, batch_size=64):
+        """psi, the observation encoder's own token for each frame, on its own.
+
+        Exactly the per-frame half of `NoMaD_ViNT.forward` -- extract_features,
+        average pool, flatten, compress -- stopped before the frames are
+        stacked into a context and mixed with the goal. What comes out is how
+        the model *sees* one image, which is the thing to compare when the
+        question is whether a sim camera shows the model what training did.
+        Returned as an (N, encoding_size) numpy array, in input order.
+        """
+        encoder = self.model.vision_encoder
+        tokens = []
+        with torch.no_grad():
+            for first in range(0, len(frames), batch_size):
+                batch = frames[first:first + batch_size]
+                images = torch.cat(
+                    [transform_images(frame, self.spec.image_size) for frame in batch],
+                    dim=0).to(self.device)
+                features = encoder.obs_encoder.extract_features(images)
+                features = encoder.obs_encoder._avg_pooling(features)
+                if encoder.obs_encoder._global_params.include_top:
+                    features = features.flatten(start_dim=1)
+                    features = encoder.obs_encoder._dropout(features)
+                tokens.append(to_numpy(
+                    encoder.compress_obs_enc(features).reshape(len(batch), -1)))
+        return np.concatenate(tokens, axis=0)
+
+    def encode_topomap(self, topomap):
+        """Pre-transform the topomap once; it does not change during an episode."""
+        return [transform_images(node, self.spec.image_size).to(self.device)
+                for node in topomap]
+
+    def act(self, context_frames, encoded_topomap, closest_node, goal_node):
+        """One policy step: localize in the topomap, then predict a waypoint.
+
+        `context_frames` is oldest-first and must hold exactly context_size+1
+        frames — the same thing navigate.py waits for its queue to accumulate.
+        """
+        obs_images = transform_images(context_frames, self.spec.image_size)
+        # A faithful no-op from navigate.py: split into per-frame 3-channel
+        # chunks and concatenate them back along the same axis. Kept so this
+        # pipeline is diff-able against the deployment one.
+        obs_images = torch.split(obs_images, 3, dim=1)
+        obs_images = torch.cat(obs_images, dim=1)
+        obs_images = obs_images.to(self.device)
+
+        # Goal masking off: the goal token stays visible, which is NoMaD's
+        # goal-directed navigation behaviour. Exploration would set this to 1.
+        mask = torch.zeros(1).long().to(self.device)
+
+        start, end = localization_window(closest_node, goal_node, self.driver.radius)
+        goal_image = torch.concat(encoded_topomap[start:end + 1], dim=0)
+
+        obsgoal_cond = self.model(
+            "vision_encoder",
+            obs_img=obs_images.repeat(len(goal_image), 1, 1, 1),
+            goal_img=goal_image,
+            input_goal_mask=mask.repeat(len(goal_image)),
+        )
+        dists = to_numpy(self.model("dist_pred_net", obsgoal_cond=obsgoal_cond).flatten())
+        closest_node, subgoal_offset = localize(
+            dists, start, len(obsgoal_cond), self.driver.close_threshold)
+        obs_cond = obsgoal_cond[subgoal_offset].unsqueeze(0)
+
+        naction = self._denoise(obs_cond)
+        return PolicyStep(
+            waypoint=naction[0][self.driver.waypoint],
+            closest_node=closest_node,
+            subgoal_node=start + subgoal_offset,
+            distances=dists,
+            samples=naction,
+        )
+
+    # --- single-goal mode (the language-goal sim, Phase 7) --------------------
+
+    def _goal_inputs(self, context_frames, goal):
+        """(goal_img, goal_vec, mask) for one goal, as the arm was trained to read it.
+
+        An image arm reads `goal.image` through the 6-channel goal encoder; a
+        CLIP arm reads `goal.vec`, stacked after the current frame's own CLIP
+        embedding when it is a fused (clip_fusion) model. A masked goal sets
+        input_goal_mask = 1, which is how training masks: the token is dropped
+        from attention and from the average pool, so its content is inert.
+        """
+        mask = torch.full((1,), int(goal.masked), dtype=torch.long, device=self.device)
+        if self.clip is None:
+            source = goal.image if goal.image is not None else context_frames[-1]
+            goal_img = transform_images(source, self.spec.image_size).to(self.device)
+            return goal_img, None, mask
+        vec = goal.vec.to(self.device).float().reshape(1, -1)
+        if self.model_params.get("clip_fusion", "none") != "none":
+            current = self.clip.image(context_frames[-1]).reshape(1, -1)
+            vec = torch.stack([current, vec], dim=1)
+        # goal_img is unused on the CLIP path, but forward() still takes one.
+        goal_img = transform_images(context_frames[-1], self.spec.image_size).to(self.device)
+        return goal_img, vec, mask
+
+    def _obs_images(self, context_frames):
+        obs_images = transform_images(context_frames, self.spec.image_size)
+        obs_images = torch.split(obs_images, 3, dim=1)
+        return torch.cat(obs_images, dim=1).to(self.device)
+
+    def condition(self, context_frames, goal):
+        """The observation+goal conditioning vector the diffusion head reads."""
+        goal_img, goal_vec, mask = self._goal_inputs(context_frames, goal)
+        with torch.no_grad():
+            return self.model(
+                "vision_encoder", obs_img=self._obs_images(context_frames),
+                goal_img=goal_img, input_goal_mask=mask, goal_vec=goal_vec)
+
+    def goal_token(self, context_frames, goal):
+        """A CLIP arm's goal token [goal_encoding_size] — what G7.1 inspects."""
+        if self.clip is None:
+            raise ValueError("goal_token is the CLIP adapter's output; {} has none"
+                             .format(self.spec.name))
+        _goal_img, goal_vec, _mask = self._goal_inputs(context_frames, goal)
+        with torch.no_grad():
+            token = self.model.vision_encoder._encode_clip_goal(goal_vec)
+        return to_numpy(token.reshape(-1))
+
+    def act_goal(self, context_frames, goal):
+        """One policy step toward a single goal: no topomap, no localization.
+
+        The same transform, conditioning and diffusion loop as `act`. The
+        distance head's reading is logged as the step's one distance — a
+        diagnostic only: single-goal episodes stop on the oracle, never on it.
+        """
+        obs_cond = self.condition(context_frames, goal)
+        with torch.no_grad():
+            dist = to_numpy(self.model("dist_pred_net", obsgoal_cond=obs_cond).flatten())
+        naction = self._denoise(obs_cond)
+        return PolicyStep(
+            waypoint=naction[0][self.driver.waypoint],
+            closest_node=0,
+            subgoal_node=0,
+            distances=dist,
+            samples=naction,
+        )
+
+    def _denoise(self, obs_cond):
+        """Reverse diffusion, verbatim from navigate.py's inner loop."""
+        with torch.no_grad():
+            # encoder vision features
+            if len(obs_cond.shape) == 2:
+                obs_cond = obs_cond.repeat(self.driver.num_samples, 1)
+            else:
+                obs_cond = obs_cond.repeat(self.driver.num_samples, 1, 1)
+
+            # initialize action from Gaussian noise
+            noisy_action = torch.randn(
+                (self.driver.num_samples, self.model_params["len_traj_pred"], 2),
+                device=self.device)
+            naction = noisy_action
+
+            # init scheduler
+            self.noise_scheduler.set_timesteps(self.num_diffusion_iters)
+
+            for k in self.noise_scheduler.timesteps[:]:
+                # predict noise
+                noise_pred = self.model(
+                    "noise_pred_net",
+                    sample=naction,
+                    timestep=k,
+                    global_cond=obs_cond,
+                )
+                # inverse diffusion step (remove noise)
+                naction = self.noise_scheduler.step(
+                    model_output=noise_pred,
+                    timestep=k,
+                    sample=naction,
+                ).prev_sample
+
+        return to_numpy(get_action(naction))
