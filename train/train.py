@@ -138,6 +138,12 @@ def main(config):
                         clip_mu_img=config.get("clip_mu_img"),
                         clip_center=config.get("clip_center", True),
                         clip_fusion=config.get("clip_fusion", "none"),
+                        # Phase 6b text mix-in: train only, so test goals stay photo goals.
+                        clip_text_mix_prob=(config.get("clip_text_mix_prob", 0.0)
+                                            if data_split_type == "train" else 0.0),
+                        clip_model=config.get("clip_model"),
+                        clip_text_template=config.get("clip_text_template"),
+                        clip_mu_txt=config.get("clip_mu_txt"),
                     )
                     if data_split_type == "train":
                         train_dataset.append(dataset)

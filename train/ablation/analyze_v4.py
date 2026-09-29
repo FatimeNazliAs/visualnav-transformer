@@ -42,12 +42,12 @@ GAPS = [("V4_photo", "V1"), ("V4_photo", "V2"), ("V4_word", "V4_p"), ("V4_word",
 TIERS = ["headline", "all"]
 
 
-def load_v4(path, reference):
-    """results_v4.csv -> {config: {column: array}}, aligned to the Phase 4 case order."""
+def load_v4(path, reference, configs=V4_CONFIGS):
+    """results_v4.csv (or results_v5.csv) -> {config: {column: array}}, in Phase 4 case order."""
     with open(path) as f:
         rows = list(csv.DictReader(f))
     out = {}
-    for name in V4_CONFIGS:
+    for name in configs:
         mine = sorted((r for r in rows if r["config"] == name), key=lambda r: int(r["sample_idx"]))
         cols = {}
         for key in mine[0]:

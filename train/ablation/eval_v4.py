@@ -118,8 +118,8 @@ def distance_predictions(config, checkpoint, goal_sources, device, max_batches=N
     return {name: np.concatenate(v) for name, v in preds.items()}
 
 
-def write_v4_results(path, labels, case, scores, skipped):
-    """results.csv's long format, for the V4 configs only."""
+def write_v4_results(path, labels, case, scores, skipped, configs=V4_CONFIGS, word_configs=V4_WORD_CONFIGS):
+    """results.csv's long format, for the V4 configs only (or another model's configs)."""
     with open(path, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=COLUMNS)
         writer.writeheader()
@@ -131,10 +131,10 @@ def write_v4_results(path, labels, case, scores, skipped):
                 "goal_is_negative": r["goal_is_negative"], "distance": int(case["distance"][i]),
                 "action_mask": int(case["action_mask"][i]), "is_headline": int(is_headline(r)),
             }
-            for name in V4_CONFIGS:
+            for name in configs:
                 skip = bool(skipped[name][i])
                 row = {**base, "config": name, "skipped": int(skip),
-                       "word": r["word"] if name in V4_WORD_CONFIGS else ""}
+                       "word": r["word"] if name in word_configs else ""}
                 for metric, values in scores[name].items():
                     if metric == "within_horizon":
                         row[metric] = int(values[i])

@@ -17,7 +17,9 @@ from vint_train.data.data_utils import (
     get_data_path,
     to_local_coords,
 )
-from vint_train.data.clip_goal_utils import cache_key, l2_normalize, load_mu, prep
+from vint_train.data.clip_goal_utils import (
+    cache_key, l2_normalize, load_mu, prep, pseudo_label, word_goal_table,
+)
 
 class ViNT_Dataset(Dataset):
     def __init__(
@@ -47,6 +49,10 @@ class ViNT_Dataset(Dataset):
         clip_mu_img: Optional[str] = None,
         clip_center: bool = True,
         clip_fusion: str = "none",
+        clip_text_mix_prob: float = 0.0,
+        clip_model: Optional[str] = None,
+        clip_text_template: Optional[str] = None,
+        clip_mu_txt: Optional[str] = None,
     ):
         """
         Main ViNT dataset class
@@ -87,6 +93,14 @@ class ViNT_Dataset(Dataset):
             clip_fusion (str): "none" returns the goal embedding alone as goal_vec [512];
                 anything else stacks the current frame's (the last context frame's) embedding
                 in front of it, goal_vec [2, 512] = (current, goal), for NoMaD_ViNT's fusion.
+            clip_text_mix_prob (float): Phase 6b text mix-in. With this probability the goal
+                embedding is swapped for its CLIP zero-shot word (pseudo_label over the 31
+                label words), fed as prep(text(template(word)), mu_txt), so training sees
+                word-like goals. The current frame is never swapped. 0 (the default) draws
+                no random numbers, so the sampler's stream is unchanged; train.py passes
+                it to train datasets only.
+            clip_model, clip_text_template, clip_mu_txt: build the word goals; required
+                when clip_text_mix_prob > 0.
         """
         self.data_folder = data_folder
         self.data_split_folder = data_split_folder
@@ -147,6 +161,16 @@ class ViNT_Dataset(Dataset):
             assert clip_cache is not None, "goal_type clip needs clip_cache"
             assert clip_mu_img is not None or not clip_center, "clip_center needs clip_mu_img"
             self.clip_mu_img = load_mu(clip_mu_img) if clip_center else None
+        assert 0.0 <= clip_text_mix_prob <= 1.0, f"clip_text_mix_prob {clip_text_mix_prob} not in [0, 1]"
+        self.clip_text_mix_prob = clip_text_mix_prob
+        if clip_text_mix_prob > 0:
+            # pseudo_label scores in the centred space, so the image side must be centred too.
+            assert goal_type == "clip" and clip_center, "clip_text_mix_prob needs goal_type clip with clip_center"
+            assert None not in (clip_model, clip_text_template, clip_mu_txt), \
+                "clip_text_mix_prob needs clip_model, clip_text_template and clip_mu_txt"
+            self.clip_word_goals = word_goal_table(
+                clip_model, clip_text_template, load_mu(clip_mu_txt), torch.device("cpu")
+            )
 
         # load data/data_config.yaml
         with open(
@@ -328,6 +352,8 @@ class ViNT_Dataset(Dataset):
         if self.goal_type != "clip":
             return torch.zeros(0)
         goal = self._load_clip_embedding(trajectory_name, time)
+        if self.clip_text_mix_prob > 0 and np.random.rand() < self.clip_text_mix_prob:
+            goal = self.clip_word_goals[pseudo_label(goal, self.clip_word_goals)]
         if self.clip_fusion == "none":
             return goal
         assert curr_trajectory_name is not None, f"clip_fusion {self.clip_fusion} needs the current frame"

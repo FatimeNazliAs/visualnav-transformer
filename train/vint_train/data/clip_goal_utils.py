@@ -31,6 +31,9 @@ GOAL_WORDS = [
     "column", "railing", "lamp", "screen", "building", "sidewalk", "lobby", "office",
 ]
 
+# The Phase 3 label vocabulary: GOAL_WORDS with corridor merged into hallway (31 words).
+LABEL_WORDS = [word for word in GOAL_WORDS if word != "corridor"]
+
 SCENE_CAPTIONS = [
     "an empty hallway in an office building",
     "a long corridor with doors on both sides",
@@ -121,6 +124,27 @@ def fusion_features(o: torch.Tensor, g: torch.Tensor) -> torch.Tensor:
     additive: W1 o + W2 g) cannot express.
     """
     return torch.cat([o, g, o * g, o - g], dim=-1)
+
+
+def word_goal_table(clip_model: str, template: str, mu_txt: torch.Tensor, device: torch.device) -> torch.Tensor:
+    """prep(text(template(w)), mu_txt) for every LABEL_WORDS entry: [31, 512], on the CPU.
+
+    These are the goal vectors a word goal is fed as (V3 / V4_word), and also the class
+    weights pseudo_label scores an image against.
+    """
+    model, _, tokenizer = load_clip(clip_model, device)
+    table = prep(encode_words(model, tokenizer, LABEL_WORDS, template, device), mu_txt.to(device)).cpu()
+    del model
+    return table
+
+
+def pseudo_label(img_emb: torch.Tensor, word_embeds: torch.Tensor) -> torch.Tensor:
+    """CLIP zero-shot word index for centred image embeddings ([512] or [N, 512]).
+
+    argmax over prep(img, mu_img) . word_embeds, the centred space Phase 3's CLIP fallback
+    labels in; word_embeds is word_goal_table's output.
+    """
+    return (img_emb @ word_embeds.T).argmax(dim=-1)
 
 
 def cache_key(traj_name: str, time: int) -> bytes:
