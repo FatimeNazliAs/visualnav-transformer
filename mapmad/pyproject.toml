@@ -1,0 +1,29 @@
+[project]
+name = "mapmad-sim"
+version = "0.1.0"
+description = "MapMaD, Habitat side: simulator setup, practice-drive generation and the exam robot"
+readme = "README.md"
+# habitat-sim 0.3.3 (the build habitat-starter ships) exists for Python 3.9 only.
+requires-python = "==3.9.*"
+dependencies = [
+    # habitat-sim, numpy<2, opencv, pillow, matplotlib come with habitat-starter
+    "habitat-starter",
+    "pyyaml>=6,<7",
+]
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[tool.uv.sources]
+# habitat-starter as installed in the naz-mapmad-habitat image (mapmad/docker/Dockerfile.habitat).
+habitat-starter = { path = "/opt/habitat-starter" }
+
+[build-system]
+requires = ["uv_build>=0.8,<0.13"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "mapmad_sim"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

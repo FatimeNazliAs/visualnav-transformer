@@ -1,0 +1,64 @@
+# MapMaD Habitat side: habitat-starter's image (Ubuntu 24.04 + uv + habitat-sim 0.3.3, Python 3.9,
+# EGL rendering, no conda) + MapMaD's extra packages from mapmad/pyproject.toml.
+#
+# Differences from habitat-starter's Dockerfile:
+#   - habitat-sim comes from the sha256-checked package in habitat-starter/vendor/.cache (no download);
+#   - NVIDIA_DRIVER_CAPABILITIES includes `graphics` (EGL rendering, habitat-starter gotcha 7),
+#     and NVIDIA's glvnd EGL vendor file is added (see below);
+#   - dev dependencies (pytest) are installed, so the toolbox tests run in the container;
+#   - no torch, no WSL library path, no published port.
+#
+# Build context = the habitat-starter checkout, plus mapmad/ as the named context `mapmad`:
+#   mapmad/docker/run_containers.sh build
+FROM docker.io/library/ubuntu:24.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates curl git binutils \
+        libegl1 libegl-mesa0 libopengl0 libgl1 libgl1-mesa-dri libgomp1 libglib2.0-0t64 \
+    && rm -rf /var/lib/apt/lists/*
+
+# The NVIDIA container toolkit mounts libEGL_nvidia.so.0 (with `graphics` capability) but copies the glvnd
+# vendor file only if the host has one; cukurovaai's driver install has none, so EGL would only find Mesa
+# and habitat-sim would render on the CPU (llvmpipe, ~9 steps/s). This file registers NVIDIA's EGL driver.
+RUN printf '{"file_format_version": "1.0.0", "ICD": {"library_path": "libEGL_nvidia.so.0"}}\n' \
+        > /usr/share/glvnd/egl_vendor.d/10_nvidia.json
+
+ARG UV_VERSION=0.12.23
+RUN curl -LsSf https://astral.sh/uv/${UV_VERSION}/install.sh | env UV_INSTALL_DIR=/usr/local/bin sh
+
+ENV UV_LINK_MODE=copy \
+    UV_COMPILE_BYTECODE=1 \
+    UV_PYTHON_INSTALL_DIR=/opt/uv-python \
+    UV_NO_CACHE=1
+WORKDIR /opt/habitat-starter
+
+# habitat-sim 0.3.3 headless: the official conda package, checked against habitat-starter's pinned sha256
+ARG HABITAT_SIM_CONDA=habitat-sim-0.3.3-py3.9_headless_linux_acbe6f4922e68145e401e55c30f9dfea460a3f24.conda
+ARG HABITAT_SIM_SHA256=c5a64d8c9447b8794bf24b59761db2cd96a68a7c0aeec41edec403489774d887
+COPY scripts/fetch_habitat_sim.py scripts/
+COPY vendor/.cache/${HABITAT_SIM_CONDA} /tmp/
+RUN echo "${HABITAT_SIM_SHA256}  /tmp/${HABITAT_SIM_CONDA}" | sha256sum -c - \
+    && uv run --python 3.9 scripts/fetch_habitat_sim.py --conda-file /tmp/${HABITAT_SIM_CONDA} \
+    && rm -rf /tmp/${HABITAT_SIM_CONDA} vendor/.cache
+
+COPY pyproject.toml uv.lock .python-version README.md ./
+RUN uv sync --locked --no-install-project
+# explicit folders, not `COPY . .`: keeps the 187 MB conda package out of the image layers
+COPY src src
+COPY scripts scripts
+COPY examples examples
+COPY tests tests
+COPY configs configs
+RUN uv sync --locked
+
+# MapMaD's extra packages; MapMaD's own code is mounted at runtime (PYTHONPATH below)
+COPY --from=mapmad pyproject.toml /opt/mapmad/pyproject.toml
+RUN uv pip install --python /opt/habitat-starter/.venv/bin/python -r /opt/mapmad/pyproject.toml
+
+ENV PATH=/opt/habitat-starter/.venv/bin:$PATH \
+    PYTHONPATH=/app/visualnav-transformer/mapmad/src \
+    NVIDIA_DRIVER_CAPABILITIES=compute,utility,graphics \
+    HOME=/tmp
+WORKDIR /app/visualnav-transformer
+CMD ["bash"]

@@ -1,0 +1,9 @@
+# Replaces habitat-starter's own .dockerignore for Dockerfile.habitat (BuildKit reads <Dockerfile>.dockerignore).
+# Unlike the original, vendor/.cache stays visible: it holds the sha256-checked habitat-sim package.
+.venv/
+vendor/habitat-sim/
+data/
+outputs/
+**/__pycache__/
+.pytest_cache/
+.git/

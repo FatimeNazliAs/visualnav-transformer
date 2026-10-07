@@ -1,0 +1,9 @@
+# Paths as seen inside the MapMaD containers (mounts in mapmad/docker/run_containers.sh).
+# Override one with an environment variable MAPMAD_<NAME>, e.g. MAPMAD_HM3D_SCENES=/elsewhere,
+# or point MAPMAD_PATHS_CONFIG at another file of this shape.
+hm3d_scenes: /hm3d                    # HM3D v0.2 homes (read-only): /hm3d/<split>/<id>/<id>.basis.glb
+hm3d_semantics: /hm3d_semantics       # our extracted HM3D Semantics v0.2 copy (read-only)
+objectnav: /objectnav                 # ObjectNav HM3D v2 episodes (read-only): /objectnav/<split>/...
+habitat_starter: /opt/habitat-starter # toolbox inside the image (its data/ is mounted read-only)
+mapmad_data: /mapmad_data             # generated practice drives
+outputs: /outputs/mapmad              # results, one folder per phase (p0_setup, ...)

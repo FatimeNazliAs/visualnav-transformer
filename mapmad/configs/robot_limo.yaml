@@ -1,0 +1,16 @@
+# The simulated camera = LIMO's real camera (plan D9). Read by Phase 1 (robot model) and Phase 2 (drives).
+# status: "measured" once Naz has the value from the robot, "spec" from a data sheet, "placeholder" otherwise.
+# Mirrors /outputs/mapmad/p0_setup/facts.md.
+camera:
+  height_m: 0.20              # above the floor
+  height_status: placeholder  # Naz to measure on the LIMO
+  model: Orbbec Dabai         # exact variant to confirm
+  hfov_deg: 71.0              # RGB horizontal FOV
+  hfov_status: spec           # data sheet value at 16:9; to confirm via camera_info at 4:3
+  width: 320
+  height: 240
+  resolution_status: placeholder  # NoMaD resizes frames to 96x96 anyway; to confirm via camera_info
+lidar:
+  present: true
+  model: EAI X2L
+  status: spec                # to confirm on the robot

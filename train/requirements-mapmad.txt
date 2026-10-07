@@ -1,0 +1,3 @@
+# Extra NoMaD-side packages for MapMaD, on top of the nomad:latest image (conda env vint_train, Python 3.8).
+# Installed by mapmad/docker/run_containers.sh when naz_mapmad is created. Never pip-install by hand.
+# (none yet)
