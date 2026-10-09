@@ -1,0 +1,58 @@
+# Phase 1 — normal NoMaD in Habitat (plan "Phase 1" + Phase 1 confirmation, 2026-10-09). Read by
+# mapmad/scripts/make_p1_episodes.py (Habitat side) and vint_train.mapmad.closed_loop (NoMaD side).
+# Paths are relative to paths.yaml `outputs` (/outputs/mapmad).
+
+out_dir: p1_baseline
+
+episodes:
+  split: train                       # HM3D train homes; never minival/val (minival homes are all exam homes)
+  objectnav_split: train             # targets + view points from ObjectNav v2 train goals_by_category
+  n_homes: 10                        # labelled train homes in seeded order, each giving per_home of each type
+  home_seed: 2026                    # Phase 2: these homes go into its held-out val-drive split
+  seed: 2026
+  per_home: 3                        # episodes per type per home (10 x 3 = 30 per type)
+  max_per_category: 2                # per category, per home, per type
+  types:
+    out_of_view: {geodesic_m: [3.0, 15.0]}                     # 0 target pixels in all 8 headings at the start
+    in_view:     {geodesic_m: [3.0, 8.0], min_target_share: 0.01}  # target >= 1% of the actual start picture
+  visibility_hfov_deg: 66.5          # visibility is always judged with LIMO's camera (also for the 120 deg arms)
+  target_point_max_m: 1.0            # nearest navigable point at most this far (horizontally) from the object's box
+  same_floor_max_dy_m: 0.5           # start and target navmesh heights differ by less than this
+  floor_names: [floor, carpet, rug, mat, doormat]   # the robot must stand on a surface whose name has one of these words
+  start_view: {near_m: 0.5, max_near_share: 0.5}   # skip starts facing a wall / furniture up close
+  goal_photo:
+    distance_m: [0.8, 1.2]           # ObjectNav view point to the object's box (horizontal); closest to 1.0 m wins
+    target_distance_m: 1.0
+    min_target_share: 0.05
+    max_black_share: 0.05            # of the picture: HM3D mesh holes render black
+  tries_per_target: 400              # random starts tried before moving on to another target
+
+run:
+  success_m: 1.0                     # geodesic distance to the target point; oracle stop
+  max_steps: 1000                    # 250 s at 4 Hz
+  report_success_at: [500]           # also read success@500 from the same logs
+  base_seed: 0                       # episode seed = base_seed + episode index (diffusion noise included)
+  topdown_m_per_px: 0.05
+  video_fps: 8                       # 2x real time
+  sidecar_port: 5550                 # pair k uses port 5550 + k; mapmad-net only, never published
+
+nomad:
+  weights: weights/official/nomad.pth    # official release (SOURCE.md, SHA256SUMS next to it)
+  config: weights/official/nomad.yaml
+  num_samples: 8
+  sample_index: 0                    # deployment takes the first of the 8 sampled paths
+  waypoint_index: 2
+
+arms:                                # name: policy, goal, episode type, camera HFOV
+  explore_oov:       {policy: nomad, goal: masked, episodes: out_of_view, hfov_deg: 66.5}   # A
+  photo_iv:          {policy: nomad, goal: photo,  episodes: in_view,     hfov_deg: 66.5}   # B
+  photo_oov:         {policy: nomad, goal: photo,  episodes: out_of_view, hfov_deg: 66.5}   # C
+  explore_iv:        {policy: nomad, goal: masked, episodes: in_view,     hfov_deg: 66.5}   # D
+  photo_iv_fov120:   {policy: nomad, goal: photo,  episodes: in_view,     hfov_deg: 120.0}  # B at 120 deg
+  photo_oov_fov120:  {policy: nomad, goal: photo,  episodes: out_of_view, hfov_deg: 120.0}  # C at 120 deg
+
+paired:                              # a - b on the same episodes
+  - [photo_iv, explore_iv]           # B - D (gate row 3)
+  - [photo_oov, explore_oov]         # C - A
+  - [photo_iv_fov120, photo_iv]      # 120 - 66.5 for B
+  - [photo_oov_fov120, photo_oov]    # 120 - 66.5 for C

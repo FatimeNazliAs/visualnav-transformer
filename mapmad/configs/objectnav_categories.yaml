@@ -1,0 +1,62 @@
+about: HM3D Semantics v0.2 object name -> ObjectNav HM3D v2 category; built by mapmad/scripts/build_category_map.py
+  from the 145 train homes' goals_by_category (min_count 20, min_purity 0.95) on 2026-10-09
+names:
+  armchair: chair
+  bar chair: chair
+  bed: bed
+  chair: chair
+  couch: sofa
+  decorative plant: plant
+  desk chair: chair
+  dining chair: chair
+  display: tv_monitor
+  flower: plant
+  flower vase: plant
+  flowerpot: plant
+  monitor: tv_monitor
+  office chair: chair
+  plant: plant
+  sofa: sofa
+  sofa chair: chair
+  toilet: toilet
+  tv: tv_monitor
+goal_counts:
+  armchair:
+    chair: 330
+  bar chair:
+    chair: 50
+  bed:
+    bed: 464
+  chair:
+    chair: 1661
+  couch:
+    sofa: 223
+  decorative plant:
+    plant: 240
+  desk chair:
+    chair: 46
+  dining chair:
+    chair: 161
+  display:
+    tv_monitor: 63
+  flower:
+    plant: 111
+  flower vase:
+    plant: 133
+  flowerpot:
+    plant: 187
+  monitor:
+    tv_monitor: 114
+  office chair:
+    chair: 46
+  plant:
+    plant: 417
+  sofa:
+    sofa: 98
+  sofa chair:
+    chair: 49
+  toilet:
+    toilet: 361
+  tv:
+    tv_monitor: 247
+dropped_mixed_names: {}

@@ -1,3 +1,4 @@
 # Extra NoMaD-side packages for MapMaD, on top of the nomad:latest image (conda env vint_train, Python 3.8).
 # Installed by mapmad/docker/run_containers.sh when naz_mapmad is created. Never pip-install by hand.
-# (none yet)
+imageio-ffmpeg==0.5.1   # Phase 1 videos: bundled ffmpeg with H.264 (OpenCV in the image only writes mp4v)
+pytest==8.3.5           # tests of vint_train/mapmad (last pytest line that supports Python 3.8)

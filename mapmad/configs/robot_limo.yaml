@@ -5,7 +5,8 @@ camera:
   model: Orbbec Dabai         # colour stream /camera/color/image_raw
   height_m: 0.18              # optical centre above the REAL floor (tape + TF base_link->camera_link 0.18 up)
   height_status: measured
-  forward_of_base_m: 0.18     # TF base_link->camera_link, no tilt (rpy 0 0 0)
+  forward_of_base_m: 0.084    # camera ahead of the turning centre. FALLBACK (Naz, 2026-10-09): TF says 0.18, which
+  forward_status: fallback    # looks like a placeholder; replace with the tape value
   width: 640
   height: 480
   resolution_status: measured # sim may render 320x240 (same FOV); NoMaD resizes to 96x96 anyway
@@ -58,3 +59,21 @@ compute:                      # for running NoMaD on the robot
   ram_gb: 8
   disk_free_gb: 16
   status: measured
+sim:                          # how Habitat moves and renders the virtual LIMO (Phase 1; reused by Phases 2 and 5)
+  render_width: 320           # 4:3 like the Dabai; NoMaD resizes to 96x96
+  render_height: 240
+  control_hz: 4               # one command per 0.25 s, as NoMaD's robot.yaml frame_rate
+  substeps: 10                # each 0.25 s command integrated exactly (arc) in 10 x 25 ms, every sub-step through the navmesh
+  collision_tol_m: 0.01       # a command counts as a collision if its move is shortened by more than 1 cm
+  camera_wall_margin_m: 0.02  # only matters if the camera sits ahead of the body radius: then moves that bring it closer to a wall are refused
+  floor_probe_above_feet_m: 0.3   # a 4x4 depth camera this high above the navmesh point looks straight down
+  floor_probe_hfov_deg: 10.0      # ... and finds the real floor under the turning centre (navmesh floats 0.05-0.18 m)
+  floor_probe_max_m: 0.6      # readings farther than this (holes in the mesh) are ignored: last good height kept
+navmesh:                      # floor map rebuilt per home at load with LIMO's size (Naz, 2026-10-09; Phases 1, 2, 5)
+  agent_radius_m: 0.19        # FALLBACK: half the footprint diagonal; replace with tape values
+  agent_height_m: 0.45        # FALLBACK: robot incl. the parked arm; replace when measured
+  agent_max_climb_m: 0.05     # LIMO cannot climb stairs or 20 cm steps
+  cell_height_m: 0.05         # finer than HM3D's baked 0.2 m: the navmesh then lies closer to the real floor
+  cell_size_m: 0.05           # as baked
+  include_static_objects: false
+  status: fallback
