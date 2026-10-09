@@ -1,0 +1,7 @@
+# Phase 1 rerun with LIMO's official size (AgileX LIMO Cobot spec sheet; robot_limo.yaml `navmesh` radius 0.195 m,
+# height 0.55 m instead of the 0.19 / 0.45 fallbacks; Naz, 2026-10-09). Same episode rules and seeds, arms and
+# timeout as p1_baseline.yaml; outputs in their own folder so p1_baseline/ stays as it was. Episodes rebuilt on the
+# new floor maps (2 of the 60 frozen ones had a target point off it: check_p1_episodes.py).
+
+extends: p1_baseline.yaml
+out_dir: p1_baseline_spec

@@ -227,7 +227,7 @@ class LimoSim:
         """True if the camera point (in front of the turning centre, at feet level) is in free space: at most
         (navmesh agent radius - camera_wall_margin_m) from the walkable area, whose edge lies one agent radius
         inside the walls. So the camera may come within the margin (2 cm) of a wall, never into it. Always true
-        when the camera sits inside the body radius (LIMO fallback: 0.084 m < 0.19 m)."""
+        when the camera sits inside the body radius (LIMO: 0.084 m < 0.195 m)."""
         if not self.check_camera:
             return True
         cam = position + self.spec.camera_forward_m * forward(yaw)

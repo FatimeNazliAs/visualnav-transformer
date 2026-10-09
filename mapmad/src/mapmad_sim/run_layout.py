@@ -5,7 +5,8 @@
     layout.log("photo_iv", "p1-iv-00081-000")     # <outputs>/p1_baseline/logs/photo_iv/p1-iv-00081-000.jsonl
 
 With a `subdir` (e.g. "checks/determinism_a") every run output moves below <out_dir>/<subdir>; the episode file
-stays in <out_dir>/episodes. Needs only PyYAML: used in both containers.
+stays in <out_dir>/episodes. A run config may start from another one (`extends: p1_baseline.yaml`, top-level keys
+replaced). Needs only PyYAML: used in both containers.
 """
 
 from dataclasses import dataclass
@@ -19,6 +20,13 @@ from mapmad_sim import config
 P1_CONFIG = config.CONFIG_DIR / "p1_baseline.yaml"
 
 
+def read_config(path: Path) -> Dict[str, Any]:
+    """A run config; with `extends: <file>` (next to it) that file's keys come first and these replace them."""
+    cfg = yaml.safe_load(path.read_text())
+    base = cfg.pop("extends", None)
+    return {**read_config(path.parent / base), **cfg} if base else cfg
+
+
 @dataclass(frozen=True)
 class RunLayout:
     cfg: Dict[str, Any]  # the run config (p1_baseline.yaml)
@@ -28,7 +36,7 @@ class RunLayout:
 
     @classmethod
     def load(cls, path: Optional[Path] = None, subdir: str = "", outputs: Optional[Path] = None) -> "RunLayout":
-        cfg = yaml.safe_load(Path(path or P1_CONFIG).read_text())
+        cfg = read_config(Path(path or P1_CONFIG))
         outputs = Path(outputs or config.paths()["outputs"])
         base = outputs / cfg["out_dir"]
         return cls(cfg=cfg, base=base, root=base / subdir, outputs=outputs)

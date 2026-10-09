@@ -45,3 +45,11 @@ def test_run_layout_paths(tmp_path):
     (layout.root / "logs/b").mkdir(parents=True)
     (layout.root / "logs/b/e2.jsonl").write_text("")
     assert layout.logs() == [layout.root / "logs/b/e2.jsonl"] and layout.logs("a") == []
+
+
+def test_run_config_extends_another(tmp_path):
+    (tmp_path / "base.yaml").write_text("out_dir: base_run\nrun: {max_steps: 1000}\n")
+    (tmp_path / "rerun.yaml").write_text("extends: base.yaml\nout_dir: rerun\n")
+    layout = RunLayout.load(tmp_path / "rerun.yaml", outputs=tmp_path)
+    assert layout.cfg == {"out_dir": "rerun", "run": {"max_steps": 1000}}
+    assert layout.episodes_file == tmp_path / "rerun" / "episodes" / "episodes.json"

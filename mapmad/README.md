@@ -6,7 +6,7 @@ simulator server for closed-loop runs (Phase 1), later the practice-drive genera
 
 - `docker/` — the two containers (`Dockerfile.habitat`, `run_containers.sh`, `paths.env`); see `docker/README.md`.
 - `configs/paths.yaml` — every path as seen inside the containers; override one with `MAPMAD_<NAME>`.
-- `configs/robot_limo.yaml` — LIMO camera, depth, lidar, drive and compute facts (plan D9), measured 2026-10-09; incl. the sim camera pitch, the sim motion settings (`sim`) and the LIMO-sized floor map (`navmesh`; radius/height are fallbacks until measured).
+- `configs/robot_limo.yaml` — LIMO camera, depth, lidar, drive and compute facts (plan D9), measured 2026-10-09; incl. the sim camera pitch, the sim motion settings (`sim`) and the LIMO-sized floor map (`navmesh`; radius 0.195 m and height 0.55 m from the AgileX LIMO Cobot spec sheet).
 - `configs/p1_baseline.yaml` — Phase 1 episodes, run settings, NoMaD settings, arms and paired comparisons.
 - `configs/objectnav_categories.yaml` — HM3D object names -> ObjectNav categories, learnt from the train goals (`scripts/build_category_map.py`).
 - `src/mapmad_sim/` — the Python package (`config.py`: paths, HM3D file names; `camera.py`: FOV, horizon row, floor-plane fit; `run_info.py`: config + seed + git commit per run; `robot.py`: the virtual LIMO; `objects.py`: object boxes; `objectnav.py`: the only reader of ObjectNav goal files; `episodes.py`: Phase 1 episodes; `categories.py`: name map; `run_layout.py`: run config + where every run input/output lives; `sidecar_server.py`: simulator server).
@@ -90,6 +90,13 @@ docker exec -w /app/visualnav-transformer/train -e PYTHONPATH=/app/visualnav-tra
 Outputs in `/outputs/mapmad/p1_baseline/`: `episodes/`, `logs/<arm>/<episode>.jsonl` (one line per step; no
 times), `summaries/`, `videos/<arm>/<episode>.mp4`, `timing/`, `run_info.*.json`, `anyside/`, `black/`,
 `diagnostics/`, `tables.md`, `tables.csv`, `paired.csv` (layout: `mapmad_sim/run_layout.py`).
+
+Rerun with another config (every script above takes `--config`): `configs/p1_baseline_spec.yaml` is the same run
+with LIMO's official size (spec sheet), written to `/outputs/mapmad/p1_baseline_spec/`. Before reusing a frozen
+episode file on a changed floor map, check it: `python mapmad/scripts/check_p1_episodes.py` (start and target
+point navigable, on the real floor, on one island, geodesic in range; report `floor_map_check.json` next to the
+episode file); if any episode fails, rebuild the episodes. The runner refuses an episode whose stored floor-map
+hash differs from the live one unless that report passed it on the live floor map.
 
 How a run works: `run_p1.sh` starts one simulator server per pair in `naz_mapmad_habitat`
 (`mapmad_sim.sidecar_server`, TCP on `mapmad-net`, never published) and one NoMaD client per pair in

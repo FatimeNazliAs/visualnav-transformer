@@ -5,8 +5,8 @@ camera:
   model: Orbbec Dabai         # colour stream /camera/color/image_raw
   height_m: 0.18              # optical centre above the REAL floor (tape + TF base_link->camera_link 0.18 up)
   height_status: measured
-  forward_of_base_m: 0.084    # camera ahead of the turning centre. FALLBACK (Naz, 2026-10-09): TF says 0.18, which
-  forward_status: fallback    # looks like a placeholder; replace with the tape value
+  forward_of_base_m: 0.084    # camera ahead of the turning centre: AgileX LIMO URDF (the robot's TF says 0.18, a placeholder)
+  forward_status: spec        # official (Naz, 2026-10-09); a later tape value replaces it only if it differs by > 3 cm
   width: 640
   height: 480
   resolution_status: measured # sim may render 320x240 (same FOV); NoMaD resizes to 96x96 anyway
@@ -70,10 +70,12 @@ sim:                          # how Habitat moves and renders the virtual LIMO (
   floor_probe_hfov_deg: 10.0      # ... and finds the real floor under the turning centre (navmesh floats 0.05-0.18 m)
   floor_probe_max_m: 0.6      # readings farther than this (holes in the mesh) are ignored: last good height kept
 navmesh:                      # floor map rebuilt per home at load with LIMO's size (Naz, 2026-10-09; Phases 1, 2, 5)
-  agent_radius_m: 0.19        # FALLBACK: half the footprint diagonal; replace with tape values
-  agent_height_m: 0.45        # FALLBACK: robot incl. the parked arm; replace when measured
+  # Size: AgileX LIMO Cobot spec sheet, 322 x 220 x 550 mm incl. the arm (Naz, 2026-10-09; replaces the 0.19 / 0.45
+  # fallbacks). A later tape check changes the height only if it differs by > 5 cm.
+  agent_radius_m: 0.195       # half the footprint diagonal: sqrt(0.322^2 + 0.220^2) / 2
+  agent_height_m: 0.55        # robot incl. the parked arm
   agent_max_climb_m: 0.05     # LIMO cannot climb stairs or 20 cm steps
   cell_height_m: 0.05         # finer than HM3D's baked 0.2 m: the navmesh then lies closer to the real floor
   cell_size_m: 0.05           # as baked
   include_static_objects: false
-  status: fallback
+  status: spec

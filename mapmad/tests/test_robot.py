@@ -20,7 +20,7 @@ def spec(**overrides) -> RobotSpec:
 def test_spec_reads_robot_config():
     s = spec()
     assert (s.hfov_deg, s.camera_height_m, s.camera_forward_m, s.pitch_deg) == (66.5, 0.18, 0.084, -2.0)
-    assert dict(s.navmesh)["agent_radius_m"] == 0.19 and dict(s.navmesh)["agent_max_climb_m"] == 0.05
+    assert dict(s.navmesh)["agent_radius_m"] == 0.195 and dict(s.navmesh)["agent_max_climb_m"] == 0.05
     assert (s.max_v, s.max_w, s.dt, s.width, s.height) == (0.2, 0.4, 0.25, 320, 240)
     assert s.camera_wall_margin_m == 0.02
     assert spec(hfov_deg=120.0).hfov_deg == 120.0
@@ -70,7 +70,7 @@ def open_spot(robot, seed: int) -> np.ndarray:
 @needs_hm3d
 def test_camera_sits_on_real_floor_height(robot):
     assert len(robot.navmesh_sha256) == 64
-    assert robot.pathfinder.nav_mesh_settings.agent_radius == pytest.approx(0.19)
+    assert robot.pathfinder.nav_mesh_settings.agent_radius == pytest.approx(0.195)
     robot.place(open_spot(robot, 3), 0.0)
     assert 0.0 < robot.floor_below_feet < 0.3  # the navmesh floats above the floor
     assert robot.camera_height_above_floor == pytest.approx(0.18, abs=1e-4)

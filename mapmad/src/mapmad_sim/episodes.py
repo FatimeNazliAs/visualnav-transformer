@@ -28,6 +28,7 @@ from mapmad_sim.objects import name_matches, object_box
 from mapmad_sim.robot import LimoSim, horizontal_distance, yaw_towards
 
 TYPE_CODES = {"out_of_view": "oov", "in_view": "iv"}
+FLOOR_MAP_CHECK = "floor_map_check.json"  # written next to episodes.json by mapmad/scripts/check_p1_episodes.py
 
 
 @dataclass
@@ -82,6 +83,24 @@ def load_episodes(path: Path, check: bool = True) -> Tuple[List[Dict[str, Any]],
     if check and fp != doc["fingerprint"]:
         raise ValueError(f"{path}: fingerprint {fp} != stored {doc['fingerprint']} (file changed)")
     return doc["episodes"], fp
+
+
+def checked_floor_maps(episodes_dir: Path, fingerprint: str) -> Dict[str, str]:
+    """episode id -> floor-map sha256 the episode passed check_p1_episodes.py on; empty if this episode file
+    (same fingerprint) was never checked."""
+    path = Path(episodes_dir) / FLOOR_MAP_CHECK
+    if not path.exists():
+        return {}
+    doc = json.loads(path.read_text())
+    if doc["fingerprint"] != fingerprint:
+        return {}
+    now = {home: shas["now"] for home, shas in doc["navmesh_sha256"].items()}
+    return {eid: now[r["home"]] for eid, r in doc["episodes"].items() if r["pass"]}
+
+
+def floor_map_ok(episode: Dict[str, Any], live_sha256: Optional[str], checked: Dict[str, str]) -> bool:
+    """True if the episode was built on this floor map, or passed check_p1_episodes.py on it."""
+    return episode.get("navmesh_sha256") == live_sha256 or checked.get(episode["episode_id"]) == live_sha256
 
 
 class EpisodeBuilder:

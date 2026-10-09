@@ -42,8 +42,8 @@ def test_spl_and_bootstrap():
 class FakeSim:
     """Straight corridor along +x: the target point is 3 m ahead; v moves the robot v * 0.25 m."""
 
-    def __init__(self):
-        self.x = 0.0
+    def __init__(self, navmesh_sha256=None):
+        self.x, self.navmesh_sha256 = 0.0, navmesh_sha256
 
     def state(self):
         return {"position": [self.x, 0.0, 0.0], "yaw": 0.0, "geodesic_m": 3.0 - self.x, "floor_below_feet_m": 0.16}
@@ -52,7 +52,8 @@ class FakeSim:
         self.x = 0.0
         topdown = {"grid": np.ones((80, 100), bool), "origin": [-1.0, -2.0], "m_per_px": 0.05}
         return Frame(rgb=np.zeros((240, 320, 3), np.uint8), state=self.state(),
-                     goal_rgb=np.full((240, 320, 3), 200, np.uint8) if goal_photo else None, topdown=topdown)
+                     goal_rgb=np.full((240, 320, 3), 200, np.uint8) if goal_photo else None, topdown=topdown,
+                     navmesh_sha256=self.navmesh_sha256)
 
     def step(self, v, w):
         self.x += v * 0.25
@@ -92,6 +93,34 @@ def test_runner_stops_at_success_and_logs_identically(tmp_path):
     assert (tmp_path / "a.jsonl").read_bytes() != (tmp_path / "c.jsonl").read_bytes()
     lines = (tmp_path / "a.jsonl").read_text().splitlines()
     assert len(lines) == result["steps"] + 2 and len(rec.frames) == result["steps"] + 1
+
+
+def test_runner_refuses_an_episode_from_another_floor_map(tmp_path):
+    """An episode keeps the hash of the floor map it was built on; on a changed floor map (e.g. a new robot size)
+    the runner refuses it unless check_p1_episodes.py passed it on that floor map, for this episode file."""
+    import json
+
+    from mapmad_sim.episodes import FLOOR_MAP_CHECK, checked_floor_maps
+    from vint_train.mapmad.closed_loop.runner import FloorMapMismatch
+
+    episode = dict(EPISODE, navmesh_sha256="old")
+    run_episode(FakeSim("old"), NoisyForward(), episode, ARM, RUN, 0, tmp_path / "same.jsonl", "fp")
+    with pytest.raises(FloorMapMismatch):
+        run_episode(FakeSim("new"), NoisyForward(), episode, ARM, RUN, 0, tmp_path / "x.jsonl", "fp")
+    assert not (tmp_path / "x.jsonl").exists()  # refused before anything is logged
+
+    report = {"fingerprint": "fp", "navmesh_sha256": {"h": {"stored": "old", "now": "new"}},
+              "episodes": {"e0": {"home": "h", "pass": True}, "e1": {"home": "h", "pass": False}}}
+    (tmp_path / FLOOR_MAP_CHECK).write_text(json.dumps(report))
+    checked = checked_floor_maps(tmp_path, "fp")
+    assert checked == {"e0": "new"}
+    result, _ = run_episode(FakeSim("new"), NoisyForward(), episode, ARM, RUN, 0, tmp_path / "ok.jsonl", "fp", checked)
+    assert result["success"]
+    with pytest.raises(FloorMapMismatch):  # passed on "new", not on yet another floor map
+        run_episode(FakeSim("newer"), NoisyForward(), episode, ARM, RUN, 0, tmp_path / "y.jsonl", "fp", checked)
+    with pytest.raises(FloorMapMismatch):  # a failed episode stays refused
+        run_episode(FakeSim("new"), NoisyForward(), dict(episode, episode_id="e1"), ARM, RUN, 0, tmp_path / "z.jsonl", "fp", checked)
+    assert checked_floor_maps(tmp_path, "another file") == {}  # the report belongs to one episode file
 
 
 def test_timeout_and_video(tmp_path):

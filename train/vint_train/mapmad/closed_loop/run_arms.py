@@ -26,7 +26,7 @@ import yaml  # noqa: E402
 
 from mapmad_bridge.client import SimClient  # noqa: E402
 from mapmad_sim import config as mapmad_config  # noqa: E402
-from mapmad_sim.episodes import load_episodes  # noqa: E402
+from mapmad_sim.episodes import checked_floor_maps, load_episodes  # noqa: E402
 from mapmad_sim.run_info import save_run_info  # noqa: E402
 from mapmad_sim.run_layout import P1_CONFIG, RunLayout  # noqa: E402
 from vint_train.mapmad.closed_loop.nomad_policy import NomadPolicy  # noqa: E402
@@ -75,6 +75,7 @@ def main() -> None:
     layout = RunLayout.load(args.config, subdir=args.subdir)
     p1 = layout.cfg
     episodes, fingerprint = load_episodes(layout.episodes_file)
+    checked = checked_floor_maps(layout.episodes_dir, fingerprint)  # episodes re-checked on a changed floor map
     arms = [Arm(name=a, **p1["arms"][a]) for a in args.arms]
     run = RunSettings(success_m=p1["run"]["success_m"], max_steps=p1["run"]["max_steps"],
                       topdown_m_per_px=p1["run"]["topdown_m_per_px"], video_fps=p1["run"]["video_fps"])
@@ -95,7 +96,8 @@ def main() -> None:
             for e in todo:
                 t0 = time.perf_counter()
                 seed = p1["run"]["base_seed"] + e["index"]
-                result, rec = run_episode(sim, policy, e, arm, run, seed, layout.log(arm.name, e["episode_id"]), fingerprint)
+                result, rec = run_episode(sim, policy, e, arm, run, seed, layout.log(arm.name, e["episode_id"]), fingerprint,
+                                          checked)
                 t_run = time.perf_counter() - t0
                 summary = layout.summary(arm.name, e["episode_id"])
                 summary.parent.mkdir(parents=True, exist_ok=True)

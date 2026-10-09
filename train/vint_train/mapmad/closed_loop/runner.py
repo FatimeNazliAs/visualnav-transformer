@@ -15,6 +15,7 @@ from typing import Any, Dict, List, Optional
 
 import numpy as np
 
+from mapmad_sim.episodes import floor_map_ok
 from vint_train.mapmad.closed_loop import metrics, video
 from vint_train.mapmad.closed_loop.policy import Observation, Policy
 
@@ -68,11 +69,23 @@ class EpisodeRecord:
     policy_ms: List[float] = field(default_factory=list)  # wall-clock of each act() (kept out of the log)
 
 
+class FloorMapMismatch(RuntimeError):
+    """The episode was built on another floor map and was not re-checked on this one."""
+
+
 def run_episode(sim, policy: Policy, episode: Dict[str, Any], arm: Arm, run: RunSettings, seed: int,
-                log_path: Path, fingerprint: str) -> (Dict[str, Any], EpisodeRecord):
+                log_path: Path, fingerprint: str, checked_floor_maps: Optional[Dict[str, str]] = None
+                ) -> (Dict[str, Any], EpisodeRecord):
     """Drive one episode; writes log_path and returns (result summary, record for the video).
-    The policy sees only pictures and the goal photo; geodesic distance and target stay here."""
+    The policy sees only pictures and the goal photo; geodesic distance and target stay here.
+    Refuses (FloorMapMismatch, before any log is written) if the live floor map differs from the one the episode was
+    built on, unless checked_floor_maps (episodes.checked_floor_maps) says the episode passed on the live one."""
     first = sim.reset(episode, arm.hfov_deg, goal_photo=arm.goal == "photo", topdown_m_per_px=run.topdown_m_per_px)
+    if not floor_map_ok(episode, first.navmesh_sha256, checked_floor_maps or {}):
+        raise FloorMapMismatch(
+            f"{episode['episode_id']}: live floor map {str(first.navmesh_sha256)[:12]} != stored "
+            f"{str(episode.get('navmesh_sha256'))[:12]} (robot_limo.yaml navmesh changed?); run "
+            "mapmad/scripts/check_p1_episodes.py on this episode file, or rebuild the episodes")
     goal = first.goal_rgb if arm.goal == "photo" else None
     policy.reset({"seed": seed, "episode_id": episode["episode_id"], "goal": arm.goal})
     frames = deque([first.rgb], maxlen=policy.context_frames)

@@ -5,10 +5,11 @@
 #
 #   PAIRS="0 0 1 1" mapmad/scripts/run_p1.sh --arms photo_iv explore_iv   # 2 pairs per GPU
 #   PAIRS=1 mapmad/scripts/run_p1.sh --arms photo_iv --limit 1 --subdir checks/smoke
+#   PAIRS="0 0 1 1" mapmad/scripts/run_p1.sh --config /app/visualnav-transformer/mapmad/configs/p1_baseline_spec.yaml --arms ...
 #
 # Every argument goes to vint_train.mapmad.closed_loop.run_arms (see its --help). The shared key for the bridge is
 # made fresh per call and passed through the environment (never on a command line). Server output goes to
-# <outputs>/<out_dir>/<subdir>/server_pair<k>.log (paths.yaml + p1_baseline.yaml). Long runs: start this inside `screen`.
+# <outputs>/<out_dir>/<subdir>/server_pair<k>.log (paths.yaml + the run config, p1_baseline.yaml by default). Long runs: start this inside `screen`.
 set -euo pipefail
 
 HABITAT=naz_mapmad_habitat
@@ -16,11 +17,15 @@ NOMAD=naz_mapmad
 PAIRS=(${PAIRS:-0 1})
 BASE_PORT=${BASE_PORT:-5550}
 SUBDIR=""
+CONFIG=""
 args=("$@")
-for ((i = 0; i < ${#args[@]}; i++)); do [[ "${args[$i]}" == "--subdir" ]] && SUBDIR="${args[$((i + 1))]}"; done
-# run output folder as the containers see it (paths.yaml + p1_baseline.yaml, via mapmad_sim.run_layout), created there
+for ((i = 0; i < ${#args[@]}; i++)); do
+    [[ "${args[$i]}" == "--subdir" ]] && SUBDIR="${args[$((i + 1))]}"
+    [[ "${args[$i]}" == "--config" ]] && CONFIG="${args[$((i + 1))]}"
+done
+# run output folder as the containers see it (paths.yaml + the run config, via mapmad_sim.run_layout), created there
 LOG_DIR="$(docker exec "$HABITAT" python -c "from mapmad_sim.run_layout import RunLayout
-r = RunLayout.load(subdir='${SUBDIR}').root; r.mkdir(parents=True, exist_ok=True); print(r)")"
+r = RunLayout.load('${CONFIG}' or None, subdir='${SUBDIR}').root; r.mkdir(parents=True, exist_ok=True); print(r)")"
 
 export MAPMAD_SIDECAR_KEY
 MAPMAD_SIDECAR_KEY="$(python3 -c 'import secrets; print(secrets.token_hex(32))')"
