@@ -1,16 +1,60 @@
 # The simulated camera = LIMO's real camera (plan D9). Read by Phase 1 (robot model) and Phase 2 (drives).
-# status: "measured" once Naz has the value from the robot, "spec" from a data sheet, "placeholder" otherwise.
-# Mirrors /outputs/mapmad/p0_setup/facts.md.
+# status: "measured" = read from the robot (2026-10-09, ROS2 camera_info / TF / tape), "spec" = data sheet,
+# "chosen" = our setting. Mirrors /outputs/mapmad/p0_setup/facts.md; raw dump in p0_setup/robot/.
 camera:
-  height_m: 0.20              # above the floor
-  height_status: placeholder  # Naz to measure on the LIMO
-  model: Orbbec Dabai         # exact variant to confirm
-  hfov_deg: 71.0              # RGB horizontal FOV
-  hfov_status: spec           # data sheet value at 16:9; to confirm via camera_info at 4:3
-  width: 320
-  height: 240
-  resolution_status: placeholder  # NoMaD resizes frames to 96x96 anyway; to confirm via camera_info
+  model: Orbbec Dabai         # colour stream /camera/color/image_raw
+  height_m: 0.18              # optical centre above the REAL floor (tape + TF base_link->camera_link 0.18 up)
+  height_status: measured
+  forward_of_base_m: 0.18     # TF base_link->camera_link, no tilt (rpy 0 0 0)
+  width: 640
+  height: 480
+  resolution_status: measured # sim may render 320x240 (same FOV); NoMaD resizes to 96x96 anyway
+  fx: 488.0918
+  fy: 488.0918
+  cx: 320.8124
+  cy: 213.0621                # 27 px above the picture centre: why the centred sim camera needs a pitch
+  distortion: ignored         # sim is an ideal pinhole (Naz, 2026-10-09)
+  hfov_deg: 66.5              # 2 atan(320 / fx)
+  hfov_status: measured
+  vfov_deg: 52.4              # 2 atan(240 / fy), centred
+  # Habitat camera: centred pinhole, this pitch (+ = up) puts its horizon on the real horizon row.
+  # From mapmad/scripts/horizon_check.py (p0_setup/robot/horizon_check.json).
+  sim_pitch_deg: -2.0
+  sim_pitch_status: measured
+  real_horizon_row: 222.7     # of 480, where floor lines meet in color_1..3.png (sim renders 223.7)
+depth:
+  width: 640
+  height: 400
+  fx: 475.698
+  fy: 475.698
+  cx: 322.821
+  cy: 201.882
+  hfov_deg: 67.8
+  to_colour_m: 0.03           # sideways, no rotation
+  units: mm                   # 16UC1
+  status: measured
 lidar:
   present: true
-  model: EAI X2L
-  status: spec                # to confirm on the robot
+  model: YDLidar T-mini Pro
+  topic: /scan                # needs sensor-data QoS (BEST_EFFORT)
+  fov_deg: 220.0              # +-110 deg, not 360
+  step_deg: 0.893             # 247 beams
+  range_m: [0.03, 64.0]
+  rate_hz: 10.0
+  forward_of_base_m: 0.18     # laser_link, same height as base_link, no rotation
+  status: measured
+drive:
+  type: differential          # motion_mode=0, use_mcnamu=False
+  cmd_topic: /cmd_vel         # geometry_msgs/Twist
+  odom_topic: /odom           # 50 Hz
+  max_v_mps: 0.2              # the driver has no limits; NoMaD deployment/config/robot.yaml
+  max_w_radps: 0.4
+  speed_status: chosen
+compute:                      # for running NoMaD on the robot
+  jetpack: 5.1.2              # L4T 35.4.1
+  cuda: "11.4"
+  pytorch: "2.1"              # NVIDIA build, CUDA available
+  python: 3.8.10
+  ram_gb: 8
+  disk_free_gb: 16
+  status: measured
