@@ -195,3 +195,21 @@ def test_stuck_streaks_and_failure_types():
     assert analysis.failure_type(log([False] * 10, [1.5] * 10, False)) == "fail_near"
     assert analysis.failure_type(log([False] * 10, [4.0] * 10, False)) == "fail_far"
     assert analysis.failure_type(log([True] * 150, [0.9] * 150, True)) == "success"
+
+
+def test_pooled_tables_pair_by_episode_and_skip_missing_arms():
+    from vint_train.mapmad.closed_loop.tables import summary_tables
+
+    def row(eid, success):
+        return {"episode_id": eid, "success": success, "success@500": success, "spl": success, "collisions": 0,
+                "collision_share": 0.0, "path_length_m": 1.0, "final_geodesic_m": 0.5}
+
+    arms = {"photo_iv": {"goal": "photo", "episodes": "in_view", "hfov_deg": 66.5},
+            "explore_iv": {"goal": "masked", "episodes": "in_view", "hfov_deg": 66.5}}
+    p1 = {"run": {"max_steps": 1000, "success_m": 1.0}, "arms": arms,
+          "paired": [["photo_iv", "explore_iv"], ["photo_oov", "explore_oov"]]}
+    rows = {"photo_iv": [row(f"p1-{i}", 1.0) for i in range(3)] + [row(f"p1x-{i}", 1.0) for i in range(3)],
+            "explore_iv": [row(f"p1-{i}", 0.0) for i in range(3)] + [row(f"p1x-{i}", 1.0) for i in range(3)]}
+    lines, table_csv, paired_csv = summary_tables(p1, rows, [500], "# t")
+    assert [r["a"] for r in paired_csv][:1] == ["photo_iv"] and {r["a"] for r in paired_csv} == {"photo_iv"}
+    assert paired_csv[0]["n"] == 6 and paired_csv[0]["mean"] == 0.5

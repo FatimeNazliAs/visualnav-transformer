@@ -267,7 +267,8 @@ class EpisodeBuilder:
         p, yaw, geo, share, point = start
         target.point = rounded(point)
         home = self.robot.home
-        return Episode(episode_id=f"p1-{TYPE_CODES[kind]}-{home[:5]}-{index:03d}", type=kind, split=split, home=home,
+        prefix = self.cfg.get("id_prefix", "p1")
+        return Episode(episode_id=f"{prefix}-{TYPE_CODES[kind]}-{home[:5]}-{index:03d}", type=kind, split=split, home=home,
                        target=target, start_position=rounded(p), start_yaw=round(yaw, 4),
                        start_geodesic_m=round(geo, 3), start_target_share=round(share, 4),
                        goal_photo_position=rounded(photo[0]), goal_photo_yaw=round(photo[1], 4),

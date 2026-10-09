@@ -1,6 +1,10 @@
 """Phase 1 tables from the per-episode summaries (inside naz_mapmad):
 
     python -m vint_train.mapmad.closed_loop.tables            # writes <outputs>/p1_baseline/tables.md + CSVs
+    python -m vint_train.mapmad.closed_loop.tables --config A.yaml --combine B.yaml   # pooled: <B's folder>/pooled.md
+
+--combine pools the episode summaries of several runs (distinct episode ids) per arm, for the arms every run has,
+and writes only the per-arm and paired tables (pooled.md, pooled.csv, pooled_paired.csv in the last run's folder).
 
 Per arm: success rate (and success@500 read from the same runs), SPL, collisions per episode, share of steps with
 a collision, path length, final geodesic distance, each as mean [95% bootstrap CI] (10,000 resamples, seed 0).
@@ -109,18 +113,10 @@ def open_issues(layout: RunLayout) -> List[str]:
     return lines
 
 
-def main() -> None:
-    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--config", type=Path, default=P1_CONFIG)
-    p.add_argument("--subdir", default="")
-    args = p.parse_args()
-    layout = RunLayout.load(args.config, subdir=args.subdir)
-    p1, out = layout.cfg, layout.root
-    extra = list(p1["run"].get("report_success_at", []))
+def summary_tables(p1: Dict[str, Any], rows: Dict[str, List[Dict[str, Any]]], extra: List[int], title: str):
+    """(markdown lines, per-arm CSV rows, paired CSV rows) of the per-arm and paired tables."""
     cols = ["success"] + [f"success@{n}" for n in extra] + [m for m in metrics.METRICS if m != "success"]
-    rows = {arm: load_rows(layout, arm, extra) for arm in p1["arms"]}
-
-    lines = ["# Phase 1 baseline: normal NoMaD in Habitat", "",
+    lines = [title, "",
              f"Timeout {p1['run']['max_steps']} steps, success = geodesic <= {p1['run']['success_m']} m (oracle stop). "
              "Mean [95% bootstrap CI, 10,000 resamples].", "",
              "| arm | goal | episodes | HFOV | n | " + " | ".join(LABELS.get(c, c) for c in cols) + " |",
@@ -140,21 +136,51 @@ def main() -> None:
     paired_csv = []
     for a, b in p1.get("paired", []):
         keys = ["success"] + [f"success@{n}" for n in extra] + ["spl"]
-        d = metrics.paired(rows[a], rows[b], keys)
+        d = metrics.paired(rows.get(a, []), rows.get(b, []), keys)
         if d is None:
             continue
         n = len({x["episode_id"] for x in rows[a]} & {x["episode_id"] for x in rows[b]})
         lines.append(f"| {a} | {b} | {n} | " + " | ".join(fmt(d[k]) for k in keys) + " |")
         paired_csv += [{"a": a, "b": b, "metric": k, "n": n, "mean": d[k][0], "low": d[k][1], "high": d[k][2]} for k in keys]
-    lines += diagnostics_tables(layout)
-    (out / "tables.md").write_text("\n".join(lines) + "\n")
-    for name, data in (("tables.csv", table_csv), ("paired.csv", paired_csv)):
+    return lines, table_csv, paired_csv
+
+
+def write(out: Path, lines: List[str], csvs: Dict[str, List[Dict[str, Any]]], md: str) -> None:
+    (out / md).write_text("\n".join(lines) + "\n")
+    for name, data in csvs.items():
         if data:
             with open(out / name, "w", newline="") as f:
                 w = csv.DictWriter(f, fieldnames=list(data[0]))
                 w.writeheader()
                 w.writerows(data)
     print("\n".join(lines))
+
+
+def main() -> None:
+    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("--config", type=Path, default=P1_CONFIG)
+    p.add_argument("--subdir", default="")
+    p.add_argument("--combine", type=Path, nargs="+", default=[], help="run configs to pool with --config")
+    args = p.parse_args()
+    layout = RunLayout.load(args.config, subdir=args.subdir)
+    p1 = layout.cfg
+    extra = list(p1["run"].get("report_success_at", []))
+    if args.combine:
+        layouts = [layout] + [RunLayout.load(c) for c in args.combine]
+        per_run = [{arm: load_rows(l, arm, extra) for arm in p1["arms"]} for l in layouts]
+        arms = [a for a in p1["arms"] if all(r[a] for r in per_run)]
+        rows = {a: [x for r in per_run for x in r[a]] for a in arms}
+        ids = [x["episode_id"] for a in arms[:1] for x in rows[a]]
+        assert len(ids) == len(set(ids)), "pooled runs share episode ids"
+        cfg = dict(p1, arms={a: p1["arms"][a] for a in arms})
+        title = "# Pooled: " + " + ".join(l.cfg["out_dir"] for l in layouts)
+        lines, table_csv, paired_csv = summary_tables(cfg, rows, extra, title)
+        write(layouts[-1].root, lines, {"pooled.csv": table_csv, "pooled_paired.csv": paired_csv}, "pooled.md")
+        return
+    rows = {arm: load_rows(layout, arm, extra) for arm in p1["arms"]}
+    lines, table_csv, paired_csv = summary_tables(p1, rows, extra, "# Phase 1 baseline: normal NoMaD in Habitat")
+    lines += diagnostics_tables(layout)
+    write(layout.root, lines, {"tables.csv": table_csv, "paired.csv": paired_csv}, "tables.md")
 
 
 if __name__ == "__main__":

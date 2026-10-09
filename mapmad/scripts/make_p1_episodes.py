@@ -33,7 +33,9 @@ def save_view(robot: LimoSim, position: List[float], yaw: float, path: Path) -> 
 
 
 def candidate_homes(cfg: Dict[str, Any]) -> List[str]:
-    """Labelled train homes that have an ObjectNav file, in the seeded order."""
+    """Labelled train homes that have an ObjectNav file, in the seeded order (or the config's `homes` list)."""
+    if cfg.get("homes"):
+        return list(cfg["homes"])
     homes = [h for h in config.labelled_homes(cfg["split"]) if objectnav.has_goals(cfg["objectnav_split"], h)]
     return [homes[i] for i in np.random.default_rng(cfg["home_seed"]).permutation(len(homes))]
 
@@ -44,6 +46,8 @@ def summary_markdown(eps: List[Dict[str, Any]], fp: str, homes: List[str], skipp
              f"homes tried and skipped: {skipped or 'none'}", ""]
     for kind in ("out_of_view", "in_view"):
         sel = [e for e in eps if e["type"] == kind]
+        if not sel:  # a config with one type only
+            continue
         geo = np.array([e["start_geodesic_m"] for e in sel])
         lines += [f"## {kind}: {len(sel)} episodes", "",
                   f"- per category: {dict(Counter(e['target']['category'] for e in sel))}",

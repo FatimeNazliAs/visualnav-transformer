@@ -48,8 +48,11 @@ def test_run_layout_paths(tmp_path):
 
 
 def test_run_config_extends_another(tmp_path):
-    (tmp_path / "base.yaml").write_text("out_dir: base_run\nrun: {max_steps: 1000}\n")
-    (tmp_path / "rerun.yaml").write_text("extends: base.yaml\nout_dir: rerun\n")
+    (tmp_path / "base.yaml").write_text("out_dir: base_run\nrun: {max_steps: 1000, base_seed: 0}\n"
+                                        "episodes: {seed: 1, types: {a: 1, b: 2}}\n")
+    (tmp_path / "rerun.yaml").write_text("extends: base.yaml\nout_dir: rerun\nrun: {base_seed: 5}\n"
+                                         "episodes: {types: {a: null}}\n")
     layout = RunLayout.load(tmp_path / "rerun.yaml", outputs=tmp_path)
-    assert layout.cfg == {"out_dir": "rerun", "run": {"max_steps": 1000}}
+    assert layout.cfg == {"out_dir": "rerun", "run": {"max_steps": 1000, "base_seed": 5},
+                          "episodes": {"seed": 1, "types": {"b": 2}}}
     assert layout.episodes_file == tmp_path / "rerun" / "episodes" / "episodes.json"

@@ -5,8 +5,9 @@
     layout.log("photo_iv", "p1-iv-00081-000")     # <outputs>/p1_baseline/logs/photo_iv/p1-iv-00081-000.jsonl
 
 With a `subdir` (e.g. "checks/determinism_a") every run output moves below <out_dir>/<subdir>; the episode file
-stays in <out_dir>/episodes. A run config may start from another one (`extends: p1_baseline.yaml`, top-level keys
-replaced). Needs only PyYAML: used in both containers.
+stays in <out_dir>/episodes. A run config may start from another one (`extends: p1_baseline.yaml`): its blocks are
+merged into that file's (nested keys replaced one by one; a key set to null is removed). Needs only PyYAML: used in
+both containers.
 """
 
 from dataclasses import dataclass
@@ -20,11 +21,24 @@ from mapmad_sim import config
 P1_CONFIG = config.CONFIG_DIR / "p1_baseline.yaml"
 
 
+def merge(base: Dict[str, Any], over: Dict[str, Any]) -> Dict[str, Any]:
+    """base with over's keys: dicts merged recursively, other values replaced, None removes the key."""
+    out = dict(base)
+    for k, v in over.items():
+        if v is None:
+            out.pop(k, None)
+        elif isinstance(v, dict) and isinstance(out.get(k), dict):
+            out[k] = merge(out[k], v)
+        else:
+            out[k] = v
+    return out
+
+
 def read_config(path: Path) -> Dict[str, Any]:
-    """A run config; with `extends: <file>` (next to it) that file's keys come first and these replace them."""
+    """A run config; with `extends: <file>` (next to it) merged into that file (see the module docstring)."""
     cfg = yaml.safe_load(path.read_text())
     base = cfg.pop("extends", None)
-    return {**read_config(path.parent / base), **cfg} if base else cfg
+    return merge(read_config(path.parent / base), cfg) if base else cfg
 
 
 @dataclass(frozen=True)

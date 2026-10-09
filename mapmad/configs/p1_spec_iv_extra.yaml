@@ -1,0 +1,18 @@
+# G1 row 3 extension (Naz, 2026-10-09; rule written before the runs in p1_baseline/phase1_log.md): 30 more in-view
+# episodes in the same 10 homes, same rules, new seed base 1000, LIMO spec-sheet size. Pooled with the 30 in-view
+# episodes of p1_baseline_spec (8ea943b2…) for rows 3 and 5 on 60:
+#   python -m vint_train.mapmad.closed_loop.tables --config .../p1_baseline_spec.yaml --combine .../p1_spec_iv_extra.yaml
+
+extends: p1_baseline_spec.yaml
+out_dir: p1_spec_iv_extra
+
+episodes:
+  seed: 1000
+  id_prefix: p1x                     # p1x-iv-<home>-<k>: distinct from the p1-iv-* episodes they are pooled with
+  homes: [00746-RTV2n6fXB2w, 00440-wPLokgvCnuk, 00272-kA2nG18hCAr, 00330-WhNyDTnd9g5, 00241-h6nwVLpAKQz,
+          00732-Z2DQddYp1fn, 00081-5biL7VEkByM, 00534-DBBESbk4Y3k, 00397-ZNanfzgCdm3, 00401-H8rQCnvBgo6]
+  types:
+    out_of_view: null                # in view only
+
+run:
+  base_seed: 1000                    # episode seed = 1000 + index in this file
