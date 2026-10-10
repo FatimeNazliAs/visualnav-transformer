@@ -215,6 +215,16 @@ class LimoSim:
             node.translation = mn.Vector3(0.0, above_feet, -self.spec.camera_forward_m)
             node.rotation = mn.Quaternion.rotation(mn.Deg(self.spec.pitch_deg), mn.Vector3.x_axis())
 
+    def camera_transform(self) -> np.ndarray:
+        """4x4 camera-to-world matrix of the colour (and co-located depth) camera at the current pose."""
+        node = self.sim._sensors[self.camera_uuids[0]]._sensor_object.node
+        return np.array(node.absolute_transformation(), dtype=np.float64)
+
+    @property
+    def floor_y(self) -> float:
+        """Habitat height of the real floor under the turning centre (floor probe)."""
+        return float(self.position[1] - self.floor_below_feet)
+
     @property
     def camera_height_above_floor(self) -> float:
         """Check value: should equal spec.camera_height_m."""

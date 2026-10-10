@@ -1,0 +1,116 @@
+# Phase 2 — practice-drive generator (plan "Phase 2" + Naz's Phase 2 answers/block, 2026-10-10).
+# Read by mapmad/scripts/generate_drives.py, make_p2_splits.py, p2_report.py (Habitat side).
+# out_dir is below paths.yaml `outputs` (/outputs/mapmad); datasets are below paths.yaml `mapmad_data`.
+
+out_dir: p2_datagen
+split: train                         # HM3D train homes only; the 36 ObjectNav val (exam) homes are never touched
+objectnav_split: train               # object targets + view points: ObjectNav HM3D v2 train goals_by_category
+seed: 20261010                       # home seed = seed + index of the home among the 800 sorted train homes
+
+datasets:                            # name: folder below mapmad_data
+  full: habitat_mapmad
+  pilot: pilot_habitat_mapmad
+
+homes:
+  splits_file: p2_home_splits.json   # next to this file; frozen val-drive homes + sha256 (make_p2_splits.py)
+  val_drive:
+    phase1_homes: ["00746", "00440", "00272", "00330", "00241", "00732", "00081", "00534", "00397", "00401"]   # 5-digit prefixes
+    n_random_unlabelled: 30
+    seed: 2610
+  pilot:
+    n_homes: 20                      # train homes, none of them val-drive
+    n_labelled: 10                   # >= 8 (block)
+    seed: 7
+
+drives_per_home:                     # full generation (Naz, stop P): 145 x (40 + 8) + 655 x 8 = 12,200 drives
+  labelled: {object: 40, spot: 8}    # = 5,800 object + 6,400 spot
+  unlabelled: {spot: 8}
+pilot_drives_per_home:               # 20 homes x 10 = 200 drives
+  labelled: {object: 6, spot: 4}
+  unlabelled: {spot: 10}
+
+sampling:
+  geodesic_m: [3.0, 15.0]            # start -> end on LIMO's floor map
+  same_floor_max_dy_m: 0.5
+  floor_names: [floor, carpet, rug, mat, doormat]   # labelled homes: the robot stands on one of these (Phase 1)
+  min_island_area_m2: 5.0            # all homes: start and end on an island this big (no bed / table tops)
+  view_point_max_snap_m: 0.2         # ObjectNav view point -> LIMO navmesh; farther off = unusable, try the next one
+  fallback_target_point_max_m: 1.0   # no usable view point: nearest navigable point to the box (end_fallback)
+  start_tries: 200
+  target_tries: 200
+  visibility_headings: 8             # object drives: also record whether the target shows in any of 8 headings
+
+variations:                          # drawn per drive, independently
+  wall_recovery:
+    share: 0.15
+    centre_px: 20                    # central 20 x 20 depth pixels ...
+    depth_m: [0.2, 0.5]              # ... median in this range at the start
+    max_navmesh_clearance_m: 0.35    # start points this close to the floor map's edge are tried
+    headings: 16
+    tries: 60
+    clear_depth_m: 1.0               # turn (toward the path side) until the centre depth is above this ...
+    path_within_deg: 30.0            # ... or the path is within this angle
+  detour:
+    share: 0.35                      # asked; ~85% find a detour that passes the checks below -> ~30% realised (plan)
+    count: [1, 2]                    # 1 or 2 detours, equally likely
+    offset_m: [0.5, 1.5]             # sideways from the shortest path
+    min_clearance_m: 0.10            # the detour point needs this much room beyond the robot's radius
+    min_path_m: 2.0                  # only paths at least this long get detours
+    tries: 20
+    realised_m: 0.4                  # a drive counts as detoured if its path leaves the shortest path by >= this
+    max_turn_deg: 100.0              # the smoothed detour route turns at most this much within turn_window_m
+    turn_window_m: 0.5               # (no hairpins: pilot 1 had 4 collision drives, all detours doubling back)
+  kick:
+    share: 0.21                      # asked; pilot 6 realised 72% of asked (straight-stretch rule) -> ~15% (Naz, stop P)
+    angle_deg: [20.0, 40.0]          # heading pushed off by this much (random side), the expert steers back
+    v: 0.15                          # forward speed while being pushed (m/s): an arc, not a spot turn
+    at_progress: [0.2, 0.7]          # of the path length
+    min_clearance_m: 0.25
+    min_remaining_m: 1.5
+    straight_ahead_m: 1.0            # kick only where the path turns <= max_turn_ahead_deg over the next 1.0 m ...
+    max_turn_ahead_deg: 25.0
+    max_heading_error_deg: 15.0      # ... and the robot is lined up with it
+
+expert:
+  grid_cell_m: 0.05
+  preferred_clearance_m: 0.25        # Dijkstra pays extra for passing closer than this to the floor map's edge
+  clearance_weight: 4.0
+  smooth_step_m: 0.05
+  smooth_window_m: 0.5
+  smooth_passes: 3
+  smooth_min_clearance_m: 0.05
+  lookahead_m: 0.5
+  tight_lookahead_m: 0.3
+  tight_turn_deg: 45.0
+  min_v: 0.04
+  approach_gain: 0.8
+  goal_tolerance_m: 0.05
+  start_turn_deg: 10.0               # leave the start turn within 10 deg (30 deg: first arc scraped walls, pilot 3)
+  final_turn_tolerance_deg: 10.0
+  curve_speed_factor: 0.8            # v <= 0.8 max_w / path curvature ahead (pilot 3: ran wide in a tight bend)
+
+discard:
+  time_factor: 3.0                   # > 3 x shortest-path time (at max_v) ...
+  extra_turn_s: 30.0                 # ... + 30 s for turns
+  max_collision_streak: 20           # >= 20 consecutive collision steps
+  flag_home_share: 0.2               # homes with > 20% discards are flagged
+  attempts_per_drive: 4              # a discarded drive is redrawn (same variations) up to this many times
+
+record:
+  jpg_quality: 90
+  metric_waypoint_spacing: 0.05      # data_config.yaml habitat_mapmad: 0.2 m/s / 4 Hz (block); measured mean reported
+
+map:
+  resolution_m: 0.1
+  max_depth_m: 4.0
+  obstacle_band_m: [0.05, 0.55]      # above the REAL floor
+  floor_min_m: -0.10                 # points lower than this (stairwell, floor below) are ignored, not free
+  min_points: 3                      # habitat-starter 06_topdown_map.py threshold
+  margin_m: 1.0                      # map = navmesh bounds + this on every side
+
+report:
+  videos: 3
+  overlays: 10
+  local_map_size: 64
+  local_map_resolution_m: 0.1
+  video_fps: 8                       # 2x real time

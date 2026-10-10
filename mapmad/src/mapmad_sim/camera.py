@@ -95,3 +95,24 @@ def floor_plane(depth: np.ndarray, mask: np.ndarray, f: float, cx: float, cy: fl
         "inlier_share": float(best.mean()),
         "pixels": int(len(points)),
     }
+
+
+def project_points(points: np.ndarray, cam_tf: np.ndarray, width: int, height: int, hfov_deg: float) -> np.ndarray:
+    """Habitat world points (N, 3) -> pixel (col, row) (N, 2) of a centred pinhole camera with camera-to-world
+    matrix cam_tf (OpenGL: x right, y up, looking along -z); NaN for points less than 5 cm in front of it."""
+    local = (np.asarray(points, dtype=np.float64) - cam_tf[:3, 3]) @ cam_tf[:3, :3]
+    f = focal_px(width, hfov_deg)
+    z = -local[:, 2]
+    out = np.full((len(local), 2), np.nan)
+    ok = z > 0.05
+    out[ok, 0] = local[ok, 0] / z[ok] * f + width / 2.0
+    out[ok, 1] = -local[ok, 1] / z[ok] * f + height / 2.0
+    return out
+
+
+def centre_depth(depth: np.ndarray, n: int) -> float:
+    """Median of the central n x n pixels of a depth picture; 0 readings (mesh holes) are skipped, 0 if all are."""
+    h, w = depth.shape
+    c = depth[h // 2 - n // 2:h // 2 + n // 2, w // 2 - n // 2:w // 2 + n // 2]
+    c = c[c > 0]
+    return float(np.median(c)) if c.size else 0.0

@@ -61,3 +61,8 @@ sacson:
   metric_waypoint_spacing: 0.255
 
 # add your own dataset params here:
+
+# MapMaD (Phase 2): expert drives in HM3D homes, one frame per 0.25 s control step at <= 0.2 m/s
+# (mapmad/configs/p2_datagen.yaml). 0.05 = 0.2 m/s / 4 Hz, fixed (Naz, 2026-10-10); measured mean 0.045 m/frame.
+habitat_mapmad:
+  metric_waypoint_spacing: 0.05
