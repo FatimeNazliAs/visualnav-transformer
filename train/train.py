@@ -69,10 +69,6 @@ def main(config):
     ])
     transform = transforms.Compose(transform)
 
-    # Load the data
-    train_dataset = []
-    test_dataloaders = {}
-
     if "context_type" not in config:
         config["context_type"] = "temporal"
 
@@ -94,72 +90,16 @@ def main(config):
     if "gradient_accumulation_steps" not in config:
         config["gradient_accumulation_steps"] = 1
 
-    for dataset_name in config["datasets"]:
-        data_config = config["datasets"][dataset_name]
-        if "negative_mining" not in data_config:
-            data_config["negative_mining"] = True
-        if "goals_per_obs" not in data_config:
-            data_config["goals_per_obs"] = 1
-        if "end_slack" not in data_config:
-            data_config["end_slack"] = 0
-        if "waypoint_spacing" not in data_config:
-            data_config["waypoint_spacing"] = 1
-
-        for data_split_type in ["train", "test"]:
-            if data_split_type in data_config:
-                    dataset = ViNT_Dataset(
-                        data_folder=data_config["data_folder"],
-                        data_split_folder=data_config[data_split_type],
-                        dataset_name=dataset_name,
-                        image_size=config["image_size"],
-                        waypoint_spacing=data_config["waypoint_spacing"],
-                        min_dist_cat=config["distance"]["min_dist_cat"],
-                        max_dist_cat=config["distance"]["max_dist_cat"],
-                        min_action_distance=config["action"]["min_dist_cat"],
-                        max_action_distance=config["action"]["max_dist_cat"],
-                        negative_mining=data_config["negative_mining"],
-                        len_traj_pred=config["len_traj_pred"],
-                        learn_angle=config["learn_angle"],
-                        context_size=config["context_size"],
-                        context_type=config["context_type"],
-                        context_stride=config["context_stride"],
-                        index_context_size=config["index_context_size"],
-                        end_slack=data_config["end_slack"],
-                        goals_per_obs=data_config["goals_per_obs"],
-                        normalize=config["normalize"],
-                        goal_type=config["goal_type"],
-                    )
-                    if data_split_type == "train":
-                        train_dataset.append(dataset)
-                    else:
-                        dataset_type = f"{dataset_name}_{data_split_type}"
-                        if dataset_type not in test_dataloaders:
-                            test_dataloaders[dataset_type] = {}
-                        test_dataloaders[dataset_type] = dataset
-
-    # combine all the datasets from different robots
-    train_dataset = ConcatDataset(train_dataset)
-
-    train_loader = DataLoader(
-        train_dataset,
-        batch_size=config["batch_size"],
-        shuffle=True,
-        num_workers=config["num_workers"],
-        drop_last=False,
-        persistent_workers=config["num_workers"] > 0,
-    )
-
     if "eval_batch_size" not in config:
         config["eval_batch_size"] = config["batch_size"]
 
-    for dataset_type, dataset in test_dataloaders.items():
-        test_dataloaders[dataset_type] = DataLoader(
-            dataset,
-            batch_size=config["eval_batch_size"],
-            shuffle=True,
-            num_workers=0,
-            drop_last=False,
-        )
+    mapmad_sampler = None
+    if config.get("map_input", False):
+        # MapMaD: map tensor + modes per sample, epoch = epoch_samples weighted draws (vint_train/mapmad)
+        from vint_train.mapmad.train_setup import build_mapmad_loaders
+        train_loader, mapmad_sampler, test_dataloaders = build_mapmad_loaders(config)
+    else:
+        train_loader, test_dataloaders = build_nomad_loaders(config)
 
     # Create the model
     if config["model_type"] == "gnm":
@@ -190,6 +130,7 @@ def main(config):
                 mha_num_attention_heads=config["mha_num_attention_heads"],
                 mha_num_attention_layers=config["mha_num_attention_layers"],
                 mha_ff_dim_factor=config["mha_ff_dim_factor"],
+                map_input=config.get("map_input", False),
             )
             vision_encoder = replace_bn_with_gn(vision_encoder)
         elif config["vision_encoder"] == "vib": 
@@ -296,6 +237,14 @@ def main(config):
                 after_scheduler=scheduler,
             )
 
+    load_report = None
+    if config.get("map_input", False) and config.get("init_weights"):
+        # MapMaD: strict load of the official NoMaD weights; only map_encoder.* is new
+        from vint_train.mapmad.weights import load_official_into
+        load_report = load_official_into(model, config["init_weights"])
+        print("[mapmad] loaded", config["init_weights"], "new keys:", load_report["new_keys"],
+              "positional encoding:", load_report["positional_encoding"])
+
     current_epoch = 0
     if "load_run" in config:
         load_project_folder = os.path.join("logs", config["load_run"])
@@ -339,6 +288,10 @@ def main(config):
             use_wandb=config["use_wandb"],
             eval_fraction=config["eval_fraction"],
         )
+    elif config.get("map_input", False):
+        from vint_train.mapmad.train_loop import train_eval_loop_mapmad
+        train_eval_loop_mapmad(model, optimizer, scheduler, noise_scheduler, train_loader, mapmad_sampler,
+                               test_dataloaders, transform, config, device, current_epoch, load_report)
     else:
         train_eval_loop_nomad(
             train_model=config["train"],
@@ -368,6 +321,82 @@ def main(config):
     print("FINISHED TRAINING")
 
 
+def build_nomad_loaders(config):
+    """NoMaD's own datasets and loaders (unchanged; moved out of main so MapMaD can swap in its loaders)."""
+    # Load the data
+    train_dataset = []
+    test_dataloaders = {}
+
+    for dataset_name in config["datasets"]:
+        data_config = config["datasets"][dataset_name]
+        if "negative_mining" not in data_config:
+            data_config["negative_mining"] = True
+        if "goals_per_obs" not in data_config:
+            data_config["goals_per_obs"] = 1
+        if "end_slack" not in data_config:
+            data_config["end_slack"] = 0
+        if "waypoint_spacing" not in data_config:
+            data_config["waypoint_spacing"] = 1
+
+        for data_split_type in ["train", "test"]:
+            if data_split_type in data_config:
+                    dataset = ViNT_Dataset(
+                        data_folder=data_config["data_folder"],
+                        data_split_folder=data_config[data_split_type],
+                        dataset_name=dataset_name,
+                        image_size=config["image_size"],
+                        waypoint_spacing=data_config["waypoint_spacing"],
+                        min_dist_cat=config["distance"]["min_dist_cat"],
+                        max_dist_cat=config["distance"]["max_dist_cat"],
+                        min_action_distance=config["action"]["min_dist_cat"],
+                        max_action_distance=config["action"]["max_dist_cat"],
+                        negative_mining=data_config["negative_mining"],
+                        len_traj_pred=config["len_traj_pred"],
+                        learn_angle=config["learn_angle"],
+                        context_size=config["context_size"],
+                        context_type=config["context_type"],
+                        context_stride=config["context_stride"],
+                        index_context_size=config["index_context_size"],
+                        end_slack=data_config["end_slack"],
+                        goals_per_obs=data_config["goals_per_obs"],
+                        normalize=config["normalize"],
+                        goal_type=config["goal_type"],
+                    )
+                    if data_split_type == "train":
+                        train_dataset.append(dataset)
+                    else:
+                        dataset_type = f"{dataset_name}_{data_split_type}"
+                        if dataset_type not in test_dataloaders:
+                            test_dataloaders[dataset_type] = {}
+                        test_dataloaders[dataset_type] = dataset
+
+    # combine all the datasets from different robots
+    train_dataset = ConcatDataset(train_dataset)
+
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=config["batch_size"],
+        shuffle=True,
+        num_workers=config["num_workers"],
+        drop_last=False,
+        persistent_workers=config["num_workers"] > 0,
+    )
+
+    if "eval_batch_size" not in config:
+        config["eval_batch_size"] = config["batch_size"]
+
+    for dataset_type, dataset in test_dataloaders.items():
+        test_dataloaders[dataset_type] = DataLoader(
+            dataset,
+            batch_size=config["eval_batch_size"],
+            shuffle=True,
+            num_workers=0,
+            drop_last=False,
+        )
+
+    return train_loader, test_dataloaders
+
+
 if __name__ == "__main__":
     torch.multiprocessing.set_start_method("spawn")
 
@@ -390,12 +419,15 @@ if __name__ == "__main__":
 
     with open(args.config, "r") as f:
         user_config = yaml.safe_load(f)
+    if "base_config" in user_config:  # MapMaD layered configs (vint_train/mapmad/config.py)
+        from vint_train.mapmad.config import resolve_base
+        user_config = resolve_base(args.config, user_config)
 
     config.update(user_config)
 
     config["run_name"] += "_" + time.strftime("%Y_%m_%d_%H_%M_%S")
     config["project_folder"] = os.path.join(
-        "logs", config["project_name"], config["run_name"]
+        config.get("logs_root", "logs"), config["project_name"], config["run_name"]
     )
     os.makedirs(
         config[

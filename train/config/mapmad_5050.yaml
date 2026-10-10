@@ -1,0 +1,8 @@
+# Phase 3 diagnostic (Naz, stop T): the 5-epoch run with a 50/50 Habitat/GoStanford mix, GPU 1.
+# NOT used for gate G3 (judged on mapmad.yaml's 70/30 run); its rows 4, 5 and R inform the Phase 4 mix decision.
+base_config: mapmad.yaml
+run_name: mapmad_5050
+gpu_ids: [1]
+dataset_weights:
+  habitat_mapmad: 0.5
+  go_stanford: 0.5

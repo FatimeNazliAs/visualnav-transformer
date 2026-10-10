@@ -254,14 +254,18 @@ class ViNT_Dataset(Dataset):
         """
         return self.goals_index[np.random.randint(0, len(self.goals_index))]
 
+    def _index_path(self) -> str:
+        """Where the sample index is cached (MapMaD's dataset overrides this to add the waypoint spacing)."""
+        return os.path.join(
+            self.data_split_folder,
+            f"dataset_dist_{self.min_dist_cat}_to_{self.max_dist_cat}_context_{self.context_type}_n{self.index_context_size}_slack_{self.end_slack}.pkl",
+        )
+
     def _load_index(self) -> None:
         """
         Generates a list of tuples of (obs_traj_name, goal_traj_name, obs_time, goal_time) for each observation in the dataset
         """
-        index_to_data_path = os.path.join(
-            self.data_split_folder,
-            f"dataset_dist_{self.min_dist_cat}_to_{self.max_dist_cat}_context_{self.context_type}_n{self.index_context_size}_slack_{self.end_slack}.pkl",
-        )
+        index_to_data_path = self._index_path()
         try:
             # load the index_to_data if it already exists (to save time)
             with open(index_to_data_path, "rb") as f:

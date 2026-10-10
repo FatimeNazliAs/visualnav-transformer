@@ -25,7 +25,8 @@ from vint_train.mapmad.closed_loop.policy import Command, Observation, Policy
 
 
 def build_nomad(cfg: Dict[str, Any]) -> torch.nn.Module:
-    """NoMaD model as deployment/src/utils.py load_model builds it (model_type nomad, vision_encoder nomad_vint)."""
+    """NoMaD model as deployment/src/utils.py load_model builds it (model_type nomad, vision_encoder nomad_vint).
+    `map_input: true` in cfg builds MapMaD (map encoder + map token)."""
     from diffusion_policy.model.diffusion.conditional_unet1d import ConditionalUnet1D
 
     from vint_train.models.nomad.nomad import DenseNetwork, NoMaD
@@ -36,7 +37,7 @@ def build_nomad(cfg: Dict[str, Any]) -> torch.nn.Module:
     vision_encoder = NoMaD_ViNT(obs_encoding_size=cfg["encoding_size"], context_size=cfg["context_size"],
                                 mha_num_attention_heads=cfg["mha_num_attention_heads"],
                                 mha_num_attention_layers=cfg["mha_num_attention_layers"],
-                                mha_ff_dim_factor=cfg["mha_ff_dim_factor"])
+                                mha_ff_dim_factor=cfg["mha_ff_dim_factor"], map_input=cfg.get("map_input", False))
     vision_encoder = replace_bn_with_gn(vision_encoder)
     noise_pred_net = ConditionalUnet1D(input_dim=2, global_cond_dim=cfg["encoding_size"], down_dims=cfg["down_dims"],
                                        cond_predict_scale=cfg["cond_predict_scale"])

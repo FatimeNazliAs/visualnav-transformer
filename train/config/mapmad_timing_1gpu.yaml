@@ -1,0 +1,11 @@
+# Phase 3 timing test: ~200 steps at batch 256 on 1 GPU(s), no wandb, no eval (layered on mapmad.yaml).
+base_config: mapmad.yaml
+project_name: mapmad_p3_timing
+run_name: timing_1gpu
+logs_root: /outputs/mapmad/p3_model/timing
+use_wandb: False
+epochs: 1
+gpu_ids: [0]
+epoch_samples: 51200      # 200 steps of 256
+eval_freq: 0
+print_log_freq: 50

@@ -15,14 +15,19 @@ class NoMaD_ViNT(nn.Module):
         mha_num_attention_heads: Optional[int] = 2,
         mha_num_attention_layers: Optional[int] = 2,
         mha_ff_dim_factor: Optional[int] = 4,
+        map_input: bool = False,
     ) -> None:
         """
         NoMaD ViNT Encoder class
+
+        map_input (MapMaD): False = the original NoMaD. True adds a map encoder whose token is appended last
+        (slot context_size + 2) with its own mask (see vint_train/mapmad/README.md).
         """
         super().__init__()
         self.obs_encoding_size = obs_encoding_size
         self.goal_encoding_size = obs_encoding_size
         self.context_size = context_size
+        self.map_input = map_input
 
         # Initialize the observation encoder
         if obs_encoder.split("-")[0] == "efficientnet":
@@ -50,7 +55,7 @@ class NoMaD_ViNT(nn.Module):
             self.compress_goal_enc = nn.Identity()
 
         # Initialize positional encoding and self-attention layers
-        self.positional_encoding = PositionalEncoding(self.obs_encoding_size, max_seq_len=self.context_size + 2)
+        self.positional_encoding = PositionalEncoding(self.obs_encoding_size, max_seq_len=self.context_size + (3 if map_input else 2))
         self.sa_layer = nn.TransformerEncoderLayer(
             d_model=self.obs_encoding_size, 
             nhead=mha_num_attention_heads, 
@@ -68,17 +73,53 @@ class NoMaD_ViNT(nn.Module):
         self.all_masks = torch.cat([self.no_mask, self.goal_mask], dim=0)
         self.avg_pool_mask = torch.cat([1 - self.no_mask.float(), (1 - self.goal_mask.float()) * ((self.context_size + 2)/(self.context_size + 1))], dim=0)
 
+        if map_input:
+            from vint_train.mapmad.map_encoder import MapEncoder
+            self.map_encoder = MapEncoder(out_dim=self.obs_encoding_size)
+            # Key padding masks for [obs x (context_size + 1), goal, map], row = goal_mask + 2 * map_mask
+            self.map_masks = torch.zeros((4, self.context_size + 3), dtype=torch.bool)
+            self.map_masks[[1, 3], -2] = True  # photo goal hidden
+            self.map_masks[[2, 3], -1] = True  # map hidden
 
-    def forward(self, obs_img: torch.tensor, goal_img: torch.tensor, input_goal_mask: torch.tensor = None) -> Tuple[torch.Tensor, torch.Tensor]:
 
+    def forward(self, obs_img: torch.tensor, goal_img: torch.tensor, input_goal_mask: torch.tensor = None,
+                map_img: torch.tensor = None, input_map_mask: torch.tensor = None) -> Tuple[torch.Tensor, torch.Tensor]:
+
+        device = obs_img.device
+
+        # Get the input goal mask 
+        if input_goal_mask is not None:
+            goal_mask = input_goal_mask.to(device)
+
+        obs_encoding = self._encode_images(obs_img, goal_img)
+        if self.map_input:
+            return self._attend_with_map(obs_encoding, goal_mask, map_img, input_map_mask)
+
+        # If a goal mask is provided, mask some of the goal tokens
+        if goal_mask is not None:
+            no_goal_mask = goal_mask.long()
+            src_key_padding_mask = torch.index_select(self.all_masks.to(device), 0, no_goal_mask)
+        else:
+            src_key_padding_mask = None
+        
+        # Apply positional encoding 
+        if self.positional_encoding:
+            obs_encoding = self.positional_encoding(obs_encoding)
+
+        obs_encoding_tokens = self.sa_encoder(obs_encoding, src_key_padding_mask=src_key_padding_mask)
+        if src_key_padding_mask is not None:
+            avg_mask = torch.index_select(self.avg_pool_mask.to(device), 0, no_goal_mask).unsqueeze(-1)
+            obs_encoding_tokens = obs_encoding_tokens * avg_mask
+        obs_encoding_tokens = torch.mean(obs_encoding_tokens, dim=1)
+
+        return obs_encoding_tokens
+
+    def _encode_images(self, obs_img: torch.tensor, goal_img: torch.tensor) -> torch.Tensor:
+        """(B, context_size + 2, D) tokens: one per context frame (oldest first), then the obs+goal token."""
         device = obs_img.device
 
         # Initialize the goal encoding
         goal_encoding = torch.zeros((obs_img.size()[0], 1, self.goal_encoding_size)).to(device)
-        
-        # Get the input goal mask 
-        if input_goal_mask is not None:
-            goal_mask = input_goal_mask.to(device)
 
         # Get the goal encoding
         obsgoal_img = torch.cat([obs_img[:, 3*self.context_size:, :, :], goal_img], dim=1) # concatenate the obs image/context and goal image --> non image goal?
@@ -109,25 +150,30 @@ class NoMaD_ViNT(nn.Module):
         obs_encoding = obs_encoding.reshape((self.context_size+1, -1, self.obs_encoding_size))
         obs_encoding = torch.transpose(obs_encoding, 0, 1)
         obs_encoding = torch.cat((obs_encoding, goal_encoding), dim=1)
-        
-        # If a goal mask is provided, mask some of the goal tokens
-        if goal_mask is not None:
-            no_goal_mask = goal_mask.long()
-            src_key_padding_mask = torch.index_select(self.all_masks.to(device), 0, no_goal_mask)
-        else:
-            src_key_padding_mask = None
-        
-        # Apply positional encoding 
-        if self.positional_encoding:
-            obs_encoding = self.positional_encoding(obs_encoding)
+        return obs_encoding
 
-        obs_encoding_tokens = self.sa_encoder(obs_encoding, src_key_padding_mask=src_key_padding_mask)
-        if src_key_padding_mask is not None:
-            avg_mask = torch.index_select(self.avg_pool_mask.to(device), 0, no_goal_mask).unsqueeze(-1)
-            obs_encoding_tokens = obs_encoding_tokens * avg_mask
-        obs_encoding_tokens = torch.mean(obs_encoding_tokens, dim=1)
+    def map_tokens(self, image_tokens: torch.Tensor, goal_mask: torch.Tensor, map_img: torch.Tensor,
+                   map_mask: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """MapMaD: image tokens + map token (last), positional encoding added -> (tokens, key padding mask)."""
+        device = image_tokens.device
+        map_token = self.map_encoder(map_img.to(device)).unsqueeze(1)
+        tokens = self.positional_encoding(torch.cat((image_tokens, map_token), dim=1))
+        mask_row = goal_mask.long().to(device) + 2 * map_mask.long().to(device)
+        return tokens, torch.index_select(self.map_masks.to(device), 0, mask_row)
 
-        return obs_encoding_tokens
+    def _attend_with_map(self, image_tokens: torch.Tensor, goal_mask: torch.Tensor, map_img: torch.Tensor,
+                         map_mask: torch.Tensor) -> torch.Tensor:
+        """MapMaD attention + pooling. Hidden tokens are excluded from attention and from the pooling:
+        map hidden -> NoMaD's own avg_pool_mask formula over the first context_size + 2 tokens (incl. its fixed
+        scale when the goal is hidden); map shown -> plain mean over the visible tokens."""
+        tokens, padding = self.map_tokens(image_tokens, goal_mask, map_img, map_mask)
+        out = self.sa_encoder(tokens, src_key_padding_mask=padding)
+        n_old = self.context_size + 2
+        old_mask = torch.index_select(self.avg_pool_mask.to(out.device), 0, goal_mask.long().to(out.device)).unsqueeze(-1)
+        pooled_map_hidden = torch.mean(out[:, :n_old] * old_mask, dim=1)
+        visible = (~padding).float().unsqueeze(-1)
+        pooled_map_shown = (out * visible).sum(dim=1) / visible.sum(dim=1)
+        return torch.where(map_mask.to(out.device).bool().unsqueeze(-1), pooled_map_hidden, pooled_map_shown)
 
 
 

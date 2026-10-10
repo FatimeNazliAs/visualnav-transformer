@@ -44,6 +44,14 @@ def local_to_world(forward: np.ndarray, left: np.ndarray, pose: Tuple[float, flo
     return x + forward * c - left * s, y + forward * s + left * c
 
 
+def world_to_local(wx: np.ndarray, wy: np.ndarray, pose: Tuple[float, float, float]) -> Tuple[np.ndarray, np.ndarray]:
+    """World (X, Y) -> robot frame (forward, left) for pose (x, y, yaw); the exact inverse of local_to_world."""
+    x, y, yaw = pose
+    c, s = np.cos(yaw), np.sin(yaw)
+    dx, dy = np.asarray(wx, dtype=np.float64) - x, np.asarray(wy, dtype=np.float64) - y
+    return dx * c + dy * s, -dx * s + dy * c
+
+
 def known_at(first_seen: np.ndarray, t: int) -> np.ndarray:
     """Cells already seen at frame t: 0 <= first_seen <= t (bool)."""
     return (first_seen >= 0) & (first_seen <= t)

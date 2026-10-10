@@ -1,0 +1,12 @@
+# Phase 3 spacing test: Habitat waypoint_spacing 5, 1 epoch (200k samples) from nomad.pth, lr 1e-4 throughout,
+# one GPU per job (the timing test: DataParallel on 2 GPUs was 2.3x slower). Layered on mapmad.yaml.
+base_config: mapmad.yaml
+project_name: mapmad_p3
+run_name: spacing_s5
+logs_root: /outputs/mapmad/p3_model/spacing
+epochs: 1
+use_wandb: False          # no wandb API key in naz_mapmad (decision to confirm); metrics in metrics.jsonl
+gpu_ids: [0]
+datasets:
+  habitat_mapmad:
+    waypoint_spacing: 5

@@ -1,0 +1,20 @@
+# Phase 3 smoke run: 1 short epoch on the tiny splits, 1 GPU, no wandb (layered on mapmad.yaml).
+base_config: mapmad.yaml
+project_name: mapmad_p3_smoke
+run_name: smoke
+logs_root: /outputs/mapmad/p3_model/smoke
+use_wandb: False
+epochs: 1
+gpu_ids: [0]
+batch_size: 32
+num_workers: 4
+epoch_samples: 640        # 20 steps; the tiny splits hold ~0.8 k Habitat + ~0.9 k GoStanford samples
+eval_samples: 128
+print_log_freq: 5
+datasets:
+  habitat_mapmad:
+    train: /mapmad_data/splits/habitat_mapmad_tiny/train/
+    test: /mapmad_data/splits/habitat_mapmad_tiny/test/
+  go_stanford:
+    train: /mapmad_data/splits/go_stanford_tiny/train/
+    test: /mapmad_data/splits/go_stanford_tiny/test/

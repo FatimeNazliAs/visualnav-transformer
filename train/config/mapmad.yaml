@@ -1,0 +1,107 @@
+# MapMaD (Phase 3): NoMaD + a local top-down map token. Layered on defaults.yaml like every train config.
+# Model params are the released nomad.yaml's (context 3, encoding 256, 4 heads x 4 layers, 10 diffusion steps),
+# so the official nomad.pth loads into it. See vint_train/mapmad/README.md.
+project_name: mapmad_p3
+run_name: mapmad
+wandb_entity: fnazlias
+logs_root: /outputs/mapmad/p3_model/runs   # train.py writes <logs_root>/<project_name>/<run_name>_<time>/
+
+# training setup
+use_wandb: False          # no wandb API key in naz_mapmad yet (stop T question)
+train: True
+batch_size: 256
+epochs: 5
+gpu_ids: [0]              # one GPU per job: DataParallel on 2 GPUs was 2.3x slower (timing test)
+num_workers: 12
+lr: 1e-4
+optimizer: adamw
+clipping: False
+max_norm: 1.
+scheduler: "cosine"       # stepped once per epoch over `epochs` (MapMaD loop); 1-epoch runs stay at lr 1e-4
+warmup: False             # confirmation item 18: the recipe's warmup would run epoch 0 at lr = 0
+warmup_epochs: 4
+cyclic_period: 10
+plateau_patience: 3
+plateau_factor: 0.5
+seed: 0
+
+# model params (= released nomad.yaml)
+model_type: nomad
+vision_encoder: nomad_vint
+encoding_size: 256
+obs_encoder: efficientnet-b0
+attn_unet: False
+cond_predict_scale: False
+mha_num_attention_heads: 4
+mha_num_attention_layers: 4
+mha_ff_dim_factor: 4
+down_dims: [64, 128, 256]
+num_diffusion_iters: 10
+goal_mask_prob: 0.5       # GoStanford samples only (photo shown/hidden 50/50, as in NoMaD)
+normalize: True
+context_type: temporal
+context_size: 3
+alpha: 1e-4
+distance:
+  min_dist_cat: 0
+  max_dist_cat: 20
+action:
+  min_dist_cat: 3
+  max_dist_cat: 20
+len_traj_pred: 8
+learn_angle: False
+image_size: [96, 96]
+
+# MapMaD switch and map input
+map_input: True
+init_weights: /outputs/mapmad/weights/official/nomad.pth   # strict load; only map_encoder.* is new
+map:
+  size: 64                # cells per side
+  resolution: 0.1         # metres per cell
+  heat_sigma: 0.3         # metres
+  border_inset: 0.3       # metres: border blob moved back toward the robot
+  perturb_prob: 0.3       # share of heat-on training samples with one perturbation
+  perturb_shift: [0.3, 1.0]
+  perturb_blur_factor: 2.0
+  perturb_false_min_dist: 1.0
+  map_cache_size: 64      # storey maps kept per worker (LRU)
+# Habitat training modes (shares sum to 1); GoStanford: map hidden, photo by goal_mask_prob
+habitat_modes:
+  photo: 0.20
+  map_goal: 0.30
+  photo_map: 0.15
+  explore_map: 0.15
+  explore: 0.20
+# One epoch = epoch_samples draws with replacement, weighted by dataset (reseeded with seed + epoch)
+epoch_samples: 200000
+dataset_weights:
+  habitat_mapmad: 0.7
+  go_stanford: 0.3
+eval_samples: 2048        # seeded subset per test set for the in-loop eval (the offline harness gives the real numbers)
+
+datasets:
+  habitat_mapmad:
+    data_folder: /mapmad_data/habitat_mapmad
+    train: /mapmad_data/splits/habitat_mapmad/train/
+    test: /mapmad_data/splits/habitat_mapmad/test/
+    exclude_drives: /mapmad_data/splits/habitat_mapmad/collision_drives.txt
+    end_slack: 0
+    goals_per_obs: 1
+    negative_mining: True
+    waypoint_spacing: 5   # Phase 3 spacing test: largest relative map effect R (0.614 vs 0.528 s1, 0.492 s2)
+  go_stanford:
+    data_folder: /data/raw/go_stanford/go_stanford
+    train: /data/splits/go_stanford/train/
+    test: /data/splits/go_stanford/test/
+    end_slack: 0
+    goals_per_obs: 2
+    negative_mining: True
+
+# logging
+print_log_freq: 100
+image_log_freq: 0
+num_images_log: 8
+pairwise_test_freq: 0
+eval_fraction: 0.25
+wandb_log_freq: 10
+eval_freq: 1

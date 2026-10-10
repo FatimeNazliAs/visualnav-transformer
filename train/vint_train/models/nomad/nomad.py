@@ -21,7 +21,9 @@ class NoMaD(nn.Module):
     
     def forward(self, func_name, **kwargs):
         if func_name == "vision_encoder" :
-            output = self.vision_encoder(kwargs["obs_img"], kwargs["goal_img"], input_goal_mask=kwargs["input_goal_mask"])
+            # MapMaD: map_img + input_map_mask are passed on only when given (map_input: true)
+            map_kwargs = {k: kwargs[k] for k in ("map_img", "input_map_mask") if k in kwargs}
+            output = self.vision_encoder(kwargs["obs_img"], kwargs["goal_img"], input_goal_mask=kwargs["input_goal_mask"], **map_kwargs)
         elif func_name == "noise_pred_net":
             output = self.noise_pred_net(sample=kwargs["sample"], timestep=kwargs["timestep"], global_cond=kwargs["global_cond"])
         elif func_name == "dist_pred_net":
