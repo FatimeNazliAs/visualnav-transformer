@@ -191,7 +191,11 @@ def main(config):
 
     lr = float(config["lr"])
     config["optimizer"] = config["optimizer"].lower()
-    if config["optimizer"] == "adam":
+    if config.get("lr_schedule") == "warmup_cosine":
+        # MapMaD Phase 4: two AdamW groups (map encoder / pretrained), lr set every step by the MapMaD loop
+        from vint_train.mapmad.lr_schedule import build_optimizer
+        optimizer = build_optimizer(model, config)
+    elif config["optimizer"] == "adam":
         optimizer = Adam(model.parameters(), lr=lr, betas=(0.9, 0.98))
     elif config["optimizer"] == "adamw":
         optimizer = AdamW(model.parameters(), lr=lr)
@@ -410,6 +414,12 @@ if __name__ == "__main__":
         type=str,
         help="Path to the config file in train_config folder",
     )
+    parser.add_argument(
+        "--resume",
+        default=None,
+        type=str,
+        help="MapMaD only: a run's latest.pth; continues that run in its own folder",
+    )
     args = parser.parse_args()
 
     with open("config/defaults.yaml", "r") as f:
@@ -425,15 +435,22 @@ if __name__ == "__main__":
 
     config.update(user_config)
 
-    config["run_name"] += "_" + time.strftime("%Y_%m_%d_%H_%M_%S")
-    config["project_folder"] = os.path.join(
-        config.get("logs_root", "logs"), config["project_name"], config["run_name"]
-    )
-    os.makedirs(
-        config[
-            "project_folder"
-        ],  # should error if dir already exists to avoid overwriting and old project
-    )
+    if args.resume:  # MapMaD: continue the crashed run in its folder (vint_train/mapmad/train_loop.py)
+        if not config.get("map_input", False):
+            raise ValueError("--resume is implemented for MapMaD (map_input: true) configs only")
+        config["resume_from"] = os.path.abspath(args.resume)
+        config["project_folder"] = os.path.dirname(config["resume_from"])
+        config["run_name"] = os.path.basename(config["project_folder"])
+    else:
+        config["run_name"] += "_" + time.strftime("%Y_%m_%d_%H_%M_%S")
+        config["project_folder"] = os.path.join(
+            config.get("logs_root", "logs"), config["project_name"], config["run_name"]
+        )
+        os.makedirs(
+            config[
+                "project_folder"
+            ],  # should error if dir already exists to avoid overwriting and old project
+        )
 
     if config["use_wandb"]:
         wandb.login()

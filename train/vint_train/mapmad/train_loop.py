@@ -12,6 +12,19 @@
   noise and timesteps (cheap; the offline harness `offline_eval.py` gives the real numbers -- never mix the two);
 - per step: data-wait and compute seconds (timing test), `max_steps_per_epoch` to cut an epoch short;
 - `run_info.json` (config, seed, git commit) and `metrics.jsonl` next to the checkpoints.
+
+Phase 4 additions, each behind its own config key (Phase 3 configs do not set them, so they run as before):
+- `lr_schedule: warmup_cosine` -- `lr_schedule.WarmupCosine` sets every group's lr before every step (linear
+  warmup in the first epoch, cosine per epoch after); train.py then builds no torch scheduler;
+- `step_log_freq: N` -- every N steps one `{"record": "step"}` line in metrics.jsonl: per-mode diffusion loss,
+  diffusion and distance loss (means over those N steps), the map attention share on the batch's map-goal
+  samples, the lr of each group;
+- `training_checks:` -- `training_checks.TrainingChecks`: step-0 sanity, then no-harm / map effect / attention
+  share on the EMA weights every `every` epochs -> `no_harm_trace.csv`;
+- `checkpoints: ema_and_resume` -- keep `ema_<epoch>.pth` of every epoch and ONE `latest.pth` with everything
+  needed to resume (model, EMA weights + step, optimizer, RNG states, epoch); no per-epoch raw weights;
+- `resume_from` (train.py `--resume <run>/latest.pth`) -- continue that run in its folder up to `epochs`;
+- env `MAPMAD_EXIT_AFTER_EPOCH=<e>` -- stop after epoch e (0-based) as if crashed; only for the resume test.
 """
 
 import json
@@ -19,7 +32,7 @@ import math
 import os
 import time
 from collections import defaultdict
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional, Tuple
 
 import numpy as np
 import torch
@@ -30,11 +43,12 @@ import wandb
 from diffusers.training_utils import EMAModel
 
 from vint_train.mapmad.config import git_commit
-from vint_train.mapmad.modes import MODES
+from vint_train.mapmad.modes import BY_NAME, MODES
 from vint_train.training.train_utils import ACTION_STATS, get_delta, normalize_data
 from vint_train.visualizing.visualize_utils import from_numpy
 
 MODE_NAMES = {m.id: m.name for m in MODES}
+MAP_GOAL_ID = BY_NAME["map_goal"].id
 
 
 def unwrap(model: nn.Module) -> nn.Module:
@@ -77,10 +91,62 @@ class ModeMeter:
         return {MODE_NAMES[m]: self.num[m] / self.den[m] for m in sorted(self.num) if self.den[m] > 0}
 
 
+@torch.no_grad()
+def batch_map_attention(model: nn.Module, b: Dict[str, torch.Tensor]) -> Tuple[Optional[float], int]:
+    """(mean map attention share, count) over the batch's map-goal samples, dropout off; (None, 0) if none.
+    Same definition as offline_eval's attention share."""
+    from vint_train.mapmad.offline_eval import attention_share  # offline_eval imports this module
+
+    sel = b["mode"] == MAP_GOAL_ID
+    n = int(sel.sum())
+    if n == 0:
+        return None, 0
+    net = unwrap(model)
+    enc, was_training = net.vision_encoder, net.training
+    net.eval()
+    tokens, padding = enc.map_tokens(enc._encode_images(b["obs"][sel], b["goal"][sel]), b["goal_mask"][sel],
+                                     b["map"][sel], b["map_mask"][sel])
+    _, share = attention_share(enc.sa_encoder, tokens, padding)
+    net.train(was_training)
+    return float(share.mean()), n
+
+
+class StepLog:
+    """Means over the last `freq` steps, written as one `{"record": "step"}` line to metrics.jsonl."""
+
+    def __init__(self, path: str, freq: int, steps_per_epoch: int) -> None:
+        self.path, self.freq, self.steps_per_epoch = path, int(freq), int(steps_per_epoch)
+        self.reset()
+
+    def reset(self) -> None:
+        self.meter, self.sums, self.n = ModeMeter(), defaultdict(float), 0
+
+    def add(self, per_sample, weight, mode, diffusion_loss: float, dist_loss: float) -> None:
+        self.meter.add(per_sample, weight, mode)
+        self.sums["diffusion_loss"] += diffusion_loss
+        self.sums["dist_loss"] += dist_loss
+        self.n += 1
+
+    def due(self, step: int) -> bool:
+        return self.freq > 0 and step % self.freq == 0
+
+    def write(self, epoch: int, step: int, lrs: Dict[str, float], share: Optional[float], n_share: int) -> None:
+        rec = {"record": "step", "epoch": epoch, "step": step, "global_step": epoch * self.steps_per_epoch + step,
+               "lr": lrs, "train_mode_diffusion_loss": self.meter.means(),
+               **{k: v / max(self.n, 1) for k, v in self.sums.items()},
+               "map_attention_share": share, "map_attention_n": n_share}
+        with open(self.path, "a") as f:
+            f.write(json.dumps(rec) + "\n")
+        self.reset()
+
+
 def train_mapmad_epoch(model, ema_model, optimizer, loader, transform, device, noise_scheduler, epoch: int,
                        alpha: float, print_log_freq: int, wandb_log_freq: int, use_wandb: bool,
-                       max_steps: Optional[int] = None) -> Dict[str, Any]:
-    """One epoch; returns mean losses, per-mode diffusion losses and step timing."""
+                       max_steps: Optional[int] = None,
+                       lr_hook: Optional[Callable[[int, int], Dict[str, float]]] = None,
+                       step_log: Optional[StepLog] = None) -> Dict[str, Any]:
+    """One epoch; returns mean losses, per-mode diffusion losses and step timing.
+    lr_hook(epoch, step) sets the lr before each optimizer step; step_log writes the per-N-steps records."""
     model.train()
     meter, totals = ModeMeter(), defaultdict(float)
     wait_s, step_s, steps = [], [], 0
@@ -105,6 +171,7 @@ def train_mapmad_epoch(model, ema_model, optimizer, loader, transform, device, n
         loss_cpu = loss.item()
         if not math.isfinite(loss_cpu):
             raise RuntimeError(f"Training diverged: non-finite loss ({loss_cpu}) at epoch {epoch}, step {steps}")
+        lrs = lr_hook(epoch, steps) if lr_hook is not None else None
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
@@ -115,6 +182,12 @@ def train_mapmad_epoch(model, ema_model, optimizer, loader, transform, device, n
         totals["dist_loss"] += float(dist_loss)
         totals["total_loss"] += loss_cpu
         steps += 1
+        if step_log is not None:
+            step_log.add(per_sample.detach(), am, b["mode"], float(diffusion_loss), float(dist_loss))
+            if step_log.due(steps):
+                share, n_share = batch_map_attention(model, b)
+                step_log.write(epoch, steps, lrs if lrs is not None else
+                               {f"group{i}": g["lr"] for i, g in enumerate(optimizer.param_groups)}, share, n_share)
         t_done = time.perf_counter()
         wait_s.append(t_data - t_ready)
         step_s.append(t_done - t_data)
@@ -166,28 +239,111 @@ def save_checkpoints(project_folder: str, epoch: int, model, ema_model, optimize
         torch.save(lr_scheduler.state_dict(), os.path.join(project_folder, "scheduler_latest.pth"))
 
 
+def atomic_save(obj: Any, path: str) -> None:
+    """torch.save to a temporary file, then rename (a crash never leaves a half-written checkpoint)."""
+    tmp = path + ".tmp"
+    torch.save(obj, tmp)
+    os.replace(tmp, path)
+
+
+def save_ema_and_resume(project_folder: str, epoch: int, model, ema_model, optimizer) -> None:
+    """`checkpoints: ema_and_resume`: ema_{epoch}.pth (unwrapped EMA weights) + latest.pth (resume state)."""
+    atomic_save(unwrap(ema_model.averaged_model).state_dict(), os.path.join(project_folder, f"ema_{epoch}.pth"))
+    atomic_save({"epoch": epoch, "model": unwrap(model).state_dict(),
+                 "ema_model": unwrap(ema_model.averaged_model).state_dict(),
+                 "ema_optimization_step": ema_model.optimization_step, "ema_decay": ema_model.decay,
+                 "optimizer": optimizer.state_dict(), "torch_rng": torch.get_rng_state(),
+                 "cuda_rng": torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,
+                 "numpy_rng": np.random.get_state()}, os.path.join(project_folder, "latest.pth"))
+
+
+def load_resume_state(path: str, model, ema_model, optimizer) -> int:
+    """Restore a `save_ema_and_resume` latest.pth; returns the next epoch (0-based)."""
+    state = torch.load(path, map_location="cpu", weights_only=False)
+    unwrap(model).load_state_dict(state["model"], strict=True)
+    unwrap(ema_model.averaged_model).load_state_dict(state["ema_model"], strict=True)
+    ema_model.optimization_step, ema_model.decay = state["ema_optimization_step"], state["ema_decay"]
+    optimizer.load_state_dict(state["optimizer"])
+    torch.set_rng_state(state["torch_rng"])
+    if state["cuda_rng"] is not None and torch.cuda.is_available():
+        torch.cuda.set_rng_state_all(state["cuda_rng"])
+    np.random.set_state(state["numpy_rng"])
+    return int(state["epoch"]) + 1
+
+
+def write_run_info(folder: str, config: Dict[str, Any], optimizer, load_report, resumed_at: Optional[int]) -> None:
+    """run_info.json (run_info_resume_<epoch>.json after a resume): config, seed, git commit, groups, GPUs."""
+    name = "run_info.json" if resumed_at is None else f"run_info_resume_{resumed_at}.json"
+    groups = [{"name": g.get("name", f"group{i}"), "tensors": len(g["params"]),
+               "parameters": int(sum(p.numel() for p in g["params"])), "base_lr": g.get("base_lr", g["lr"])}
+              for i, g in enumerate(optimizer.param_groups)]
+    with open(os.path.join(folder, name), "w") as f:
+        json.dump({"config": config, "seed": config["seed"], "git_commit": git_commit(),
+                   "load_report": load_report, "resumed_at_epoch": resumed_at, "param_groups": groups,
+                   "torch": torch.__version__,
+                   "gpus": [torch.cuda.get_device_name(i) for i in range(torch.cuda.device_count())]}, f, indent=1,
+                  default=str)
+
+
 def train_eval_loop_mapmad(model, optimizer, lr_scheduler, noise_scheduler, train_loader, sampler,
                            test_loaders: Dict[str, Any], transform, config: Dict[str, Any], device,
                            current_epoch: int = 0, load_report: Optional[Dict[str, Any]] = None) -> None:
-    """Epoch loop: train, save, in-loop eval, step the lr scheduler once; metrics to metrics.jsonl (+ wandb)."""
+    """Epoch loop: train, save, (checks,) in-loop eval, step the lr scheduler once; metrics to metrics.jsonl."""
     folder = config["project_folder"]
-    with open(os.path.join(folder, "run_info.json"), "w") as f:
-        json.dump({"config": config, "seed": config["seed"], "git_commit": git_commit(),
-                   "load_report": load_report, "torch": torch.__version__,
-                   "gpus": [torch.cuda.get_device_name(i) for i in range(torch.cuda.device_count())]}, f, indent=1,
-                  default=str)
     ema_model = EMAModel(model=model, power=0.75)
+    resume_from = config.get("resume_from")
+    end_epoch = current_epoch + config["epochs"]
+    if resume_from:
+        current_epoch, end_epoch = load_resume_state(resume_from, model, ema_model, optimizer), config["epochs"]
+        print(f"[mapmad] resumed from {resume_from}: next epoch {current_epoch}", flush=True)
+    write_run_info(folder, config, optimizer, load_report, current_epoch if resume_from else None)
+
+    schedule = None
+    if config.get("lr_schedule") == "warmup_cosine":
+        from vint_train.mapmad.lr_schedule import WarmupCosine
+        if lr_scheduler is not None:
+            raise ValueError("lr_schedule warmup_cosine needs `scheduler: null` (no torch scheduler)")
+        schedule = WarmupCosine(optimizer, len(train_loader), config["epochs"],
+                                float(config.get("warmup_start_ratio", 0.01)))
+    elif config.get("lr_schedule") is not None:
+        raise ValueError(f"unknown lr_schedule {config['lr_schedule']}")
+    step_log = (StepLog(os.path.join(folder, "metrics.jsonl"), config["step_log_freq"], len(train_loader))
+                if config.get("step_log_freq") else None)
+    checks = None
+    if config.get("training_checks"):
+        from vint_train.mapmad.training_checks import TrainingChecks
+        checks = TrainingChecks(config, device)
+        if not resume_from:
+            checks.step0_sanity(unwrap(ema_model.averaged_model))
+        elif checks.due(current_epoch) and not checks.has_row(current_epoch):  # crashed inside that check
+            checks.run_check(unwrap(ema_model.averaged_model), current_epoch, f"ema_{current_epoch - 1}.pth")
+    style = config.get("checkpoints", "phase3")
+    if style not in ("phase3", "ema_and_resume"):
+        raise ValueError(f"unknown checkpoints style {style}")
+    exit_after = os.environ.get("MAPMAD_EXIT_AFTER_EPOCH")
+
     use_wandb = config["use_wandb"]
-    for epoch in range(current_epoch, current_epoch + config["epochs"]):
+    for epoch in range(current_epoch, end_epoch):
+        if schedule is not None:
+            schedule.apply(epoch, 0)
         lr = optimizer.param_groups[0]["lr"]
         print(f"Start MapMaD epoch {epoch} (lr {lr:.3e})", flush=True)
         sampler.set_epoch(epoch)
         t0 = time.time()
         record = train_mapmad_epoch(model, ema_model, optimizer, train_loader, transform, device, noise_scheduler, epoch,
                                     float(config["alpha"]), config["print_log_freq"], config["wandb_log_freq"],
-                                    use_wandb, config.get("max_steps_per_epoch"))
+                                    use_wandb, config.get("max_steps_per_epoch"),
+                                    lr_hook=schedule.apply if schedule is not None else None, step_log=step_log)
         record.update({"lr": lr, "train_seconds": time.time() - t0})
-        save_checkpoints(folder, epoch, model, ema_model, optimizer, lr_scheduler)
+        if schedule is not None:
+            record["lr_groups_last_step"] = schedule.lrs()
+        if style == "ema_and_resume":
+            save_ema_and_resume(folder, epoch, model, ema_model, optimizer)
+        else:
+            save_checkpoints(folder, epoch, model, ema_model, optimizer, lr_scheduler)
+        if checks is not None and checks.due(epoch + 1):
+            record["training_check"] = checks.run_check(unwrap(ema_model.averaged_model), epoch + 1,
+                                                        f"ema_{epoch}.pth")
         if config.get("eval_freq", 1) and (epoch + 1) % config.get("eval_freq", 1) == 0:
             t1 = time.time()
             record["eval_mode_diffusion_loss"] = {
@@ -204,3 +360,6 @@ def train_eval_loop_mapmad(model, optimizer, lr_scheduler, noise_scheduler, trai
             wandb.log(log)
         if lr_scheduler is not None:
             lr_scheduler.step()
+        if exit_after is not None and epoch == int(exit_after):
+            print(f"[mapmad] MAPMAD_EXIT_AFTER_EPOCH={exit_after}: stopping as if crashed", flush=True)
+            return

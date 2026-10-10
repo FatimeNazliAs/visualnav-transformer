@@ -1,0 +1,4 @@
+# Phase 4 in-training check subsets (/outputs/mapmad/p4_train/subsets/, made by training_checks make-subsets).
+# file sha256 (sha256sum)                                          canonical body sha256 (the file's "sha256" field)
+24ac242f62eaf201c743f5a50a0e2042c7282c16fc38ce6cf48fe31f58a0dd40  gostanford_subset.json  d869a8127de6fb0887325aea612a9d8863e33f12f30446f906f8f6f5a62a9a25  (1,000 of the 5,000 harness items, harness sha256 3f48a1e4...4618 = Phase 3's; seed 4004)
+8e0894932363de2d1556eedf5fa393a9446190e473df07419b610568c1570adb  offline_subset.json     f01c585899b21c4f126acb93b9ff5589761929ca8785e9f9281d39a8ad262e27  (1,005 samples, 143 whole drives of offline_samples.json eca78af3...197ed; seed 4004)

@@ -1,0 +1,21 @@
+# Phase 4 smoke of run A: 2 tiny epochs (warmup epoch + one cosine epoch, check after epoch 2) on the tiny splits;
+# the checks use the frozen subsets cut to their first 100 samples. New output folder.
+base_config: mapmad_p4.yaml
+project_name: p4_smoke
+logs_root: /outputs/mapmad/p4_train/smoke
+epochs: 2
+batch_size: 32
+num_workers: 4
+epoch_samples: 640        # 20 steps
+eval_samples: 128
+print_log_freq: 5
+step_log_freq: 5
+training_checks:
+  limit: 100
+datasets:
+  habitat_mapmad:
+    train: /mapmad_data/splits/habitat_mapmad_tiny/train/
+    test: /mapmad_data/splits/habitat_mapmad_tiny/test/
+  go_stanford:
+    train: /mapmad_data/splits/go_stanford_tiny/train/
+    test: /mapmad_data/splits/go_stanford_tiny/test/

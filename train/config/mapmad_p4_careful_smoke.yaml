@@ -1,0 +1,6 @@
+# Phase 4 smoke of run B (the smoke of A with B's lr groups and GPU).
+base_config: mapmad_p4_smoke.yaml
+run_name: B
+run_label: B
+gpu_ids: [1]
+pretrained_lr: 1e-5

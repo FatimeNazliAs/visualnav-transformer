@@ -84,6 +84,43 @@ DataParallel on 2 GPUs was 2.3× slower):
 **G3 rows 1–3:** `python -m vint_train.mapmad.checks_g3 ...` (command in its docstring). Tests:
 `PYTHONPATH=/app/visualnav-transformer/mapmad/src python -m pytest -q vint_train/mapmad/tests`.
 
+Phase 4 (training the exam model; rules frozen in `/outputs/mapmad/p4_train/p4_rules.md`):
+- `lr_schedule.py` — two AdamW groups (the 18 `map_encoder.*` tensors / the pretrained rest) and the lr set before
+  every step: linear warmup over epoch 1 (1e-6 → 1e-4), then cosine per epoch (config `lr_schedule: warmup_cosine`).
+- `training_checks.py` — every 2 epochs on the EMA weights: GoStanford no-harm (1,000 frozen harness items, Δ vs
+  the official `nomad.pth`, trajectory CI), map effect R on ~1,000 frozen offline samples (whole drives), attention
+  share; step-0 sanity (map hidden = official); `<run>/no_harm_trace.csv`. Also `make-subsets` (the frozen lists,
+  hashes in `p4_subsets.sha256`) and `gostanford-report` (selection-bias report).
+- `select_checkpoint.py` — the selection rule, applied mechanically to both traces → `selection.json`.
+- `plot_curves.py` — PNG curves per run + A-vs-B overlay from `metrics.jsonl` (`{"record": "step"}` lines every 100
+  steps: per-mode losses, distance loss, map attention share, lr per group) and the traces.
+- `train_loop.py` keys: `step_log_freq`, `training_checks:`, `checkpoints: ema_and_resume` (`ema_<e>.pth` + one
+  resumable `latest.pth`), `train.py --resume <run>/latest.pth`.
+
+**Train the Phase 4 model** (inside `naz_mapmad`, from `/app/visualnav-transformer/train`; `nvidia-smi` first; one
+run per GPU; `CUBLAS_WORKSPACE_CONFIG` is needed by the deterministic checks):
+
+    CUBLAS_WORKSPACE_CONFIG=:4096:8 python train.py -c config/mapmad_p4.yaml          # run A, GPU0 (~4.5 h)
+    CUBLAS_WORKSPACE_CONFIG=:4096:8 python train.py -c config/mapmad_p4_careful.yaml  # run B, GPU1, pretrained lr 1e-5
+    CUBLAS_WORKSPACE_CONFIG=:4096:8 python train.py -c config/mapmad_p4.yaml --resume <run>/latest.pth  # after a crash
+    python train.py -c config/mapmad_p4_smoke.yaml    # smoke (2 tiny epochs, checks on 100 samples)
+
+Runs land in `/outputs/mapmad/p4_train/<A|B>_<time>/`. Then:
+
+    python -m vint_train.mapmad.plot_curves --run A=<A run> --run B=<B run> --out /outputs/mapmad/p4_train/curves
+    python -m vint_train.mapmad.select_checkpoint --run-a <A run> --run-b <B run> \
+        --rules /outputs/mapmad/p4_train/p4_rules.md --out /outputs/mapmad/p4_train/selection.json
+
+**Evaluate a checkpoint** (the full Phase 3 offline check + GoStanford harness; `<ckpt>` = e.g. `<run>/ema_19.pth`):
+
+    CUDA_VISIBLE_DEVICES=0 python -m vint_train.mapmad.offline_eval score --config config/mapmad_p4.yaml \
+        --checkpoint <ckpt> --list /outputs/mapmad/p3_model/offline/offline_samples.json --out <dir>
+    python -m vint_train.mapmad.offline_eval compare --scores <dir>/scores.npz --out <dir>
+    CUDA_VISIBLE_DEVICES=0 python -m vint_train.mapmad.offline_eval gostanford --config config/mapmad_p4.yaml \
+        --checkpoint <ckpt> --official /outputs/mapmad/weights/official/nomad.pth --out <dir>
+    python -m vint_train.mapmad.training_checks gostanford-report --scores <dir>/gostanford_scores.npz \
+        --subset /outputs/mapmad/p4_train/subsets/gostanford_subset.json --out <dir>/gostanford_report.json
+
 Original NoMaD files get only small hooks behind `map_input` (`false` = the old NoMaD, byte-identical):
 `nomad_vint.py`, `nomad.py`, `vint_dataset.py` (`_index_path`), `train.py` (loaders, weight load, loop,
-`logs_root`, `base_config`). Extra packages go in `train/requirements-mapmad.txt` (none added in Phase 3).
+`logs_root`, `base_config`; Phase 4: the two-group optimizer when `lr_schedule` is set, `--resume`). Extra packages go in `train/requirements-mapmad.txt` (none added in Phase 3).

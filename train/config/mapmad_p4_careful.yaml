@@ -1,0 +1,7 @@
+# Phase 4 run B ("careful", confirmation item 4): run A with the pretrained weights at lr 1e-5 (warmup 1e-7 -> 1e-5,
+# same cosine shape); the 18 map_encoder.* tensors stay at 1e-4. Same seed 0 -> same data order. GPU1.
+base_config: mapmad_p4.yaml
+run_name: B
+run_label: B
+gpu_ids: [1]
+pretrained_lr: 1e-5
