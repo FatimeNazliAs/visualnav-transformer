@@ -42,18 +42,15 @@ import tqdm
 import wandb
 from diffusers.training_utils import EMAModel
 
-from vint_train.mapmad.config import git_commit
+from vint_train.mapmad.attention import attention_share
 from vint_train.mapmad.modes import BY_NAME, MODES
+from vint_train.mapmad.run_state import (checkpoint_style, load_resume_state, save_epoch, unwrap,
+                                       write_run_info)
 from vint_train.training.train_utils import ACTION_STATS, get_delta, normalize_data
 from vint_train.visualizing.visualize_utils import from_numpy
 
 MODE_NAMES = {m.id: m.name for m in MODES}
 MAP_GOAL_ID = BY_NAME["map_goal"].id
-
-
-def unwrap(model: nn.Module) -> nn.Module:
-    """The model without a DataParallel wrapper."""
-    return model.module if isinstance(model, nn.DataParallel) else model
 
 
 def normalized_deltas(actions: torch.Tensor, device: torch.device) -> torch.Tensor:
@@ -95,8 +92,6 @@ class ModeMeter:
 def batch_map_attention(model: nn.Module, b: Dict[str, torch.Tensor]) -> Tuple[Optional[float], int]:
     """(mean map attention share, count) over the batch's map-goal samples, dropout off; (None, 0) if none.
     Same definition as offline_eval's attention share."""
-    from vint_train.mapmad.offline_eval import attention_share  # offline_eval imports this module
-
     sel = b["mode"] == MAP_GOAL_ID
     n = int(sel.sum())
     if n == 0:
@@ -227,64 +222,6 @@ def evaluate_mapmad(ema_net: nn.Module, loader, transform, device, noise_schedul
     return meter.means()
 
 
-def save_checkpoints(project_folder: str, epoch: int, model, ema_model, optimizer, lr_scheduler) -> None:
-    """ema_{epoch}.pth / {epoch}.pth / latest.pth hold unwrapped (no `module.`) weights."""
-    torch.save(unwrap(ema_model.averaged_model).state_dict(), os.path.join(project_folder, f"ema_{epoch}.pth"))
-    torch.save(unwrap(ema_model.averaged_model).state_dict(), os.path.join(project_folder, "ema_latest.pth"))
-    state = unwrap(model).state_dict()
-    torch.save(state, os.path.join(project_folder, f"{epoch}.pth"))
-    torch.save(state, os.path.join(project_folder, "latest.pth"))
-    torch.save(optimizer.state_dict(), os.path.join(project_folder, "optimizer_latest.pth"))
-    if lr_scheduler is not None:
-        torch.save(lr_scheduler.state_dict(), os.path.join(project_folder, "scheduler_latest.pth"))
-
-
-def atomic_save(obj: Any, path: str) -> None:
-    """torch.save to a temporary file, then rename (a crash never leaves a half-written checkpoint)."""
-    tmp = path + ".tmp"
-    torch.save(obj, tmp)
-    os.replace(tmp, path)
-
-
-def save_ema_and_resume(project_folder: str, epoch: int, model, ema_model, optimizer) -> None:
-    """`checkpoints: ema_and_resume`: ema_{epoch}.pth (unwrapped EMA weights) + latest.pth (resume state)."""
-    atomic_save(unwrap(ema_model.averaged_model).state_dict(), os.path.join(project_folder, f"ema_{epoch}.pth"))
-    atomic_save({"epoch": epoch, "model": unwrap(model).state_dict(),
-                 "ema_model": unwrap(ema_model.averaged_model).state_dict(),
-                 "ema_optimization_step": ema_model.optimization_step, "ema_decay": ema_model.decay,
-                 "optimizer": optimizer.state_dict(), "torch_rng": torch.get_rng_state(),
-                 "cuda_rng": torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,
-                 "numpy_rng": np.random.get_state()}, os.path.join(project_folder, "latest.pth"))
-
-
-def load_resume_state(path: str, model, ema_model, optimizer) -> int:
-    """Restore a `save_ema_and_resume` latest.pth; returns the next epoch (0-based)."""
-    state = torch.load(path, map_location="cpu", weights_only=False)
-    unwrap(model).load_state_dict(state["model"], strict=True)
-    unwrap(ema_model.averaged_model).load_state_dict(state["ema_model"], strict=True)
-    ema_model.optimization_step, ema_model.decay = state["ema_optimization_step"], state["ema_decay"]
-    optimizer.load_state_dict(state["optimizer"])
-    torch.set_rng_state(state["torch_rng"])
-    if state["cuda_rng"] is not None and torch.cuda.is_available():
-        torch.cuda.set_rng_state_all(state["cuda_rng"])
-    np.random.set_state(state["numpy_rng"])
-    return int(state["epoch"]) + 1
-
-
-def write_run_info(folder: str, config: Dict[str, Any], optimizer, load_report, resumed_at: Optional[int]) -> None:
-    """run_info.json (run_info_resume_<epoch>.json after a resume): config, seed, git commit, groups, GPUs."""
-    name = "run_info.json" if resumed_at is None else f"run_info_resume_{resumed_at}.json"
-    groups = [{"name": g.get("name", f"group{i}"), "tensors": len(g["params"]),
-               "parameters": int(sum(p.numel() for p in g["params"])), "base_lr": g.get("base_lr", g["lr"])}
-              for i, g in enumerate(optimizer.param_groups)]
-    with open(os.path.join(folder, name), "w") as f:
-        json.dump({"config": config, "seed": config["seed"], "git_commit": git_commit(),
-                   "load_report": load_report, "resumed_at_epoch": resumed_at, "param_groups": groups,
-                   "torch": torch.__version__,
-                   "gpus": [torch.cuda.get_device_name(i) for i in range(torch.cuda.device_count())]}, f, indent=1,
-                  default=str)
-
-
 def train_eval_loop_mapmad(model, optimizer, lr_scheduler, noise_scheduler, train_loader, sampler,
                            test_loaders: Dict[str, Any], transform, config: Dict[str, Any], device,
                            current_epoch: int = 0, load_report: Optional[Dict[str, Any]] = None) -> None:
@@ -317,9 +254,7 @@ def train_eval_loop_mapmad(model, optimizer, lr_scheduler, noise_scheduler, trai
             checks.step0_sanity(unwrap(ema_model.averaged_model))
         elif checks.due(current_epoch) and not checks.has_row(current_epoch):  # crashed inside that check
             checks.run_check(unwrap(ema_model.averaged_model), current_epoch, f"ema_{current_epoch - 1}.pth")
-    style = config.get("checkpoints", "phase3")
-    if style not in ("phase3", "ema_and_resume"):
-        raise ValueError(f"unknown checkpoints style {style}")
+    style = checkpoint_style(config)
     exit_after = os.environ.get("MAPMAD_EXIT_AFTER_EPOCH")
 
     use_wandb = config["use_wandb"]
@@ -337,10 +272,7 @@ def train_eval_loop_mapmad(model, optimizer, lr_scheduler, noise_scheduler, trai
         record.update({"lr": lr, "train_seconds": time.time() - t0})
         if schedule is not None:
             record["lr_groups_last_step"] = schedule.lrs()
-        if style == "ema_and_resume":
-            save_ema_and_resume(folder, epoch, model, ema_model, optimizer)
-        else:
-            save_checkpoints(folder, epoch, model, ema_model, optimizer, lr_scheduler)
+        save_epoch(style, folder, epoch, model, ema_model, optimizer, lr_scheduler)
         if checks is not None and checks.due(epoch + 1):
             record["training_check"] = checks.run_check(unwrap(ema_model.averaged_model), epoch + 1,
                                                         f"ema_{epoch}.pth")

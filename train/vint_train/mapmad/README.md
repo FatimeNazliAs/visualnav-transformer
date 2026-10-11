@@ -96,6 +96,9 @@ Phase 4 (training the exam model; rules frozen in `/outputs/mapmad/p4_train/p4_r
   steps: per-mode losses, distance loss, map attention share, lr per group) and the traces.
 - `train_loop.py` keys: `step_log_freq`, `training_checks:`, `checkpoints: ema_and_resume` (`ema_<e>.pth` + one
   resumable `latest.pth`), `train.py --resume <run>/latest.pth`.
+- `run_state.py` — a run's state on disk: both checkpoint styles, the resumable `latest.pth`, `run_info.json`.
+- `attention.py` — the map token's attention share (one definition for the training log, checks and offline harness).
+- Host-side run scripts (supervised run with one resume, post-run eval, GPU memory log): `train/scripts/mapmad_p4/`.
 
 **Train the Phase 4 model** (inside `naz_mapmad`, from `/app/visualnav-transformer/train`; `nvidia-smi` first; one
 run per GPU; `CUBLAS_WORKSPACE_CONFIG` is needed by the deterministic checks):

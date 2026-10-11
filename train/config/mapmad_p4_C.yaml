@@ -1,0 +1,7 @@
+# Phase 4 confirmation run C (rules p4_rules_v2.md): run B's recipe exactly (pretrained lr 1e-5, map encoder 1e-4,
+# same warmup/cosine, 50/50, 20 epochs) with seed 1, GPU0. Exam checkpoint fixed in advance: C's ema_19.pth.
+base_config: mapmad_p4_careful.yaml
+run_name: C
+run_label: C
+gpu_ids: [0]
+seed: 1

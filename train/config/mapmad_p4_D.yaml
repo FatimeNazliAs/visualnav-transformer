@@ -1,0 +1,6 @@
+# Phase 4 seed twin D (report only, p4_rules_v2.md): run C's recipe with seed 2, GPU1.
+base_config: mapmad_p4_careful.yaml
+run_name: D
+run_label: D
+gpu_ids: [1]
+seed: 2

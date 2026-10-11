@@ -138,7 +138,7 @@ def test_gostanford_report_splits_inside_and_outside():
 def test_resume_state_roundtrip(tmp_path):
     from diffusers.training_utils import EMAModel
 
-    from vint_train.mapmad.train_loop import load_resume_state, save_ema_and_resume
+    from vint_train.mapmad.run_state import load_resume_state, save_ema_and_resume
 
     torch.manual_seed(0)
     model = torch.nn.Linear(4, 2)
