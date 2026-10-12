@@ -2,7 +2,7 @@
 
 - Real floor: start and end lie on a navmesh island of at least min_island_area_m2 (no bed or table tops) and the
   floor probe finds the floor below; in labelled homes the surface under the robot must also be floor / carpet /
-  rug / mat (Phase 1 rule, episodes.EpisodeBuilder.on_real_floor).
+  rug / mat (Phase 1 rule, scene_labels.SceneLabels.on_real_floor).
 - Spot target: a real-floor point 3-15 m (geodesic, LIMO's floor map) from the start, same floor.
 - Object target (labelled homes): one ObjectNav v2 goal instance (category drawn uniformly among the home's
   categories, then the instance). The drive ends at the instance's ObjectNav view point nearest (geodesic) to the
@@ -24,11 +24,11 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 import numpy as np
 
 from mapmad_sim.camera import centre_depth, project_points
-from mapmad_sim.episodes import EpisodeBuilder, box_distance_xz, rounded
+from mapmad_sim.episodes import box_distance_xz, rounded
 from mapmad_sim.frames import to_2d, yaw_of
 from mapmad_sim.objectnav import Goal
-from mapmad_sim.objects import object_box
 from mapmad_sim.robot import LimoSim, horizontal_distance
+from mapmad_sim.scene_labels import SceneLabels
 
 
 @dataclass
@@ -65,7 +65,7 @@ class DriveSampler:
         self.robot, self.cfg, self.rng = robot, cfg, rng
         self.pf = robot.pathfinder
         self.labelled = goals is not None
-        self.labels = EpisodeBuilder(robot, {"floor_names": cfg["sampling"]["floor_names"]}, rng) if self.labelled else None
+        self.labels = SceneLabels(robot, cfg["sampling"]["floor_names"]) if self.labelled else None
         self.goals = list(goals or [])
         self._island_ok: Dict[int, bool] = {}
         self.floor_checks: Counter = Counter()  # outcome of every real-floor check (logged per home)
@@ -194,11 +194,11 @@ class DriveSampler:
         """(target, geodesic) of an object drive to `goal` from this start, or None (start too near / far / other
         floor). `cache` keeps each goal's view points between tries."""
         if goal.object_id not in cache:
-            obj = self.labels.objects.get(goal.object_id)
-            if obj is None:
+            box = self.labels.box(goal.object_id)
+            if box is None:
                 cache[goal.object_id] = None
             else:
-                center, size = object_box(obj)
+                center, size = box
                 vps = self.usable_view_points(goal)
                 cache[goal.object_id] = (center, size, vps, [] if vps else self.fallback_points(center, size))
         entry = cache[goal.object_id]

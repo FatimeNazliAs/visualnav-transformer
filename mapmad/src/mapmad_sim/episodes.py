@@ -24,8 +24,8 @@ from typing import Any, Dict, Iterator, List, Optional, Sequence, Tuple
 import numpy as np
 
 from mapmad_sim.objectnav import Goal
-from mapmad_sim.objects import name_matches, object_box
 from mapmad_sim.robot import LimoSim, horizontal_distance, yaw_towards
+from mapmad_sim.scene_labels import SceneLabels
 
 TYPE_CODES = {"out_of_view": "oov", "in_view": "iv"}
 FLOOR_MAP_CHECK = "floor_map_check.json"  # written next to episodes.json by mapmad/scripts/check_p1_episodes.py
@@ -109,10 +109,8 @@ class EpisodeBuilder:
     def __init__(self, robot: LimoSim, cfg: Dict[str, Any], rng: np.random.Generator) -> None:
         self.robot, self.cfg, self.rng = robot, cfg, rng
         self.pf = robot.pathfinder
-        objects = [o for o in robot.sim.semantic_scene.objects if o is not None]
-        self.objects = {o.semantic_id: o for o in objects}
-        self.names = {o.semantic_id: (o.category.name().lower() if o.category is not None else "") for o in objects}
-        self.floor_ids = {i for i, n in self.names.items() if name_matches(n, cfg["floor_names"])}
+        self.labels = SceneLabels(robot, cfg["floor_names"])
+        self.objects, self.names = self.labels.objects, self.labels.names
 
     # --- helpers ---------------------------------------------------------------------------------------------
 
@@ -132,21 +130,13 @@ class EpisodeBuilder:
                 yield p.astype(np.float64)
 
     def on_real_floor(self, position: np.ndarray) -> bool:
-        """Robot placed here stands on floor / carpet / rug / mat (not a bed, stairs or a hole)."""
-        try:
-            self.robot.place(position, 0.0)
-        except ValueError:
-            return False
-        return self.robot.surface_id() in self.floor_ids
+        return self.labels.on_real_floor(position)
 
     def target_share(self, position: np.ndarray, yaw: float, object_id: int) -> float:
-        self.robot.place(position, yaw)
-        return float((self.robot.observe()["semantic"] == object_id).mean())
+        return self.labels.target_share(position, yaw, object_id)
 
     def black_share(self) -> float:
-        """Share of near-black pixels in the current picture: HM3D meshes have holes (rendered black), e.g.
-        where a toilet should be, while the labels around them still say 'toilet'."""
-        return float((self.robot.observe()["rgb"].max(axis=2) < 16).mean())
+        return self.labels.black_share()
 
     def view_blocked(self) -> bool:
         """More than max_near_share of the current picture is closer than near_m (facing a wall or furniture
@@ -159,10 +149,10 @@ class EpisodeBuilder:
     def target(self, goal: Goal) -> Optional[Tuple[Target, List[np.ndarray]]]:
         """The object and its candidate target points (real floor, <= target_point_max_m from the box, nearest
         first); None if there are none."""
-        obj = self.objects.get(goal.object_id)
-        if obj is None:
+        box = self.labels.box(goal.object_id)
+        if box is None:
             return None
-        center, size = object_box(obj)
+        center, size = box
         bottom = center[1] - size[1] / 2.0
         near = []
         for p in self.points_near(center, 2.0, 300):

@@ -309,6 +309,15 @@ class LimoSim:
         path.requested_end = np.asarray(b, dtype=np.float32)
         return float(path.geodesic_distance) if self.pathfinder.find_path(path) else float("inf")
 
+    def geodesic_to_any(self, a: Sequence[float], ends: Sequence[Sequence[float]]) -> float:
+        """Walking distance from a to the nearest of several points (inf if none can be reached)."""
+        import habitat_sim
+
+        path = habitat_sim.MultiGoalShortestPath()
+        path.requested_start = np.asarray(a, dtype=np.float32)
+        path.requested_ends = [np.asarray(e, dtype=np.float32) for e in ends]
+        return float(path.geodesic_distance) if self.pathfinder.find_path(path) else float("inf")
+
     def topdown(self, meters_per_pixel: float, height: float) -> Tuple[np.ndarray, np.ndarray]:
         """Walkable-area picture of the navmesh slice at `height` (rows = z, cols = x) and its (x, z) origin."""
         grid = np.asarray(self.pathfinder.get_topdown_view(meters_per_pixel, height), dtype=bool)

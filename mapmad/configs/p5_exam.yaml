@@ -1,0 +1,97 @@
+# Phase 5 — the exam (plan v1.9 "Phase 5" + Phase 5 confirmation block, 2026-10-11; block items in brackets).
+# Read by mapmad/scripts/make_p5_sets.py (Habitat side) and vint_train.mapmad.closed_loop.exam_* (NoMaD side).
+# Paths are relative to paths.yaml `outputs` (/outputs/mapmad) unless they start with repo:.
+
+out_dir: p5_exam
+episodes_dir: exam_set               # the frozen exam set: <out_dir>/exam_set/episodes.json (+ .sha256)
+
+sets:                                # [3, 6] built by make_p5_sets.py; frozen with a fingerprint
+  dev:                               # [3] all tuning and debugging here: Phase 1's 10 held-out train homes
+    folder: dev/set
+    split: train
+    objectnav_split: train           # their ObjectNav v2 TRAIN episodes (~50,000 per home)
+    homes: ["00746", "00440", "00272", "00330", "00241", "00732", "00081", "00534", "00397", "00401"]
+    candidates_per_home: 150         # official episodes examined per home, in a seeded random order
+    candidate_seed: 5101
+    total: 100                       # <= 10 per home -> 80-100
+    per_home: 10
+    draw_seed: 5201
+  exam:                              # [6] ObjectNav HM3D v2 val: 36 homes, 1,000 episodes, all examined
+    folder: exam_set
+    split: val
+    objectnav_split: val
+    homes: all
+    candidates_per_home: null
+    candidate_seed: 5102
+    total: 300
+    per_home: 10
+    draw_seed: 5202
+
+set_rules:                           # [6, 8] mapmad_sim/exam_set.py
+  start_snap_max_m: 0.2              # official start -> LIMO floor map, on the real floor
+  view_point_max_snap_m: 0.2         # as Phase 2
+  same_storey_dy_m: 0.5              # navmesh heights of start and view point (Phase 1 same_floor_max_dy_m)
+  distance_m: [3.0, 15.0]            # walking distance start -> nearest usable view point of the target
+  bins_m: [3.0, 6.0, 10.0, 15.0]
+  goal_photo_min_share: 0.05         # [8] target pixels in the goal photo
+  goal_photo_box_m: 1.0              # [8, corrected by Naz at S-dev, answer 1a] view point whose box distance is
+                                     # closest to 1.0 m first (Phase 1 rule; plan "~1 m"), next one if < 5%.
+                                     # The frozen dev set was built with the block's "nearest the box" order.
+  target_point_max_m: 1.0            # Phase 1 target point (secondary metric "target point <= 1.0 m")
+  floor_names: [floor, carpet, rug, mat, doormat]
+
+run:
+  success_key: vp_geodesic_m         # [10] primary: walking distance to the nearest usable view point ...
+  success_m: 0.2                     # ... <= 0.2 m, oracle stop (episode ends when true)
+  max_steps: 1000                    # [7] 250 s at 4 Hz
+  report_success_at: [500]
+  secondary_m: {target_point: 1.0, any_side: 1.0}   # [10] reached at any step (target point / nearest view point)
+  stuck_steps: 100                   # a stuck streak = >= 100 consecutive collision steps
+  seeds: 3                           # [7] seed index 0, 1, 2 per episode; the planner (deterministic) runs index 0 only
+  seed_salt: mapmad-p5               # noise seed = first 8 hex of sha256("<salt>/<episode_id>/<index>"), all arms
+  topdown_m_per_px: 0.05
+  video_fps: 8
+  sidecar_port: 5550
+
+map_settings:                        # [2] exam-time map = training map
+  builder: p2_datagen.yaml           # its `map` block: the Phase 2 map builder (band, max depth, first seen)
+  crop: repo:train/config/mapmad_p4_C.yaml   # its `map` block: crop size / resolution, heat sigma / border inset
+
+nomad:                               # official arms A, B: Phase 1's setup exactly
+  weights: weights/official/nomad.pth
+  weights_sha256: 70f79b8262527e20e56ced64a3e3d7ef91855bc9e7c3fa348d78edcb83c6a333
+  config: weights/official/nomad.yaml
+  num_samples: 8
+  sample_index: 0
+  waypoint_index: 2
+
+mapmad:                              # [4] arms C, D, F
+  checkpoint: p4_train/C_2026_10_11_05_21_43/ema_19.pth
+  checkpoint_sha256: 8093c6dba5f91bce48903e74ad9128fde50cccbf9a8f587f9aec8b288bffd9e2
+  model_config: repo:train/config/mapmad_p4_C.yaml
+  num_samples: 8
+  sample_index: 0
+  waypoint_index: 1                  # [5] dev rule (p5_dev_rules.md 1): SR 0.465 (index 1) vs 0.485 (index 2), 2.0 pp < 3 pp -> 1
+  context_spacing: 5                 # context frames t-15, t-10, t-5, t (control steps, 1.25 s apart)
+  step_m: 0.25                       # de-normalisation: metric_waypoint_spacing 0.05 x waypoint_spacing 5
+
+planner:                             # [9] arm E
+  inflation_m: 0.195                 # LIMO radius
+  lookahead_m: 0.5                   # steer at the path point 0.5 m ahead
+  start_clear_m: 0.2                 # cells this close to the robot count as free (its own position)
+
+arms:                                # [9] policy, photo goal, map
+  A: {policy: nomad, photo: false}
+  B: {policy: nomad, photo: true}
+  C: {policy: mapmad, photo: false, map: true}
+  D: {policy: mapmad, photo: false, map: false}
+  E: {policy: planner, photo: false}
+  F: {policy: mapmad, photo: true, map: false}
+
+paired:                              # [9] a - b on the same episodes (and seeds)
+  - [C, B]                           # primary (G5 row 2)
+  - [C, D]                           # G5 row 3
+  - [C, E]
+  - [C, F]
+  - [F, B]
+  - [D, A]

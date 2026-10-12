@@ -17,28 +17,41 @@ from typing import Any, Callable, Dict, Optional, Tuple
 
 from mapmad_bridge import protocol
 
-RobotFactory = Callable[[str, str, float], Any]  # (split, home, hfov_deg) -> LimoSim-like robot
+RobotFactory = Callable[..., Any]  # (split, home, hfov_deg[, depth=True]) -> LimoSim-like robot
 
 
 def limo_factory(gpu: int, seed: int = 0) -> RobotFactory:
-    """Robots built from configs/robot_limo.yaml (LIMO-sized floor map) with the requested camera FOV."""
+    """Robots built from configs/robot_limo.yaml (LIMO-sized floor map) with the requested camera FOV; depth=True
+    adds the depth camera the online map needs (Phase 5)."""
     from mapmad_sim import config
     from mapmad_sim.robot import LimoSim, RobotSpec
 
-    def make(split: str, home: str, hfov_deg: float) -> Any:
-        return LimoSim(split, home, RobotSpec.from_config(config.robot(), hfov_deg=hfov_deg), gpu=gpu, seed=seed)
+    def make(split: str, home: str, hfov_deg: float, depth: bool = False) -> Any:
+        return LimoSim(split, home, RobotSpec.from_config(config.robot(), hfov_deg=hfov_deg), depth=depth, gpu=gpu,
+                       seed=seed)
 
     return make
 
 
 class SimService:
-    """Answers protocol requests; keeps one home loaded and reloads it only when home or camera FOV change."""
+    """Answers protocol requests; keeps one home loaded and reloads it only when home, camera FOV or the need for a
+    depth camera change.
+
+    Phase 5 (`outputs` at reset): "map" -> every reply carries the policy's 3 x 64 x 64 map tensor ("map"), "grid"
+    -> the whole-storey grids for the planner ("grid", plus "goal_rect" at reset), both from mapmad_sim.online_map
+    with `map_settings` = {"builder": p2_datagen.yaml `map`, "crop": the train config's `map`}. Episodes with
+    `target.view_points` (snapped navmesh points) also get the walking distance to the nearest one in `state`
+    ("vp_geodesic_m", the Phase 5 primary metric).
+    """
 
     def __init__(self, factory: RobotFactory) -> None:
         self.factory = factory
         self.robot: Optional[Any] = None
-        self.key: Optional[Tuple[str, str, float]] = None
+        self.key: Optional[Tuple[str, str, float, bool]] = None
         self.target = None
+        self.view_points: Optional[Any] = None
+        self.online_map: Optional[Any] = None
+        self.outputs: Dict[str, Any] = {}
 
     def handle(self, msg: Dict[str, Any]) -> Dict[str, Any]:
         cmd = msg["cmd"]
@@ -46,40 +59,72 @@ class SimService:
             return {"version": protocol.PROTOCOL_VERSION, "home": self.key[1] if self.key else None,
                     "hfov_deg": self.key[2] if self.key else None}
         if cmd == "reset":
-            return self.reset(msg["episode"], msg["hfov_deg"], msg["goal_photo"], msg["topdown_m_per_px"])
+            return self.reset(msg["episode"], msg["hfov_deg"], msg["goal_photo"], msg["topdown_m_per_px"],
+                              msg.get("outputs") or {})
         if cmd == "step":
             if self.robot is None or self.target is None:
                 raise RuntimeError("step before reset")
             move = self.robot.drive(msg["v"], msg["w"])
-            return {"rgb": self.robot.observe()["rgb"], "state": self.state(), "move": asdict(move)}
+            return {**self.observation(), "state": self.state(), "move": asdict(move)}
         raise ValueError(f"unknown command {cmd!r}")
 
-    def reset(self, episode: Dict[str, Any], hfov_deg: float, goal_photo: bool, m_per_px: float) -> Dict[str, Any]:
-        key = (episode["split"], episode["home"], float(hfov_deg))
+    def reset(self, episode: Dict[str, Any], hfov_deg: float, goal_photo: bool, m_per_px: float,
+              outputs: Dict[str, Any]) -> Dict[str, Any]:
+        depth = bool(outputs.get("map") or outputs.get("grid"))
+        key = (episode["split"], episode["home"], float(hfov_deg), depth)
         if key != self.key:
             self.close()
-            self.robot, self.key = self.factory(*key), key
+            self.robot = self.factory(*key[:3], depth=True) if depth else self.factory(*key[:3])
+            self.key = key
         self.target = episode["target"]["point"]
+        self.view_points = episode["target"].get("view_points")
+        self.outputs = outputs
         goal_rgb = None
         if goal_photo:  # rendered with this arm's camera (a 120 deg photo for the 120 deg arms), same pose
             self.robot.place(episode["goal_photo_position"], episode["goal_photo_yaw"])
             goal_rgb = self.robot.observe()["rgb"]
         self.robot.place(episode["start_position"], episode["start_yaw"])
+        self.online_map = None
+        extra: Dict[str, Any] = {}
+        if depth:
+            from mapmad_sim.depth_map import MapSpec
+            from mapmad_sim.online_map import OnlineMap
+
+            settings = outputs["map_settings"]
+            self.online_map = OnlineMap(self.robot, episode, MapSpec.from_config(settings["builder"]), settings["crop"])
+            if outputs.get("grid"):
+                extra["goal_rect"] = list(self.online_map.goal_rect())
         grid, origin = self.robot.topdown(m_per_px, float(episode["start_position"][1]))
-        return {"rgb": self.robot.observe()["rgb"], "goal_rgb": goal_rgb, "state": self.state(),
+        return {**self.observation(), **extra, "goal_rgb": goal_rgb, "state": self.state(),
                 "topdown": {"grid": grid, "origin": [float(origin[0]), float(origin[1])], "m_per_px": m_per_px},
                 "navmesh_sha256": self.robot.navmesh_sha256}
 
+    def observation(self) -> Dict[str, Any]:
+        """The picture at the current pose; with an online map also its new frame and the requested map outputs."""
+        obs = self.robot.observe()
+        out: Dict[str, Any] = {"rgb": obs["rgb"]}
+        if self.online_map is not None:
+            self.online_map.add_frame(self.robot, obs["depth"])
+            if self.outputs.get("map"):
+                out["map"] = self.online_map.tensor(self.robot)
+            if self.outputs.get("grid"):
+                out["grid"] = self.online_map.grid(self.robot)
+        return out
+
     def state(self) -> Dict[str, Any]:
         geo = self.robot.geodesic(self.robot.position, self.target)
-        return {"position": [float(x) for x in self.robot.position], "yaw": float(self.robot.yaw),
-                "geodesic_m": geo if math.isfinite(geo) else None,
-                "floor_below_feet_m": float(self.robot.floor_below_feet)}
+        out = {"position": [float(x) for x in self.robot.position], "yaw": float(self.robot.yaw),
+               "geodesic_m": geo if math.isfinite(geo) else None,
+               "floor_below_feet_m": float(self.robot.floor_below_feet)}
+        if self.view_points:
+            vp = self.robot.geodesic_to_any(self.robot.position, self.view_points)
+            out["vp_geodesic_m"] = vp if math.isfinite(vp) else None
+        return out
 
     def close(self) -> None:
         if self.robot is not None:
             self.robot.close()
-        self.robot, self.key, self.target = None, None, None
+        self.robot, self.key, self.target, self.view_points, self.online_map = None, None, None, None, None
 
 
 def serve(listener: socket.socket, service: SimService, key: str) -> None:

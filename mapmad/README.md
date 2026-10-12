@@ -178,3 +178,58 @@ its floor-check counts and discards); `_runs/` keeps config + seed + git commit 
 - **Sim camera = LIMO camera:** 0.18 m above the real floor, centred pinhole, HFOV 66.5°, pitch −2.0°. The pitch
   stands in for LIMO's off-centre principal point (cy = 213 of 480) plus ~1° of real upward tilt, so both
   horizons sit on row ~223 of 480 (`horizon_check.py`).
+
+## Run the Phase 5 exam
+
+Config: `configs/p5_exam.yaml` (sets, set rules, run settings, map settings, the six arms A-F, paired comparisons);
+`configs/p5_dev.yaml` = the same with the dev set and the waypoint-test arms `C_wp1` / `C_wp2`. Rules that judge
+results are frozen with their sha256 before the runs: `/outputs/mapmad/p5_exam/p5_dev_rules.md`, `p5_rules.md`.
+New code: `src/mapmad_sim/exam_set.py` (set rules + draw), `exam_arms.py` (the arms' rules, used by both containers),
+`run_layout.py` (run ids `<episode>__s<k>` and every run file), `online_map.py` (exam-time map = the Phase 2 builder +
+the training crop/heat code), `scene_labels.py` (floor / object label lookups), `sidecar_server.py` (protocol v3:
+`outputs` map / grid, `vp_geodesic_m`); NoMaD side `train/vint_train/mapmad/closed_loop/` (`mapmad_policy.py`,
+`planner.py` + `planner_policy.py`, `exam_runner.py`, `run_exam.py`, `exam_analysis.py`, `exam_stats.py`,
+`exam_tables.py`). From the worktree, on the host (`nvidia-smi` first; long runs in `screen`):
+
+```bash
+# 1. episode sets (Habitat container): candidates per home (resumable), then the seeded draw + freeze
+for k in 0 1 2 3; do docker exec -d -w /app/visualnav-transformer naz_mapmad_habitat \
+    python mapmad/scripts/make_p5_sets.py candidates --set exam --gpu $((k % 2)) --worker $k --workers 4; done
+docker exec -w /app/visualnav-transformer naz_mapmad_habitat python mapmad/scripts/make_p5_sets.py freeze --set exam
+#    (--set dev for the dev set; outputs: <set folder>/episodes.json + .sha256, build_report.md, goal_photos/)
+
+# 2. tests (both containers)
+docker exec -w /app/visualnav-transformer/mapmad naz_mapmad_habitat python -m pytest -q -p no:cacheprovider
+docker exec -w /app/visualnav-transformer/train -e PYTHONPATH=/app/visualnav-transformer/mapmad/src naz_mapmad \
+    python -m pytest -q -p no:cacheprovider vint_train/mapmad/tests
+
+# 3. runs: 2 simulator + runner pairs per GPU; resumable (finished runs are skipped)
+screen -dmS mapmad_p5_runs bash -c 'PAIRS="0 0 1 1" mapmad/scripts/run_p5.sh \
+    --config /app/visualnav-transformer/mapmad/configs/p5_exam.yaml --arms A B C D E F --subdir runs'
+
+# 4. checks: map parity (arm C with --trace-maps on 2 episodes) and determinism (one C episode twice, cmp the logs)
+docker exec -w /app/visualnav-transformer naz_mapmad_habitat python mapmad/scripts/p5_map_parity.py \
+    --config mapmad/configs/p5_dev.yaml --traces /outputs/mapmad/p5_exam/checks/parity/traces/C_wp2
+
+# 5. tables (from the logs alone) and videos (logs replayed in Habitat)
+docker exec -w /app/visualnav-transformer/train -e PYTHONPATH=/app/visualnav-transformer/mapmad/src naz_mapmad \
+    python -m vint_train.mapmad.closed_loop.exam_tables --config /app/visualnav-transformer/mapmad/configs/p5_exam.yaml \
+    --subdir runs --out tables
+docker exec -w /app/visualnav-transformer naz_mapmad_habitat python mapmad/scripts/p5_videos.py \
+    --config mapmad/configs/p5_exam.yaml --subdir runs --episode <id> --arms A B C D E F --out videos/<name>.mp4
+```
+
+Unattended (everything after S-dev up to the G5 table, one command; Naz 2026-10-11): `scripts/run_p5_rest.sh` runs
+the dev B/F runs with the 1a goal photos (`make_p5_sets.py rephoto`, `configs/p5_dev_1a.yaml`), the exam set, the
+rules file (`scripts/p5_freeze.py rules`, template `configs/p5_rules_template.md`), the automatic S-freeze check
+(`p5_freeze.py check`), the exam runs on 6 pairs, the determinism re-run, tables, figures, videos and the G5 table;
+it stops with `STOP_reason.txt` on any failed condition or suspected bug, and a re-launch resumes. Test it first on
+3 dev episodes with `configs/p5_dryrun.yaml` (see that file).
+
+```bash
+nvidia-smi && screen -dmS mapmad_p5_rest bash mapmad/scripts/run_p5_rest.sh   # log: p5_exam/driver/run_p5_rest.log
+```
+
+Outputs in `/outputs/mapmad/p5_exam/`: `dev/`, `exam_set/`, `runs/` (`logs/<arm>/<episode>__s<k>.jsonl`,
+`summaries/`, `timing/`, `progress.shard<k>.log`, `run_info.*.json`), `tables/`, `figures/`, `videos/`, `checks/`,
+`phase5_log.md`.

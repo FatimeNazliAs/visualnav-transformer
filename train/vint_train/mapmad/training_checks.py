@@ -1,6 +1,7 @@
 """Phase 4 in-training checks (Phase 4 confirmation items 5 and 7). Same scoring code as the Phase 3 offline
-harness (`offline_eval.py`: full 10-step reverse diffusion, fixed starting noise per sample id, fixed scheduler
-noise per batch, deterministic kernels), on two frozen 1,000-sample subsets:
+harness (`offline_eval.py`: full 10-step reverse diffusion, all noise fixed per sample id -- since Phase 5 also the
+scheduler noise, so a subset item scores exactly as in the full harness -- deterministic kernels), on two frozen
+1,000-sample subsets:
 
 - GoStanford no-harm: 1,000 of the 5,000 GoStanford items of the full harness (`GoStanfordPhotoSamples`, the
   list Phase 3 scored; positive photo goal 4-19 waypoints ahead), drawn with seed 4004. Delta = mean(MapMaD map
@@ -33,7 +34,6 @@ os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
 import argparse
 import contextlib
 import copy
-import csv
 import json
 import time
 from typing import Any, Dict, Iterator, List, Optional, Sequence
@@ -45,8 +45,10 @@ from torch.utils.data import DataLoader, Subset
 from vint_train.mapmad.closed_loop.metrics import bootstrap_ci
 from vint_train.mapmad.config import git_commit, load_config
 from vint_train.mapmad.dataset import build_mapmad_dataset
-from vint_train.mapmad.offline_eval import (N_BOOT, N_SAMPLES, GoStanfordPhotoSamples, canonical_sha256,
-                                            drive_bootstrap, load_list, paired_stats, score_arm, score_gostanford)
+from vint_train.mapmad.check_trace import append_trace, read_trace
+from vint_train.mapmad.offline_list import N_SAMPLES, canonical_sha256, load_list
+from vint_train.mapmad.offline_scoring import GoStanfordPhotoSamples, score_arm, score_gostanford
+from vint_train.mapmad.offline_stats import N_BOOT, drive_bootstrap, paired_stats
 from vint_train.mapmad.reference_forward import enforce_determinism, test_dataset
 from vint_train.mapmad.weights import load_checkpoint
 
@@ -55,9 +57,6 @@ SUBSET_N = 1000
 SANITY_MEAN_TOL = 5e-4      # |Delta| prints as 0.000
 SANITY_SAMPLE_TOL = 1e-5    # per-sample |MapMaD map hidden - official|
 BIAS_FLAG = 0.10
-TRACE_COLUMNS = ["run", "epoch", "ema_file", "no_harm_delta", "no_harm_ci_low", "no_harm_ci_high", "R", "R_ci_low",
-                 "R_ci_high", "attention_share", "minutes", "gs_model", "gs_official", "map_goal", "map_hidden",
-                 "map_diff", "map_diff_ci_low", "map_diff_ci_high", "n_gs", "n_map"]
 
 
 # --- the frozen subsets ------------------------------------------------------------------------------------------
@@ -248,30 +247,6 @@ class TrainingChecks:
         print("[checks] " + " ".join(f"{k}={v:.4f}" if isinstance(v, float) else f"{k}={v}" for k, v in row.items()),
               flush=True)
         return row
-
-
-def append_trace(path: str, row: Dict[str, Any]) -> None:
-    """Append one row to the trace CSV (header written with the first row)."""
-    new = not os.path.exists(path)
-    with open(path, "a", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=TRACE_COLUMNS)
-        if new:
-            w.writeheader()
-        w.writerow(row)
-
-
-def read_trace(path: str) -> List[Dict[str, Any]]:
-    """Trace rows with numbers parsed (epoch int, the rest float where possible)."""
-    out = []
-    with open(path) as f:
-        for r in csv.DictReader(f):
-            row: Dict[str, Any] = dict(r)
-            for k, v in r.items():
-                if k in ("run", "ema_file"):
-                    continue
-                row[k] = int(v) if k in ("epoch", "n_gs", "n_map") else float(v)
-            out.append(row)
-    return out
 
 
 # --- selection-bias report (final eval) --------------------------------------------------------------------------

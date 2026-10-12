@@ -9,8 +9,9 @@ import torch
 
 from vint_train.mapmad.lr_schedule import WarmupCosine, build_optimizer, group_param_names, lr_factor
 from vint_train.mapmad.select_checkpoint import select
-from vint_train.mapmad.training_checks import (append_trace, draw_gostanford_subset, draw_offline_subset,
-                                               gostanford_report, read_trace, subset_body_sha, TRACE_COLUMNS)
+from vint_train.mapmad.check_trace import TRACE_COLUMNS, append_trace, read_trace
+from vint_train.mapmad.training_checks import (draw_gostanford_subset, draw_offline_subset, gostanford_report,
+                                               subset_body_sha)
 
 S, E = 782, 20  # steps per epoch (200,000 / 256), epochs
 

@@ -1,12 +1,14 @@
 """ObjectNav HM3D v2 goal files: which objects of a home are targets, of which category, and from where they are seen.
 
 One file per home: <objectnav>/<split>/content/<scene>.json.gz, whose `goals_by_category` maps
-"<scene>.basis.glb_<category>" to goal objects (object id, position, view points = agent poses that see the object).
-The only reader of these files (categories.py, episodes.py and scripts/p1_replay.py use it).
+"<scene>.basis.glb_<category>" to goal objects (object id, position, view points = agent poses that see the object),
+and whose `episodes` hold the official starts (position, rotation quaternion [x, y, z, w], object category).
+The only reader of these files (categories.py, episodes.py, exam_set.py and scripts/p1_replay.py use it).
 """
 
 import gzip
 import json
+import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional
@@ -54,3 +56,28 @@ def home_goals(split: str, home: str, root: Optional[Path] = None) -> List[Goal]
 
 def has_goals(split: str, home: str, root: Optional[Path] = None) -> bool:
     return content_file(split, home, root).exists()
+
+
+@dataclass
+class OfficialEpisode:
+    """One official ObjectNav episode: where it starts and which category it asks for."""
+
+    episode_id: str
+    home: str  # HM3D folder name, e.g. "00877-4ok3usBNeis"
+    start_position: List[float]
+    start_yaw: float  # Habitat yaw (rotation about +y) of start_rotation
+    category: str
+
+
+def yaw_of_quaternion(q: List[float]) -> float:
+    """Habitat yaw of a rotation about +y given as [x, y, z, w] (ObjectNav's start_rotation), in (-pi, pi]."""
+    yaw = 2.0 * math.atan2(q[1], q[3])
+    return math.atan2(math.sin(yaw), math.cos(yaw))
+
+
+def home_episodes(split: str, home: str, root: Optional[Path] = None) -> List[OfficialEpisode]:
+    """The official episodes of one home, in file order."""
+    with gzip.open(content_file(split, home, root), "rt") as f:
+        data = json.load(f)
+    return [OfficialEpisode(str(e["episode_id"]), e["scene_id"].split("/")[-2], [float(v) for v in e["start_position"]],
+                            yaw_of_quaternion(e["start_rotation"]), e["object_category"]) for e in data["episodes"]]

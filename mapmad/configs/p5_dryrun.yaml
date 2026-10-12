@@ -1,0 +1,9 @@
+# End-to-end test of the unattended driver (run_p5_rest.sh) before the exam: 3 dev episodes (1a photos, one per
+# distance bin) frozen as a tiny "exam set" in <outputs>/p5_exam/checks/dryrun/exam_set, 2 seeds, 300 steps.
+#   P5_CONFIG=p5_dryrun.yaml P5_PAIRS="0 1 1" P5_SKIP="dev_1a" mapmad/scripts/run_p5_rest.sh
+# Its S-freeze check must FAIL (3 episodes < 250); with P5_SKIP="dev_1a sfreeze" it runs to the G5 table.
+extends: p5_exam.yaml
+out_dir: p5_exam/checks/dryrun
+run:
+  max_steps: 300
+  seeds: 2

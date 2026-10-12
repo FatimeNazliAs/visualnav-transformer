@@ -15,6 +15,21 @@ bridge (`mapmad/src/mapmad_bridge`, so `mapmad/src` must be on `PYTHONPATH`).
 - `video.py` — mp4 (H.264 via imageio-ffmpeg): camera + top-down map + caption; overlays only on video frames.
 - `run_arms.py` — command line (see `mapmad/README.md`, "Run the Phase 1 baseline").
 
+Phase 5 (the exam; commands in `mapmad/README.md`, "Run the Phase 5 exam"):
+- `mapmad_policy.py` — MapMaD as a Policy: context frames t-15/-10/-5/t (spacing 5; missing ones repeat the first),
+  goal `map` / `masked` / `photo`, de-normalisation 0.25 m, checkpoint sha256 checked at load.
+- `planner.py`, `planner_policy.py` — arm E: A* on the robot's own whole-storey online grid (obstacles inflated by
+  0.195 m, unknown = free) to the target box, replanned every step, steered at the point 0.5 m ahead.
+- `exam_runner.py`, `run_exam.py` — one episode (primary = walking distance <= 0.2 m to the nearest usable view point,
+  oracle stop) and the sharded, resumable command line; `exam_analysis.py`, `exam_stats.py`, `exam_tables.py` —
+  failure types, home-clustered bootstrap, tables from the logs; `exam_figures.py` (figures from the tables) and
+  `exam_gate.py` (the G5 table: fairness, C - B, C - D, planner per bin, videos, determinism); `exam_stuck.py`
+  (report only: heat bearing at the onset of stuck streaks). Arms (`ExamArm`: seed indices, goals, weights key) live in
+  `mapmad_sim/exam_arms.py` and run ids / run files in `mapmad_sim/run_layout.py`, shared with the Habitat scripts.
+- `diffusion.py` (code list item 1) — reverse diffusion with all noise fixed per item id; the offline harness is split
+  into `offline_list.py`, `offline_scoring.py`, `offline_stats.py` (+ the `offline_eval.py` command line);
+  `check_trace.py` holds the in-training trace CSV I/O.
+
 Phase 2 (practice drives; numpy/OpenCV only, so the Habitat container imports them too — keep `__init__.py` light):
 - `local_map.py` — cuts the robot-centred 64 × 64 window (10 cm cells, forward = up, left = left) out of a drive's
   `mapmad_map.npz` at frame t: a cell counts only if its first-seen frame is ≤ t (no future information).

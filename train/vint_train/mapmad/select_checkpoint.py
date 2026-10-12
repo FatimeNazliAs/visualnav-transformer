@@ -17,7 +17,7 @@ import json
 import os
 from typing import Any, Dict, List, Optional
 
-from vint_train.mapmad.training_checks import read_trace
+from vint_train.mapmad.check_trace import read_trace
 
 NO_HARM_LIMIT = 0.08
 EPOCH_FLOOR, EPOCH_CEIL = 12, 20

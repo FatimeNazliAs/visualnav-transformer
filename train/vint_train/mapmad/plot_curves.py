@@ -23,7 +23,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
 
-from vint_train.mapmad.training_checks import read_trace  # noqa: E402
+from vint_train.mapmad.check_trace import read_trace  # noqa: E402
 
 # categorical slots in fixed order (dataviz reference palette, light mode)
 SLOTS = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#6250d6", "#e34948"]

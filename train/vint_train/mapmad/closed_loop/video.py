@@ -47,9 +47,18 @@ class TopdownMap:
         return int((p[0] - origin[0]) / m_per_px), int((p[2] - origin[1]) / m_per_px)
 
     def px(self, p: Sequence[float]) -> Tuple[int, int]:
-        """(col, row) of world point p = (x, y, z)."""
-        c, r = self._grid_px(p, self.origin, self.m_per_px)
-        return int((c - self.c0) * self.scale), int((r - self.r0) * self.scale)
+        """(col, row) of world point p = (x, y, z): the picture pixel it falls in (no rounding to grid cells first,
+        so drawings agree with `centres` to within a pixel)."""
+        c = (p[0] - self.origin[0]) / self.m_per_px - self.c0
+        r = (p[2] - self.origin[1]) / self.m_per_px - self.r0
+        return int(math.floor(c * self.scale)), int(math.floor(r * self.scale))
+
+    def centres(self) -> Tuple[np.ndarray, np.ndarray]:
+        """World x and z of every picture pixel's centre, each (MAP_PX, MAP_PX): the inverse of `px`."""
+        rows, cols = np.mgrid[0:MAP_PX, 0:MAP_PX]
+        x = self.origin[0] + ((cols + 0.5) / self.scale + self.c0) * self.m_per_px
+        z = self.origin[1] + ((rows + 0.5) / self.scale + self.r0) * self.m_per_px
+        return x, z
 
     def metres(self, d: float) -> int:
         return max(1, int(d / self.m_per_px * self.scale))

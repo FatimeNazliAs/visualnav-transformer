@@ -71,6 +71,18 @@ class DriveRecord:
     wall_recovery_steps: int = 0
 
 
+@dataclass
+class DriveState:
+    """Where one drive is in the phase machine (DriveRunner.command)."""
+
+    phase: str
+    pursuit: PurePursuit
+    target: Target
+    var: Variations
+    rec: DriveRecord
+    kick_left: float  # radians of the kick still to turn
+
+
 class DriveRunner:
     """Drives the expert along a route in a LimoSim and records frames, map and log."""
 
@@ -105,73 +117,26 @@ class DriveRunner:
         return obs["depth"]
 
     def run(self, start: Start, target: Target, route: Route, var: Variations, geodesic: float) -> Tuple[DriveRecord, FirstSeenMap]:
-        r, cfg, sp = self.robot, self.cfg, self.pursuit_spec
-        wall_cfg, kick_cfg, disc = cfg["variations"]["wall_recovery"], cfg["variations"]["kick"], cfg["discard"]
+        r, sp, disc = self.robot, self.pursuit_spec, self.cfg["discard"]
         low, high = r.pathfinder.get_bounds()
         fmap = FirstSeenMap.around(self.map_spec, low, high)
-        pursuit = PurePursuit(sp, TrackedPath(route.path))
         rec = DriveRecord()
+        st = DriveState(phase="wall_recovery" if start.wall_recovery else "start_turn",
+                        pursuit=PurePursuit(sp, TrackedPath(route.path)), target=target, var=var, rec=rec,
+                        kick_left=abs(math.radians(var.kick_deg)))
         limit = int(math.ceil((disc["time_factor"] * geodesic / sp.max_v + disc["extra_turn_s"]) / sp.dt))
-        grid_clearance = self._grid_clearance
         r.place(np.array(start.position), start.yaw)
-        phase = "wall_recovery" if start.wall_recovery else "start_turn"
-        kick_left = abs(math.radians(var.kick_deg))
         streak = 0
         while True:
             depth = self.record_frame(rec, fmap, target.object_id)
-            pose = self.pose2d()
-            v = w = 0.0
-            forced = False
-            if phase == "wall_recovery":
-                alpha = pursuit.angle_to_aim(pose)
-                if centre_depth(depth, wall_cfg["centre_px"]) > wall_cfg["clear_depth_m"] or \
-                        abs(alpha) <= math.radians(wall_cfg["path_within_deg"]):
-                    phase = "start_turn"
-                else:
-                    w = math.copysign(sp.max_w, alpha)
-                    rec.wall_recovery_steps += 1
-            if phase == "start_turn":
-                alpha = pursuit.angle_to_aim(pose)
-                if abs(alpha) <= math.radians(sp.start_turn_deg):
-                    phase = "drive"
-                else:
-                    w = spot_turn(alpha, sp.max_w, sp.dt)
-            if phase == "drive" and kick_left > 0 and not rec.kick_done:
-                progress = float(pursuit.path.s[pursuit.path.index]) / max(pursuit.path.length, 1e-9)
-                remaining = pursuit.path.length - float(pursuit.path.s[pursuit.path.index])
-                # only on a straight stretch, lined up with the path, with room around (pilot 4: a kick out of a
-                # bend pushed the robot 63 deg off and its way back touched the wall)
-                straight = pursuit.path.turn_ahead(float(pursuit.path.s[pursuit.path.index]), kick_cfg["straight_ahead_m"])
-                if progress >= var.kick_at and remaining >= kick_cfg["min_remaining_m"] and \
-                        grid_clearance(pose) >= kick_cfg["min_clearance_m"] and \
-                        straight <= math.radians(kick_cfg["max_turn_ahead_deg"]) and \
-                        abs(pursuit.angle_to_aim(pose)) <= math.radians(kick_cfg["max_heading_error_deg"]):
-                    phase = "kick"
-            if phase == "kick":
-                w = math.copysign(min(sp.max_w, kick_left / sp.dt), var.kick_deg)
-                v = kick_cfg["v"]
-                kick_left -= abs(w) * sp.dt
-                if kick_left <= 1e-6:
-                    rec.kick_done = True
-            elif phase == "drive":
-                c = pursuit.command(pose)
-                if c.done:
-                    phase = "final_turn" if target.final_yaw is not None else "end"
-                else:
-                    v, w, forced = c.v, c.w, c.forced_spot_turn
-            if phase == "final_turn":
-                err = wrap(target.final_yaw - pose[2])
-                if abs(err) <= FINAL_TURN_DONE_RAD:  # spot_turn lands on the heading; the gate allows +-10 deg
-                    phase = "end"
-                else:
-                    w = spot_turn(err, sp.max_w, sp.dt)
-            if phase == "end":
+            v, w, forced = self.command(st, self.pose2d(), depth)
+            if st.phase == "end":
                 self._log(rec, 0.0, 0.0, False, "end", False, 0.0)
                 return rec, fmap
             move = r.drive(v, w)
-            self._log(rec, move.v, move.w, move.collided, phase, forced, move.travelled_m)
-            if phase == "kick" and rec.kick_done:
-                phase = "drive"
+            self._log(rec, move.v, move.w, move.collided, st.phase, forced, move.travelled_m)
+            if st.phase == "kick" and rec.kick_done:
+                st.phase = "drive"
             streak = streak + 1 if move.collided else 0
             if streak >= disc["max_collision_streak"]:
                 rec.discard = "collision_streak"
@@ -179,6 +144,80 @@ class DriveRunner:
             if len(rec.v) >= limit:
                 rec.discard = "time_limit"
                 return rec, fmap
+
+    # --- the phase machine: one handler per phase ---------------------------------------------------------------
+    # A handler returns the command (v, w, forced spot turn) for this step, or None after switching st.phase; then
+    # the next phase's handler runs in the same step (wall_recovery -> start_turn -> drive -> kick | final_turn ->
+    # end). Only `kick` goes back (to `drive`), after its last move (run).
+
+    def command(self, st: "DriveState", pose: Tuple[float, float, float], depth: np.ndarray) -> Tuple[float, float, bool]:
+        """The command for this step; (0, 0, False) once the drive has reached phase `end`."""
+        while st.phase != "end":
+            cmd = getattr(self, f"_{st.phase}")(st, pose, depth)
+            if cmd is not None:
+                return cmd
+        return 0.0, 0.0, False
+
+    def _wall_recovery(self, st: "DriveState", pose, depth) -> Optional[Tuple[float, float, bool]]:
+        """Turn on the spot toward the path side until the centre depth > clear_depth_m or the path is close."""
+        rule, alpha = self.cfg["variations"]["wall_recovery"], st.pursuit.angle_to_aim(pose)
+        if centre_depth(depth, rule["centre_px"]) > rule["clear_depth_m"] or \
+                abs(alpha) <= math.radians(rule["path_within_deg"]):
+            st.phase = "start_turn"
+            return None
+        st.rec.wall_recovery_steps += 1
+        return 0.0, math.copysign(self.pursuit_spec.max_w, alpha), False
+
+    def _start_turn(self, st: "DriveState", pose, depth) -> Optional[Tuple[float, float, bool]]:
+        """Turn on the spot while the aim point is more than start_turn_deg off."""
+        sp, alpha = self.pursuit_spec, st.pursuit.angle_to_aim(pose)
+        if abs(alpha) <= math.radians(sp.start_turn_deg):
+            st.phase = "drive"
+            return None
+        return 0.0, spot_turn(alpha, sp.max_w, sp.dt), False
+
+    def _drive(self, st: "DriveState", pose, depth) -> Optional[Tuple[float, float, bool]]:
+        """Pure pursuit; switches to `kick` once its conditions hold, to final_turn / end at the path's end."""
+        if self._kick_due(st, pose):
+            st.phase = "kick"
+            return None
+        c = st.pursuit.command(pose)
+        if c.done:
+            st.phase = "final_turn" if st.target.final_yaw is not None else "end"
+            return None
+        return c.v, c.w, c.forced_spot_turn
+
+    def _kick_due(self, st: "DriveState", pose) -> bool:
+        """Kick drives, once: only on a straight stretch, lined up with the path, with room around (pilot 4: a kick
+        out of a bend pushed the robot 63 deg off and its way back touched the wall)."""
+        if st.kick_left <= 0 or st.rec.kick_done:
+            return False
+        kick_cfg, path = self.cfg["variations"]["kick"], st.pursuit.path
+        progress = float(path.s[path.index]) / max(path.length, 1e-9)
+        remaining = path.length - float(path.s[path.index])
+        straight = path.turn_ahead(float(path.s[path.index]), kick_cfg["straight_ahead_m"])
+        return progress >= st.var.kick_at and remaining >= kick_cfg["min_remaining_m"] and \
+            self._grid_clearance(pose) >= kick_cfg["min_clearance_m"] and \
+            straight <= math.radians(kick_cfg["max_turn_ahead_deg"]) and \
+            abs(st.pursuit.angle_to_aim(pose)) <= math.radians(kick_cfg["max_heading_error_deg"])
+
+    def _kick(self, st: "DriveState", pose, depth) -> Optional[Tuple[float, float, bool]]:
+        """An arc at kick v turning kick_deg off the path; pure pursuit steers back afterwards."""
+        sp = self.pursuit_spec
+        w = math.copysign(min(sp.max_w, st.kick_left / sp.dt), st.var.kick_deg)
+        st.kick_left -= abs(w) * sp.dt
+        if st.kick_left <= 1e-6:
+            st.rec.kick_done = True
+        return self.cfg["variations"]["kick"]["v"], w, False
+
+    def _final_turn(self, st: "DriveState", pose, depth) -> Optional[Tuple[float, float, bool]]:
+        """Object drives: turn on the spot to face the object box."""
+        err = wrap(st.target.final_yaw - pose[2])
+        if abs(err) <= FINAL_TURN_DONE_RAD:  # spot_turn lands on the heading; the gate allows +-10 deg
+            st.phase = "end"
+            return None
+        sp = self.pursuit_spec
+        return 0.0, spot_turn(err, sp.max_w, sp.dt), False
 
     @staticmethod
     def _log(rec: DriveRecord, v: float, w: float, collided: bool, phase: str, forced: bool, travelled: float) -> None:

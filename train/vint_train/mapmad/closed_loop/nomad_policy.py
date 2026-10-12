@@ -63,10 +63,16 @@ class NomadPolicy(Policy):
     def __init__(self, weights: str, cfg: Dict[str, Any], device: torch.device, num_samples: int = 8,
                  sample_index: int = 0, waypoint_index: int = 2, max_v: float = 0.2, max_w: float = 0.4,
                  rate_hz: float = 4.0) -> None:
+        self._setup(load_nomad(weights, cfg, device), cfg, device, num_samples, sample_index, waypoint_index, max_v,
+                    max_w, rate_hz)
+
+    def _setup(self, model: torch.nn.Module, cfg: Dict[str, Any], device: torch.device, num_samples: int,
+               sample_index: int, waypoint_index: int, max_v: float, max_w: float, rate_hz: float) -> None:
+        """Everything but the weights (shared with MapMaDPolicy)."""
         from vint_train.training.train_utils import get_action
 
         self.cfg, self.device = cfg, device
-        self.model = load_nomad(weights, cfg, device)
+        self.model = model
         self.get_action = get_action
         self.scheduler = DDPMScheduler(num_train_timesteps=cfg["num_diffusion_iters"], beta_schedule="squaredcos_cap_v2",
                                        clip_sample=True, prediction_type="epsilon")
@@ -87,9 +93,8 @@ class NomadPolicy(Policy):
     def _pictures(self, arrays) -> torch.Tensor:
         return transform_images([PILImage.fromarray(a) for a in arrays], self.image_size, center_crop=False).to(self.device)
 
-    @torch.no_grad()
-    def sample_paths(self, obs: Observation) -> np.ndarray:
-        """(num_samples, len_traj_pred, 2) waypoints in normalised units (as get_action returns them)."""
+    def encoder_inputs(self, obs: Observation) -> Dict[str, torch.Tensor]:
+        """The vision encoder's keyword inputs for this step (deployment: 4 newest pictures + goal or a masked one)."""
         obs_images = self._pictures(obs.frames)
         if obs.goal_image is None:  # explore.py: random goal picture, masked
             goal = torch.randn((1, 3, *self.image_size), generator=self.generator, device=self.device)
@@ -97,7 +102,12 @@ class NomadPolicy(Policy):
         else:  # navigate.py: goal picture, not masked
             goal = self._pictures([obs.goal_image])
             mask = torch.zeros(1).long().to(self.device)
-        obs_cond = self.model("vision_encoder", obs_img=obs_images, goal_img=goal, input_goal_mask=mask)
+        return {"obs_img": obs_images, "goal_img": goal, "input_goal_mask": mask}
+
+    @torch.no_grad()
+    def sample_paths(self, obs: Observation) -> np.ndarray:
+        """(num_samples, len_traj_pred, 2) waypoints in normalised units (as get_action returns them)."""
+        obs_cond = self.model("vision_encoder", **self.encoder_inputs(obs))
         obs_cond = obs_cond.repeat(self.num_samples, 1) if obs_cond.dim() == 2 else obs_cond.repeat(self.num_samples, 1, 1)
         naction = torch.randn((self.num_samples, self.cfg["len_traj_pred"], 2), generator=self.generator,
                               device=self.device)
@@ -108,13 +118,22 @@ class NomadPolicy(Policy):
                                           generator=self.generator).prev_sample
         return self.get_action(naction).cpu().numpy()
 
+    def ready(self, obs: Observation) -> bool:
+        """Deployment publishes no waypoint before context_size + 1 pictures exist (the robot stands)."""
+        return len(obs.frames) >= self.context_frames
+
+    @property
+    def metres_per_unit(self) -> float:
+        """De-normalisation of the predicted waypoints: MAX_V / RATE (navigate.py / explore.py)."""
+        return self.max_v / self.rate_hz
+
     def act(self, obs: Observation) -> Command:
-        if len(obs.frames) < self.context_frames:  # deployment: no waypoint yet -> zero velocity
+        if not self.ready(obs):  # deployment: no waypoint yet -> zero velocity
             return Command(0.0, 0.0, {"waiting_for_frames": len(obs.frames)})
         paths = self.sample_paths(obs)
         waypoint = paths[self.sample_index][self.waypoint_index].astype(np.float64)
         if self.cfg["normalize"]:
-            waypoint = waypoint * (self.max_v / self.rate_hz)
+            waypoint = waypoint * self.metres_per_unit
         v, w = pd_controller(waypoint, self.max_v, self.max_w, 1.0 / self.rate_hz)
         return Command(v, w, {"waypoint_m": [float(waypoint[0]), float(waypoint[1])],
-                              "path_m": (paths[self.sample_index] * (self.max_v / self.rate_hz)).round(4).tolist()})
+                              "path_m": (paths[self.sample_index] * self.metres_per_unit).round(4).tolist()})

@@ -1,4 +1,5 @@
-"""Offline check of the map effect (gate G3 rows 4-5; Phase 3 confirmation items 12, 14, 19). Style of
+"""Offline check of the map effect (gate G3 rows 4-5; Phase 3 confirmation items 12, 14, 19): the command line.
+The parts: `offline_list.py` (frozen list), `offline_scoring.py` (scoring), `offline_stats.py` (statistics). Style of
 `train/ablation/eval_paired.py`: fixed sample lists, fixed noise, deterministic kernels, per-sample scores.
 
 Commands (inside naz_mapmad, from /app/visualnav-transformer/train):
@@ -8,8 +9,9 @@ Commands (inside naz_mapmad, from /app/visualnav-transformer/train):
    for waypoint spacing 1, 2 and 5). Written as JSON with its sha256.
 2. `score` -- one checkpoint, every arm on every listed sample; `gc_action_loss` = MSE between the expert's 8
    waypoints and the waypoints from the full 10-step reverse diffusion (normalised units, NoMaD's
-   `_compute_losses_nomad` formula per sample). Same starting noise per sample in every arm (keyed on the sample
-   id) and the same scheduler noise per batch (keyed on the batch number; the batch size is in the manifest).
+   `_compute_losses_nomad` formula per sample). Every sample's noise -- starting noise and the scheduler noise of
+   each reverse step -- comes from its own id (`diffusion.item_noise`), so it is the same in every arm, batch size
+   and subset (Phase 5 code list item 1; until Phase 4 the scheduler noise was drawn per batch).
    Arms (same samples):
      map_goal    photo hidden, map shown, correct heat, unperturbed            (a)
      map_hidden  photo hidden, map hidden (= plain explore)                    (b)
@@ -39,64 +41,25 @@ import os
 
 os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
 
-import argparse
-import hashlib
-import json
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+import argparse  # noqa: E402
+import hashlib  # noqa: E402
+import json  # noqa: E402
+from typing import List, Optional  # noqa: E402
 
-import numpy as np
-import torch
-import torch.nn.functional as F
-import tqdm
-from torch.utils.data import DataLoader, Dataset
+import numpy as np  # noqa: E402
+import torch  # noqa: E402
+from torch.utils.data import DataLoader  # noqa: E402
 
-from vint_train.mapmad import modes as M
-from vint_train.mapmad.attention import attention_share
-from vint_train.mapmad.closed_loop.metrics import bootstrap_ci
-from vint_train.mapmad.config import git_commit, load_config
-from vint_train.mapmad.dataset import build_mapmad_dataset, read_drive_list
-from vint_train.mapmad.reference_forward import IMAGENET, enforce_determinism, make_noise_scheduler
-from vint_train.mapmad.train_loop import to_batch
-from vint_train.mapmad.weights import load_checkpoint
-
-N_SAMPLES = 5000
-LIST_SEED = 20261010
-NOISE_SEED = 0
-BACK_FRAMES, AHEAD_FRAMES = 15, 40  # 3 context frames x spacing 5 back; 8 waypoints x spacing 5 ahead
-N_BOOT = 10_000
-PHOTO_K_MIN, PHOTO_K_MAX = 4, 19  # strictly inside NoMaD's action range (3, 20)
-ARMS = ("map_goal", "map_hidden", "wrong_heat", "photo", "photo_map", "explore_map")
-ARM_MODE = {"map_goal": "map_goal", "map_hidden": "explore", "wrong_heat": "map_goal", "photo": "photo",
-            "photo_map": "photo_map", "explore_map": "explore_map"}
-
-
-# --- the frozen list ---------------------------------------------------------------------------------------------
-def canonical_sha256(obj: Any) -> str:
-    return hashlib.sha256(json.dumps(obj, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
-
-
-def make_list(data_folder: str, drives: Sequence[str], n: int = N_SAMPLES, seed: int = LIST_SEED) -> List[Dict[str, Any]]:
-    """n samples spread evenly over `drives` (n // D or n // D + 1 each, the +1 drives drawn with the seed)."""
-    import pickle
-
-    rng = np.random.default_rng(seed)
-    drives = sorted(drives)
-    per = np.full(len(drives), n // len(drives))
-    per[rng.choice(len(drives), n - per.sum(), replace=False)] += 1
-    out = []
-    for drive, k in zip(drives, per):
-        with open(os.path.join(data_folder, drive, "traj_data.pkl"), "rb") as f:
-            length = len(pickle.load(f)["position"])
-        with open(os.path.join(data_folder, drive, "mapmad_meta.json")) as f:
-            kind = json.load(f)["target"]["kind"]
-        valid = np.arange(BACK_FRAMES, length - 1 - AHEAD_FRAMES + 1)
-        if len(valid) < k:
-            raise ValueError(f"{drive}: only {len(valid)} valid frames for {k} samples")
-        for t in np.sort(rng.choice(valid, k, replace=False)):
-            out.append({"drive": drive, "t": int(t), "type": kind})
-    for i, s in enumerate(out):
-        s["id"] = i
-    return out
+from vint_train.mapmad.closed_loop.metrics import bootstrap_ci  # noqa: E402
+from vint_train.mapmad.config import git_commit, load_config  # noqa: E402
+from vint_train.mapmad.dataset import build_mapmad_dataset, read_drive_list  # noqa: E402
+from vint_train.mapmad.offline_list import (AHEAD_FRAMES, BACK_FRAMES, LIST_SEED, N_SAMPLES,  # noqa: E402
+                                            canonical_sha256, load_list, make_list)
+from vint_train.mapmad.offline_scoring import (ARMS, NOISE_SEED, GoStanfordPhotoSamples, score_arm,  # noqa: E402
+                                               score_gostanford)
+from vint_train.mapmad.offline_stats import N_BOOT, compare  # noqa: E402
+from vint_train.mapmad.reference_forward import enforce_determinism  # noqa: E402
+from vint_train.mapmad.weights import load_checkpoint  # noqa: E402
 
 
 def cmd_make_list(args) -> None:
@@ -118,96 +81,6 @@ def cmd_make_list(args) -> None:
     kinds = {k: sum(s["type"] == k for s in samples) for k in ("spot", "object")}
     print(f"{len(samples)} samples from {len(drives)} drives ({body['n_excluded']} excluded); types {kinds}; "
           f"sha256 {body['sha256']}")
-
-
-def load_list(path: str) -> Dict[str, Any]:
-    with open(path) as f:
-        body = json.load(f)
-    if canonical_sha256(body["samples"]) != body["sha256"]:
-        raise SystemExit(f"{path}: sha256 mismatch, the list was changed")
-    return body
-
-
-# --- models ------------------------------------------------------------------------------------------------------
-@torch.no_grad()
-def sample_actions(model, cond: torch.Tensor, init_noise: torch.Tensor, scheduler, batch_seed: int) -> torch.Tensor:
-    """Full reverse diffusion -> waypoints (B, 8, 2) in normalised units (get_action)."""
-    from vint_train.training.train_utils import get_action
-
-    device = cond.device
-    gen = torch.Generator(device=device).manual_seed(batch_seed)
-    naction = init_noise.to(device)
-    for k in scheduler.timesteps[:]:
-        pred = model("noise_pred_net", sample=naction, timestep=k.unsqueeze(-1).repeat(naction.shape[0]).to(device),
-                     global_cond=cond)
-        naction = scheduler.step(model_output=pred, timestep=k, sample=naction, generator=gen).prev_sample
-    return get_action(naction)
-
-
-def init_noise(ids: Sequence[int], horizon: int) -> torch.Tensor:
-    """One fixed starting-noise tensor per sample id (independent of batching and arm)."""
-    return torch.stack([torch.randn((horizon, 2), generator=torch.Generator().manual_seed(NOISE_SEED + int(i)))
-                        for i in ids])
-
-
-def per_sample_loss(actions: torch.Tensor, labels: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-    """gc_action_loss and waypoint cosine similarity per sample (the _compute_losses_nomad formulas)."""
-    loss = F.mse_loss(actions, labels, reduction="none").mean(dim=(1, 2))
-    cos = F.cosine_similarity(actions[:, :, :2], labels[:, :, :2], dim=-1).mean(dim=-1)
-    return loss, cos
-
-
-# --- Habitat arms ------------------------------------------------------------------------------------------------
-class ArmSamples(Dataset):
-    """The listed samples built in one arm (deterministic: photo goal offset from the sample id)."""
-
-    def __init__(self, ds, samples: List[Dict[str, Any]], arm: str) -> None:
-        self.ds, self.samples, self.arm = ds, samples, arm
-
-    def __len__(self) -> int:
-        return len(self.samples)
-
-    def photo_offset(self, s: Dict[str, Any]) -> int:
-        k_max = min(PHOTO_K_MAX, self.ds.max_goal_offset(s["drive"], s["t"]))
-        return int(np.random.default_rng([LIST_SEED, s["id"]]).integers(PHOTO_K_MIN, k_max + 1))
-
-    def __getitem__(self, j: int):
-        s = self.samples[j]
-        mode = M.BY_NAME[ARM_MODE[self.arm]]
-        out = self.ds.habitat_sample(s["drive"], s["t"], mode, np.random.default_rng([LIST_SEED, s["id"]]),
-                                     goal_offset=self.photo_offset(s) if mode.goal_mask == 0 else None,
-                                     wrong_heat=self.arm == "wrong_heat", perturbation=None)
-        return out + (torch.tensor(s["id"]),)
-
-
-@torch.no_grad()
-def score_arm(model, ds, samples, arm: str, cfg, device, batch_size: int, workers: int) -> Dict[str, np.ndarray]:
-    scheduler = make_noise_scheduler(cfg)
-    scheduler.set_timesteps(cfg["num_diffusion_iters"])
-    loader = DataLoader(ArmSamples(ds, samples, arm), batch_size=batch_size, shuffle=False, num_workers=workers)
-    enc = model.vision_encoder
-    res = {"gc_action_loss": [], "cos_sim": [], "attn_share": [], "action_mask": []}
-    for bi, data in enumerate(tqdm.tqdm(loader, desc=arm, dynamic_ncols=True, leave=False)):
-        b, ids = to_batch(data[:-1], IMAGENET, device), data[-1]  # the training input recipe
-        obs, goal, labels, maps, gm, mm = (b["obs"], b["goal"], b["actions"].to(device), b["map"], b["goal_mask"],
-                                           b["map_mask"])
-        am = b["action_mask"].cpu()
-        tokens, padding = enc.map_tokens(enc._encode_images(obs, goal), gm, maps, mm)
-        out_manual, share = attention_share(enc.sa_encoder, tokens, padding)
-        cond = model("vision_encoder", obs_img=obs, goal_img=goal, input_goal_mask=gm, map_img=maps, input_map_mask=mm)
-        if bi == 0:  # the manual layer pass must reproduce nn.TransformerEncoder (up to float32 kernel noise:
-            # on the GPU the encoder runs PyTorch's fused fast path, about 1e-4 of the output scale apart)
-            ref = enc.sa_encoder(tokens, src_key_padding_mask=padding)
-            visible = ~padding
-            rel = float((out_manual - ref)[visible].abs().max() / ref[visible].abs().max())
-            assert rel < 1e-3, f"manual attention pass differs from the encoder: relative {rel:.2e}"
-        actions = sample_actions(model, cond, init_noise(ids.tolist(), cfg["len_traj_pred"]), scheduler, NOISE_SEED + bi)
-        loss, cos = per_sample_loss(actions, labels)
-        res["gc_action_loss"].append(loss.cpu())
-        res["cos_sim"].append(cos.cpu())
-        res["attn_share"].append(torch.where(mm.bool(), torch.full_like(share, float("nan")), share).cpu())
-        res["action_mask"].append(am.float())
-    return {k: torch.cat(v).numpy().astype(np.float64) for k, v in res.items()}
 
 
 def cmd_score(args) -> None:
@@ -234,51 +107,6 @@ def cmd_score(args) -> None:
     print({a: float(np.mean(scores[f"{a}.gc_action_loss"])) for a in arms})
 
 
-# --- statistics --------------------------------------------------------------------------------------------------
-def drive_bootstrap(values: Dict[str, np.ndarray], groups: np.ndarray, stat, n_boot: int = N_BOOT,
-                    seed: int = 0) -> Tuple[float, float, float]:
-    """(estimate, low, high): percentile bootstrap resampling whole drives; stat(sums dict, count) -> float,
-    computed from per-drive sums so that a drive drawn twice counts twice."""
-    uniq, inv = np.unique(groups, return_inverse=True)
-    sums = {k: np.bincount(inv, weights=v, minlength=len(uniq)) for k, v in values.items()}
-    counts = np.bincount(inv, minlength=len(uniq)).astype(np.float64)
-    rng = np.random.default_rng(seed)
-    draws = rng.integers(0, len(uniq), size=(n_boot, len(uniq)))
-    boot_sums = {k: s[draws].sum(axis=1) for k, s in sums.items()}
-    boot = stat(boot_sums, counts[draws].sum(axis=1))
-    est = stat({k: s.sum() for k, s in sums.items()}, counts.sum())
-    return float(est), float(np.quantile(boot, 0.025)), float(np.quantile(boot, 0.975))
-
-
-def paired_stats(a: np.ndarray, b: np.ndarray, drives: np.ndarray) -> Dict[str, Any]:
-    """mean(a - b) with drive-level and per-sample CIs, and R = (b - a) / b with its drive-level CI."""
-    diff = drive_bootstrap({"d": a - b}, drives, lambda s, n: s["d"] / n)
-    rel = drive_bootstrap({"a": a, "b": b}, drives, lambda s, n: (s["b"] - s["a"]) / s["b"])
-    return {"mean_a": float(a.mean()), "mean_b": float(b.mean()), "diff": diff[0], "diff_ci_drive": diff[1:],
-            "diff_ci_sample": bootstrap_ci(a - b, n_boot=N_BOOT)[1:], "R": rel[0], "R_ci_drive": rel[1:],
-            "n_samples": int(len(a)), "n_drives": int(len(np.unique(drives)))}
-
-
-def compare(scores: Dict[str, np.ndarray]) -> Dict[str, Any]:
-    drives, types = scores["drive"], scores["type"]
-    loss = {arm: scores[f"{arm}.gc_action_loss"] for arm in ARMS if f"{arm}.gc_action_loss" in scores}
-    out: Dict[str, Any] = {"means": {k: float(v.mean()) for k, v in loss.items()}}
-    a, b = loss["map_goal"], loss["map_hidden"]
-    out["row4"] = paired_stats(a, b, drives)
-    out["row4"]["pass"] = bool(out["row4"]["diff"] < 0 and out["row4"]["diff_ci_drive"][1] < 0)
-    if "wrong_heat" in loss:
-        out["wrong_minus_map"] = paired_stats(loss["wrong_heat"], a, drives)
-    out["per_type"] = {}
-    for t in np.unique(types):
-        sel = types == t
-        out["per_type"][str(t)] = {"map_vs_hidden": paired_stats(a[sel], b[sel], drives[sel])}
-        if "wrong_heat" in loss:
-            out["per_type"][str(t)]["wrong_minus_map"] = paired_stats(loss["wrong_heat"][sel], a[sel], drives[sel])
-    out["attention_share"] = {arm: float(np.nanmean(scores[f"{arm}.attn_share"])) for arm in loss
-                              if not np.all(np.isnan(scores[f"{arm}.attn_share"]))}
-    return out
-
-
 def cmd_compare(args) -> None:
     with np.load(args.scores) as z:
         scores = {k: z[k] for k in z.files}
@@ -291,54 +119,6 @@ def cmd_compare(args) -> None:
           f"[{r['diff_ci_drive'][0]:+.4f}, {r['diff_ci_drive'][1]:+.4f}] R {r['R']:+.3f} -> row4 "
           f"{'PASS' if r['pass'] else 'FAIL'}")
     print(json.dumps({"means": res["means"], "attention_share": res["attention_share"]}, indent=1))
-
-
-# --- GoStanford no-harm (row 5) ----------------------------------------------------------------------------------
-class GoStanfordPhotoSamples(Dataset):
-    """Fixed GoStanford test samples with a positive photo goal k waypoints ahead (k from the sample's seed)."""
-
-    def __init__(self, ds, n: int, seed: int = LIST_SEED) -> None:
-        self.ds = ds
-        rng = np.random.default_rng([seed, 1])
-        idx = np.arange(len(ds)) if n >= len(ds) else np.sort(rng.choice(len(ds), n, replace=False))
-        self.items = []
-        for j, i in enumerate(idx):
-            drive, t, max_goal = ds.index_to_data[int(i)]
-            k_max = min(PHOTO_K_MAX, int(max_goal) // ds.waypoint_spacing)
-            if k_max < PHOTO_K_MIN:
-                continue
-            k = int(np.random.default_rng([seed, 2, j]).integers(PHOTO_K_MIN, k_max + 1))
-            self.items.append((drive, int(t), k))
-
-    def __len__(self) -> int:
-        return len(self.items)
-
-    def __getitem__(self, j: int):
-        drive, t, k = self.items[j]
-        ds = self.ds
-        obs = torch.cat([ds._load_image(drive, ct) for ct in ds._context_times(t)])
-        goal = ds._load_image(drive, t + k * ds.waypoint_spacing)
-        actions, _ = ds._compute_actions(ds._get_trajectory(drive), t, t + k * ds.waypoint_spacing)
-        return obs, goal, torch.as_tensor(actions, dtype=torch.float32), torch.tensor(j)
-
-
-@torch.no_grad()
-def score_gostanford(model, loader, cfg, device, map_input: bool) -> np.ndarray:
-    scheduler = make_noise_scheduler(cfg)
-    scheduler.set_timesteps(cfg["num_diffusion_iters"])
-    losses = []
-    for bi, (obs_image, goal_image, labels, ids) in enumerate(tqdm.tqdm(loader, dynamic_ncols=True, leave=False)):
-        obs = torch.cat([IMAGENET(o) for o in torch.split(obs_image, 3, dim=1)], dim=1).to(device)
-        goal = IMAGENET(goal_image).to(device)
-        b = obs.shape[0]
-        kwargs = dict(obs_img=obs, goal_img=goal, input_goal_mask=torch.zeros(b, dtype=torch.long, device=device))
-        if map_input:
-            kwargs.update(map_img=torch.zeros((b, 3, 64, 64), device=device),
-                          input_map_mask=torch.ones(b, dtype=torch.long, device=device))
-        cond = model("vision_encoder", **kwargs)
-        actions = sample_actions(model, cond, init_noise(ids.tolist(), cfg["len_traj_pred"]), scheduler, NOISE_SEED + bi)
-        losses.append(per_sample_loss(actions, labels.to(device))[0].cpu())
-    return torch.cat(losses).numpy().astype(np.float64)
 
 
 def cmd_gostanford(args) -> None:

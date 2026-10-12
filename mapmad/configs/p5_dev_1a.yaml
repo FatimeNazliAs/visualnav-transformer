@@ -1,0 +1,5 @@
+# Phase 5 dev runs of arms B and F with the 1a goal photos (Naz at S-dev: view point closest to 1.0 m from the box).
+# The same 99 frozen dev episodes (dev/set, fingerprint 8221085c...) with only the goal-photo fields re-chosen by
+# `make_p5_sets.py rephoto --set dev` -> dev/set_1a. Report only: nothing is decided from these runs.
+extends: p5_dev.yaml
+episodes_dir: dev/set_1a

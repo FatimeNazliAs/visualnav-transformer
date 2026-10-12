@@ -11,13 +11,16 @@ MAPMAD_SIDECAR_KEY, hex); a wrong key gets an error and the connection is closed
 
 Requests ({"cmd": ...}) and replies:
 - hello(key)                             -> {"version", "home", "hfov_deg"}
-- reset(episode, hfov_deg, goal_photo, topdown_m_per_px)
+- reset(episode, hfov_deg, goal_photo, topdown_m_per_px[, outputs])
                                          -> {"rgb", "goal_rgb" (or None), "state", "topdown", "navmesh_sha256"}
-- step(v, w)                             -> {"rgb", "state", "move"}
+                                            (+ "map", "grid", "goal_rect" as asked in outputs; Phase 5)
+- step(v, w)                             -> {"rgb", "state", "move"} (+ "map", "grid" as asked at reset)
 - bye                                    -> {} (client leaves, server waits for the next one)
 - close                                  -> {} (server exits)
 Any failure -> {"error": "<type>: <message>"}.
-`state` = {"position": [x, y, z], "yaw", "geodesic_m", "floor_below_feet_m"}; `move` = mapmad_sim.robot.Move fields.
+`state` = {"position": [x, y, z], "yaw", "geodesic_m", "floor_below_feet_m"[, "vp_geodesic_m"]}; `move` =
+mapmad_sim.robot.Move fields. `outputs` = {"map": bool, "grid": bool, "map_settings": {"builder", "crop"}}
+(mapmad_sim.sidecar_server.SimService).
 """
 
 import json
@@ -28,7 +31,7 @@ from typing import Any, Dict, List
 
 import numpy as np
 
-PROTOCOL_VERSION = 2
+PROTOCOL_VERSION = 3
 KEY_ENV = "MAPMAD_SIDECAR_KEY"
 MAX_HEADER = 1 << 24  # 16 MB of JSON is far more than any message needs
 

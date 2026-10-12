@@ -5,20 +5,22 @@
     layout.log("photo_iv", "p1-iv-00081-000")     # <outputs>/p1_baseline/logs/photo_iv/p1-iv-00081-000.jsonl
 
 With a `subdir` (e.g. "checks/determinism_a") every run output moves below <out_dir>/<subdir>; the episode file
-stays in <out_dir>/episodes. A run config may start from another one (`extends: p1_baseline.yaml`): its blocks are
+stays in <out_dir>/<episodes_dir> (config key, default "episodes"). Config paths are relative to paths.yaml
+`outputs`, or to the repository when they start with "repo:" (`resolve`). A run config may start from another one (`extends: p1_baseline.yaml`): its blocks are
 merged into that file's (nested keys replaced one by one; a key set to null is removed). Needs only PyYAML: used in
 both containers.
 """
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import yaml
 
 from mapmad_sim import config
 
 P1_CONFIG = config.CONFIG_DIR / "p1_baseline.yaml"
+REPO = config.CONFIG_DIR.parents[1]
 
 
 def merge(base: Dict[str, Any], over: Dict[str, Any]) -> Dict[str, Any]:
@@ -41,6 +43,25 @@ def read_config(path: Path) -> Dict[str, Any]:
     return merge(read_config(path.parent / base), cfg) if base else cfg
 
 
+RUN_SEP = "__s"  # Phase 5 run id: <episode_id>__s<seed index>
+
+
+def run_id(episode_id: str, seed_index: int) -> str:
+    """The Phase 5 run id of one (episode, seed index): the stem of its log, summary, crash and trace files."""
+    return f"{episode_id}{RUN_SEP}{seed_index}"
+
+
+def parse_run_id(name: str) -> Tuple[str, int]:
+    """(episode id, seed index) of a run id or of one of its file names (e.g. `<id>__s0.crash.json`)."""
+    episode_id, k = name.split(".", 1)[0].rsplit(RUN_SEP, 1)
+    return episode_id, int(k)
+
+
+def partial_path(log: Path) -> Path:
+    """Where a log is written until its episode is complete (then renamed to `log`)."""
+    return log.with_name(log.name + ".partial")
+
+
 @dataclass(frozen=True)
 class RunLayout:
     cfg: Dict[str, Any]  # the run config (p1_baseline.yaml)
@@ -58,7 +79,11 @@ class RunLayout:
     # --- inputs ------------------------------------------------------------------------------------------------
     @property
     def episodes_dir(self) -> Path:
-        return self.base / "episodes"
+        return self.base / self.cfg.get("episodes_dir", "episodes")
+
+    def resolve(self, value: str) -> Path:
+        """A config path: "repo:<path>" -> the repository, otherwise below <outputs>."""
+        return REPO / value[len("repo:"):] if value.startswith("repo:") else self.outputs / value
 
     @property
     def episodes_file(self) -> Path:
@@ -82,6 +107,22 @@ class RunLayout:
 
     def summary(self, arm: str, episode_id: str) -> Path:
         return self.root / "summaries" / arm / f"{episode_id}.json"
+
+    def crash(self, arm: str, run: str) -> Path:
+        """Phase 5: the record of a run that still failed after its retries (block item 13b)."""
+        return self.root / "summaries" / arm / f"{run}.crash.json"
+
+    def crashed_episodes(self, arms: Optional[Sequence[str]] = None) -> List[str]:
+        """Phase 5: episode ids with a crash record in any of these arms (all arms by default), sorted."""
+        files = [p for a in (arms or ["*"]) for p in (self.root / "summaries").glob(f"{a}/*.crash.json")]
+        return sorted({parse_run_id(p.name)[0] for p in files})
+
+    def trace(self, arm: str, run: str) -> Path:
+        """Phase 5: the per-step map tensors and poses of one run (--trace-maps, map parity)."""
+        return self.root / "traces" / arm / f"{run}.npz"
+
+    def progress(self, tag: str) -> Path:
+        return self.root / f"progress.{tag}.log"
 
     def video(self, arm: str, episode_id: str) -> Path:
         return self.root / "videos" / arm / f"{episode_id}.mp4"

@@ -9,12 +9,14 @@ Needs only numpy (runs in the NoMaD container, Python 3.8).
 
 import socket
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
 
 import numpy as np
 
 from mapmad_bridge import protocol
+
+EXTRAS = ("map", "grid", "goal_rect")
 
 
 @dataclass
@@ -27,6 +29,11 @@ class Frame:
     goal_rgb: Optional[np.ndarray] = None  # goal photo (reset only, if asked for)
     topdown: Optional[Dict[str, Any]] = None  # {"grid": bool (rows z, cols x), "origin": [x, z], "m_per_px"} (reset)
     navmesh_sha256: Optional[str] = None  # floor map of the home (reset)
+    extras: Dict[str, Any] = field(default_factory=dict)  # Phase 5 outputs: "map", "grid", "goal_rect"
+
+
+def extras_of(reply: Dict[str, Any]) -> Dict[str, Any]:
+    return {k: reply[k] for k in EXTRAS if k in reply}
 
 
 class SimClient:
@@ -53,17 +60,20 @@ class SimClient:
             raise RuntimeError(f"simulator server: {reply['error']}")
         return reply
 
-    def reset(self, episode: Dict[str, Any], hfov_deg: float, goal_photo: bool, topdown_m_per_px: float = 0.05) -> Frame:
-        """Load the episode's home (if needed) with this camera FOV and put the robot on its start."""
+    def reset(self, episode: Dict[str, Any], hfov_deg: float, goal_photo: bool, topdown_m_per_px: float = 0.05,
+              outputs: Optional[Dict[str, Any]] = None) -> Frame:
+        """Load the episode's home (if needed) with this camera FOV and put the robot on its start. `outputs`
+        (Phase 5) asks for the map tensor / planner grid with every frame (protocol.py)."""
+        kwargs = {"outputs": outputs} if outputs else {}
         r = self._call("reset", episode=episode, hfov_deg=float(hfov_deg), goal_photo=bool(goal_photo),
-                       topdown_m_per_px=float(topdown_m_per_px))
+                       topdown_m_per_px=float(topdown_m_per_px), **kwargs)
         return Frame(rgb=r["rgb"], state=r["state"], goal_rgb=r["goal_rgb"], topdown=r["topdown"],
-                     navmesh_sha256=r["navmesh_sha256"])
+                     navmesh_sha256=r["navmesh_sha256"], extras=extras_of(r))
 
     def step(self, v: float, w: float) -> Frame:
         """Drive (v m/s, w rad/s) for one control period (0.25 s) and observe."""
         r = self._call("step", v=float(v), w=float(w))
-        return Frame(rgb=r["rgb"], state=r["state"], move=r["move"])
+        return Frame(rgb=r["rgb"], state=r["state"], move=r["move"], extras=extras_of(r))
 
     def close(self, shutdown_server: bool = False) -> None:
         """Leave; with shutdown_server the server process exits too."""

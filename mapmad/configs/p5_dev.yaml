@@ -1,0 +1,8 @@
+# Phase 5 dev runs (block items 3, 5): the frozen dev set (Phase 1's 10 held-out train homes, ObjectNav v2 train
+# episodes), same arms and settings as the exam. Rules for these runs: /outputs/mapmad/p5_exam/p5_dev_rules.md.
+extends: p5_exam.yaml
+episodes_dir: dev/set
+
+arms:                                # the exam arms + the waypoint-index test arms (block item 5)
+  C_wp1: {policy: mapmad, photo: false, map: true, waypoint_index: 1}
+  C_wp2: {policy: mapmad, photo: false, map: true, waypoint_index: 2}
