@@ -4,10 +4,33 @@ both containers use the same rules (runner, gate, videos, S-freeze estimate).
     arm = ExamArm.from_config("C", cfg["arms"]["C"])
     arm.outputs            # what the simulator server sends with every frame
     arm.seed_indices([0, 1, 2])   # the planner (deterministic) runs index 0 only
+    arm.episode_for(episode)      # ablation 1 (perturbed heat): the episode with its heat box moved by heat_shift_m
 """
 
+import copy
+import hashlib
+import math
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Sequence
+
+HEAT_SHIFT_SALT = "mapmad-p5-heat-shift"  # ablation 1: direction = sha256("<salt>/<episode_id>"), every distance
+
+
+def heat_shift_angle(episode_id: str) -> float:
+    """Ablation 1: the seeded random direction (radians in Habitat's x-z plane, uniform in [0, 2 pi)) of an episode's
+    heat shift; it depends on the episode only, so the 0.5 m and 1.0 m shifts point the same way."""
+    u = int(hashlib.sha256(f"{HEAT_SHIFT_SALT}/{episode_id}".encode()).hexdigest()[:8], 16) / 16 ** 8
+    return 2.0 * math.pi * u
+
+
+def shifted_heat_episode(episode: Dict[str, Any], shift_m: float) -> Dict[str, Any]:
+    """A copy of the episode whose object box (the heat target only: `online_map.heat_target`) is moved shift_m
+    metres along heat_shift_angle; the box size, view points, target point and success test are unchanged."""
+    out = copy.deepcopy(episode)
+    a = heat_shift_angle(episode["episode_id"])
+    x, y, z = out["target"]["box_center"]
+    out["target"]["box_center"] = [x + shift_m * math.cos(a), y, z + shift_m * math.sin(a)]
+    return out
 
 
 @dataclass
@@ -20,6 +43,11 @@ class ExamArm:
     map: bool = False
     waypoint_index: Optional[int] = None  # MapMaD arms: overrides `mapmad.waypoint_index` (dev waypoint test)
     hfov_deg: float = 66.5
+    heat_shift_m: float = 0.0  # ablation 1: heat target moved this far (map arms only); 0 = the exam's heat
+
+    def __post_init__(self) -> None:
+        if self.heat_shift_m and not self.map_given:
+            raise ValueError(f"arm {self.name}: heat_shift_m needs an arm that is given the map")
 
     @classmethod
     def from_config(cls, name: str, spec: Dict[str, Any]) -> "ExamArm":
@@ -48,6 +76,18 @@ class ExamArm:
     def run_seed_index(self, seed_index: int) -> int:
         """The seed index of the run that stands for `seed_index` (the planner: always 0)."""
         return 0 if self.deterministic else seed_index
+
+    def episode_for(self, episode: Dict[str, Any]) -> Dict[str, Any]:
+        """The episode as this arm's simulator server gets it (heat box shifted for ablation 1; else unchanged)."""
+        return shifted_heat_episode(episode, self.heat_shift_m) if self.heat_shift_m else episode
+
+    def log_header(self, episode: Dict[str, Any]) -> Dict[str, Any]:
+        """Extra log-header fields of this arm (the heat shift, if any; none for the exam arms, so their logs keep
+        the exam's bytes)."""
+        if not self.heat_shift_m:
+            return {}
+        return {"heat_shift_m": self.heat_shift_m, "heat_shift_angle_rad": round(heat_shift_angle(episode["episode_id"]), 6),
+                "heat_box_center": [round(v, 4) for v in self.episode_for(episode)["target"]["box_center"]]}
 
     @property
     def reset_goal(self) -> str:

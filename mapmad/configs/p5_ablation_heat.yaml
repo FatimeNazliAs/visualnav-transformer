@@ -1,0 +1,11 @@
+# Phase 5 ablation 1, perturbed heat (p5_rules.md section 10, registered before the exam; report only; extra rule
+# detail in p5_rules_log.md): arm C with its heat target (the object box) moved 0.5 m and 1.0 m in a seeded random
+# direction per episode (exam_arms.heat_shift_angle, the same direction for both distances), on the frozen exam set,
+# seed index 0. Everything else is p5_exam.yaml (checkpoint, settings, noise seeds, success test). Run on the host:
+#   PAIRS="0 0 0 1 1 1" mapmad/scripts/run_p5.sh --config /app/visualnav-transformer/mapmad/configs/p5_ablation_heat.yaml \
+#       --arms C_h05 C_h10 --seeds 0 --subdir ablation_heat/runs
+# Table (vs the exam's arm C): python -m vint_train.mapmad.closed_loop.exam_ablation --config <this file>
+extends: p5_exam.yaml
+arms:
+  C_h05: {policy: mapmad, photo: false, map: true, heat_shift_m: 0.5}
+  C_h10: {policy: mapmad, photo: false, map: true, heat_shift_m: 1.0}

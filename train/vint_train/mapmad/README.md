@@ -24,7 +24,8 @@ Phase 5 (the exam; commands in `mapmad/README.md`, "Run the Phase 5 exam"):
   oracle stop) and the sharded, resumable command line; `exam_analysis.py`, `exam_stats.py`, `exam_tables.py` —
   failure types, home-clustered bootstrap, tables from the logs; `exam_figures.py` (figures from the tables) and
   `exam_gate.py` (the G5 table: fairness, C - B, C - D, planner per bin, videos, determinism); `exam_stuck.py`
-  (report only: heat bearing at the onset of stuck streaks). Arms (`ExamArm`: seed indices, goals, weights key) live in
+  (report only: heat bearing at the onset of stuck streaks); `exam_ablation.py` (report only: ablation arms at seed
+  index 0 vs the exam's arm C, e.g. ablation 1 perturbed heat, `mapmad/configs/p5_ablation_heat.yaml`). Arms (`ExamArm`: seed indices, goals, weights key, ablation heat shift) live in
   `mapmad_sim/exam_arms.py` and run ids / run files in `mapmad_sim/run_layout.py`, shared with the Habitat scripts.
 - `diffusion.py` (code list item 1) — reverse diffusion with all noise fixed per item id; the offline harness is split
   into `offline_list.py`, `offline_scoring.py`, `offline_stats.py` (+ the `offline_eval.py` command line);

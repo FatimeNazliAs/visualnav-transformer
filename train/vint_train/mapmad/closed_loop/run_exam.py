@@ -171,8 +171,9 @@ def main() -> None:
                 t0 = time.perf_counter()
                 trace = Trace() if args.trace_maps else None
                 try:
-                    result, ms = run_episode(sim, policies.get(arm), e, arm, run, k, seed, layout.log(arm.name, rid),
-                                             fingerprint, settings, policies.header(arm), trace)
+                    result, ms = run_episode(sim, policies.get(arm), arm.episode_for(e), arm, run, k, seed,
+                                             layout.log(arm.name, rid), fingerprint, settings,
+                                             {**policies.header(arm), **arm.log_header(e)}, trace)
                     break
                 except INFRA_ERRORS + (RuntimeError,) as exc:
                     if isinstance(exc, RuntimeError) and not str(exc).startswith("simulator server"):
