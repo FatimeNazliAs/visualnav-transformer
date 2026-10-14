@@ -64,3 +64,53 @@ def test_exam_arms_unchanged_and_ablation_arms_from_config():
 def test_shift_refused_on_arms_without_the_map():
     with pytest.raises(ValueError):
         ExamArm(name="D_h05", policy="mapmad", map=False, heat_shift_m=0.5)
+
+
+# --- layer ablation (map_zero) and all-samples logging ---------------------------------------------------------------
+def test_layer_ablation_arms_from_config():
+    from mapmad_sim.exam_arms import MAP_LAYERS
+
+    assert MAP_LAYERS == ("obstacle", "explored", "heat")
+    heat_only, no_heat = arms_of(read_config(CONFIGS / "p5_layer_ablation.yaml"), ["C_heat_only", "C_no_heat"])
+    assert heat_only.map_zero_indices == [0, 1] and no_heat.map_zero_indices == [2]
+    assert heat_only.log_header(EPISODE) == {"map_zero": ["obstacle", "explored"]}
+    assert heat_only.outputs == {"depth": True, "map": True, "grid": False} and heat_only.mapmad_goal == "map"
+    for a in arms_of(read_config(CONFIGS / "p5_exam.yaml")):
+        assert a.map_zero == () and a.map_zero_indices == []
+    with pytest.raises(ValueError):
+        ExamArm(name="D_x", policy="mapmad", map=False, map_zero=["heat"])
+    with pytest.raises(ValueError):
+        ExamArm(name="C_x", policy="mapmad", map=True, map_zero=["walls"])
+
+
+def test_policy_zeroes_only_the_listed_layers():
+    import torch
+
+    from vint_train.mapmad.tests.test_p5_policies import bare_policy, obs_for
+
+    obs = obs_for(5)
+    obs.extras["map"][0, 1, 1] = obs.extras["map"][1, 2, 2] = 1.0  # one obstacle and one explored cell; heat at [2, 10, 20]
+    full = bare_policy("map").encoder_inputs(obs)["map_img"][0]
+    for layers, kept in (([0, 1], [2]), ([2], [0, 1])):
+        p = bare_policy("map")
+        p.zero_layers = layers
+        got = p.encoder_inputs(obs)["map_img"][0]
+        assert float(got[layers].abs().sum()) == 0.0 and torch.equal(got[kept], full[kept])
+    assert np.array_equal(obs.extras["map"][2], full[2].numpy())  # the observation itself is not changed
+
+
+def test_all_samples_logging_adds_one_field():
+    from vint_train.mapmad.closed_loop.nomad_policy import NomadPolicy
+
+    p = NomadPolicy.__new__(NomadPolicy)
+    p.cfg, p.max_v, p.max_w, p.rate_hz = {"normalize": True}, 0.2, 0.4, 4.0
+    p.sample_index, p.waypoint_index, p.context_frames = 0, 2, 1
+    paths = np.cumsum(np.ones((8, 8, 2)) * np.arange(1, 9)[:, None, None], axis=1)  # sample k: steps of size k + 1
+    p.sample_paths = lambda obs: paths
+    from vint_train.mapmad.tests.test_p5_policies import obs_for
+
+    plain = p.act(obs_for(1))
+    p.log_all_samples = True
+    both = p.act(obs_for(1))
+    assert (plain.v, plain.w) == (both.v, both.w) and set(both.info) - set(plain.info) == {"paths_all_m"}
+    assert np.allclose(both.info["paths_all_m"], paths * 0.05) and both.info["path_m"] == both.info["paths_all_m"][0]

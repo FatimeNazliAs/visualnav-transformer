@@ -16,7 +16,7 @@ The checkpoint's sha256 is checked when the policy is built; a mismatch stops th
 """
 
 import hashlib
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Sequence
 
 import numpy as np
 import torch
@@ -54,10 +54,12 @@ def context_indices(n_frames: int, context_size: int, spacing: int) -> List[int]
 class MapMaDPolicy(NomadPolicy):
     """MapMaD with one goal setting (GOALS); several instances may share one model (`model`)."""
 
+    zero_layers: Sequence[int] = ()  # layer ablation (report only): these map layers are set to 0
+
     def __init__(self, checkpoint: str, checkpoint_sha256: str, cfg: Dict[str, Any], device: torch.device, goal: str,
                  num_samples: int = 8, sample_index: int = 0, waypoint_index: int = 2, context_spacing: int = 5,
                  step_m: float = 0.25, max_v: float = 0.2, max_w: float = 0.4, rate_hz: float = 4.0,
-                 model: torch.nn.Module = None) -> None:
+                 model: torch.nn.Module = None, zero_layers: Sequence[int] = ()) -> None:
         from vint_train.mapmad.weights import load_checkpoint
 
         if goal not in GOALS:
@@ -69,6 +71,7 @@ class MapMaDPolicy(NomadPolicy):
         self.goal, self.spacing, self.step_m = goal, int(context_spacing), float(step_m)
         self.context_frames = cfg["context_size"] * self.spacing + 1
         self.map_size = int(cfg["map"]["size"])
+        self.zero_layers = list(zero_layers)
         self.name = f"mapmad_{goal}"
 
     def ready(self, obs: Observation) -> bool:
@@ -87,6 +90,8 @@ class MapMaDPolicy(NomadPolicy):
             out["goal_img"], gmask = self._pictures([obs.frames[-1]]), 1
         if self.goal == "map":
             out["map_img"], mmask = torch.from_numpy(np.array(obs.extras["map"], dtype=np.float32))[None], 0
+            if self.zero_layers:
+                out["map_img"][:, list(self.zero_layers)] = 0.0
         else:
             out["map_img"], mmask = torch.zeros((1, 3, self.map_size, self.map_size)), 1
         out["map_img"] = out["map_img"].to(self.device)

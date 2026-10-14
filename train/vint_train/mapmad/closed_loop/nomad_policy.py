@@ -59,6 +59,7 @@ class NomadPolicy(Policy):
     """NoMaD with the deployment pipeline; goal photo given -> navigate, goal None -> explore."""
 
     name = "nomad"
+    log_all_samples = False  # True: every step's info also carries all sampled paths (`paths_all_m`, report only)
 
     def __init__(self, weights: str, cfg: Dict[str, Any], device: torch.device, num_samples: int = 8,
                  sample_index: int = 0, waypoint_index: int = 2, max_v: float = 0.2, max_w: float = 0.4,
@@ -135,5 +136,8 @@ class NomadPolicy(Policy):
         if self.cfg["normalize"]:
             waypoint = waypoint * self.metres_per_unit
         v, w = pd_controller(waypoint, self.max_v, self.max_w, 1.0 / self.rate_hz)
-        return Command(v, w, {"waypoint_m": [float(waypoint[0]), float(waypoint[1])],
-                              "path_m": (paths[self.sample_index] * self.metres_per_unit).round(4).tolist()})
+        info = {"waypoint_m": [float(waypoint[0]), float(waypoint[1])],
+                "path_m": (paths[self.sample_index] * self.metres_per_unit).round(4).tolist()}
+        if self.log_all_samples:
+            info["paths_all_m"] = (paths * self.metres_per_unit).round(4).tolist()
+        return Command(v, w, info)

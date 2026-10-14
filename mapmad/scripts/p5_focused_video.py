@@ -12,7 +12,8 @@ i. Layout, 1280 px wide:
 - camera (320 x 240 render shown at 2x; goal photo inset for photo arms) | MapMaD's 64 x 64 map input at 7.5x
   (unknown dark grey, explored light grey, obstacle red, heat orange; robot yellow in the centre, forward = up) with
   the policy's plan made at this pose: the 8 waypoints of the used sample (cyan) and the chosen one (magenta ring);
-  the planner logs only its steer point (magenta ring) | legend;
+  the planner logs only its steer point (magenta ring); with --all-samples all 8 sampled paths (thin cyan) and
+  the used sample 0 (green) | legend;
 - whole-house overview (p5_videos.FloorPlan: target box, view points, heat glow, start, path so far, robot) | text
   panel: step, walking distance to the nearest view point, collisions so far, and STUCK (red) on every frame inside
   a >= stuck_steps collision streak.
@@ -47,7 +48,7 @@ MAP_PX = 480
 LEGEND_W = WIDTH - CAM_W - MAP_PX
 LOW_H = 400
 FPS, HOLD_S, CRF = 8, 2, 28
-WAYPOINTS, CHOSEN = (0, 230, 255), (255, 0, 200)
+WAYPOINTS, CHOSEN, USED = (0, 230, 255), (255, 0, 200), (40, 220, 40)
 
 
 def plan_points(policy_info: Optional[Dict[str, Any]]) -> Tuple[List[Sequence[float]], Optional[Sequence[float]]]:
@@ -59,6 +60,11 @@ def plan_points(policy_info: Optional[Dict[str, Any]]) -> Tuple[List[Sequence[fl
     return [], info.get("aim_m")
 
 
+def sample_paths(policy_info: Optional[Dict[str, Any]]) -> List[List[Sequence[float]]]:
+    """All sampled paths of one step (logged with run_exam --log-all-samples), else []."""
+    return (policy_info or {}).get("paths_all_m", [])
+
+
 def in_streak(step: int, streaks: Sequence[Tuple[int, int]]) -> bool:
     """Frame `step` (the pose after that step) lies inside a stuck streak (first step number, length)."""
     return any(first <= step < first + n for first, n in streaks)
@@ -66,17 +72,23 @@ def in_streak(step: int, streaks: Sequence[Tuple[int, int]]) -> bool:
 
 def map_picture(tensor: np.ndarray, given: bool, points: List[Sequence[float]], chosen: Optional[Sequence[float]],
                 px_size: int = MAP_PX, labels: Tuple[str, str] = ("MapMaD's map input (6.4 m x 6.4 m)",
-                                                                  "robot's map (NOT given to this driver)")) -> np.ndarray:
-    """The 64 x 64 map with heat, the robot and the policy's plan, px_size square; labelled given / not given."""
+                                                                  "robot's map (NOT given to this driver)"),
+                samples: Sequence[List[Sequence[float]]] = ()) -> np.ndarray:
+    """The 64 x 64 map with heat, the robot and the policy's plan, px_size square; labelled given / not given.
+    With `samples` (all sampled paths): each thin cyan, the used path (`points`) green on top."""
     img = P.heat_overlay(map_viz.render(tensor[:2], px_size),
                          cv2.resize(tensor[2], (px_size, px_size), interpolation=cv2.INTER_NEAREST))
     size = tensor.shape[-1]
     map_viz.draw_robot(img, size)  # under the plan: NoMaD's short waypoints start inside the triangle
+    for path in samples:
+        q = [tuple(int(round(v)) for v in map_viz.local_px(f, l, size, 0.1, px_size)) for f, l in path]
+        cv2.polylines(img, [np.array(q, np.int32)], False, WAYPOINTS, 1, cv2.LINE_AA)
     px = [tuple(int(round(v)) for v in map_viz.local_px(f, l, size, 0.1, px_size)) for f, l in points]
+    colour = USED if samples else WAYPOINTS
     if px:
-        cv2.polylines(img, [np.array(px, np.int32)], False, WAYPOINTS, 2, cv2.LINE_AA)
+        cv2.polylines(img, [np.array(px, np.int32)], False, colour, 2, cv2.LINE_AA)
         for q in px:
-            cv2.circle(img, q, 4, WAYPOINTS, -1, cv2.LINE_AA)
+            cv2.circle(img, q, 4, colour, -1, cv2.LINE_AA)
     if chosen is not None:
         q = tuple(int(round(v)) for v in map_viz.local_px(chosen[0], chosen[1], size, 0.1, px_size))
         cv2.circle(img, q, 8, CHOSEN, 3, cv2.LINE_AA)
@@ -84,11 +96,16 @@ def map_picture(tensor: np.ndarray, given: bool, points: List[Sequence[float]], 
     return img
 
 
-def legend(planner: bool) -> np.ndarray:
+def legend(planner: bool, samples: bool = False) -> np.ndarray:
     img = np.full((CAM_H, LEGEND_W, 3), 25, np.uint8)
     rows = [(map_viz.UNKNOWN, "unknown"), (map_viz.EXPLORED, "explored"), (map_viz.OBSTACLE, "obstacle"),
             (tuple(int(v) for v in P.HEAT_RGB), "heat (target)"), (map_viz.ROBOT, "robot")]
-    rows += [(CHOSEN, "steer point")] if planner else [(WAYPOINTS, "8 waypoints"), (CHOSEN, "chosen")]
+    if planner:
+        rows += [(CHOSEN, "steer point")]
+    elif samples:
+        rows += [(WAYPOINTS, "8 sampled paths"), (USED, "used: sample 0"), (CHOSEN, "chosen waypoint")]
+    else:
+        rows += [(WAYPOINTS, "8 waypoints"), (CHOSEN, "chosen")]
     video.text(img, "map", (10, 28), 0.6)
     for k, (c, s) in enumerate(rows):
         y = 60 + 34 * k
@@ -165,6 +182,7 @@ class Shot:
     tensor: np.ndarray  # the policy's 3 x 64 x 64 map input at this pose
     points: List[Sequence[float]]  # the plan made at this pose (robot frame)
     chosen: Optional[Sequence[float]]
+    samples: List[List[Sequence[float]]]  # all sampled paths (logged with --log-all-samples), else []
     plan: np.ndarray  # the whole-house overview at its own pixels
     vp: Optional[float]
     collisions: int
@@ -195,7 +213,8 @@ def replay(d: Driver, gpu: int = 0) -> Iterator[Shot]:
                 cv2.rectangle(cam, (8, 8), (8 + goal.shape[1], 8 + goal.shape[0]), video.WHITE, 2)
                 video.text(cam, "goal photo", (12, goal.shape[0] + 28), 0.55)
             points, chosen = plan_points(d.steps[i]["policy"] if i < len(d.steps) else None)
-            yield Shot(i, cam, om.tensor(robot), points, chosen, plan.draw([q for q, _ in d.poses[:i + 1]], yaw, px=None),
+            info = d.steps[i]["policy"] if i < len(d.steps) else None
+            yield Shot(i, cam, om.tensor(robot), points, chosen, sample_paths(info), plan.draw([q for q, _ in d.poses[:i + 1]], yaw, px=None),
                        d.steps[i - 1]["vp_geodesic_m"] if i else d.head["start_vp_geodesic_m"],
                        sum(s["collided"] for s in d.steps[:i]), in_streak(i, d.streaks))
 
@@ -211,16 +230,17 @@ def fit_scale(s: str, width: int, largest: float) -> float:
     return min(largest, width / cv2.getTextSize(s, cv2.FONT_HERSHEY_SIMPLEX, 1.0, 1)[0][0])
 
 
-def full_frame(d: Driver, shot: Shot, title: str) -> np.ndarray:
+def full_frame(d: Driver, shot: Shot, title: str, all_samples: bool = False) -> np.ndarray:
     """The focused layout (module docstring), WIDTH px wide."""
     top = np.zeros((TOP, WIDTH, 3), np.uint8)
     video.text(top, title, (10, 30), fit_scale(title, WIDTH - 210, 0.55))  # leave room for SUCCESS / FAILED
     if shot.step == d.last:
         s, c = status(d)
         video.text(top, s, (WIDTH - 190, 31), 0.75, c)
-    local = map_picture(shot.tensor, d.arm.map_given, shot.points, shot.chosen)
+    local = map_picture(shot.tensor, d.arm.map_given, shot.points, shot.chosen,
+                        samples=shot.samples if all_samples else ())
     panel = text_panel(shot.step, int(d.layout.cfg["run"]["max_steps"]), shot.vp, shot.collisions, shot.stuck)
-    return frame(top, shot.cam, local, legend(d.arm.policy == "planner"), shot.plan, panel)
+    return frame(top, shot.cam, local, legend(d.arm.policy == "planner", all_samples), shot.plan, panel)
 
 
 def focused_title(d: Driver, label: str = "") -> str:
@@ -239,14 +259,18 @@ def main() -> None:
     p.add_argument("--label", default="")
     p.add_argument("--out", required=True, help="below <outputs>/<out_dir>")
     p.add_argument("--gpu", type=int, default=0)
+    p.add_argument("--all-samples", action="store_true",
+                   help="draw all sampled paths (the log must come from run_exam --log-all-samples)")
     args = p.parse_args()
     layout = RunLayout.load(args.config, subdir=args.subdir)
     d = Driver.load(layout, args.episode, args.arm, args.seed_index)
+    if args.all_samples and not any(sample_paths(s["policy"]) for s in d.steps):
+        raise SystemExit("--all-samples: this log has no paths_all_m (run it with run_exam --log-all-samples)")
     title = focused_title(d, args.label)
     out = layout.base / args.out
     writer = None
     for shot in replay(d, args.gpu):
-        img = full_frame(d, shot, title)
+        img = full_frame(d, shot, title, args.all_samples)
         if writer is None:
             writer = video.VideoWriter(out, (img.shape[1], img.shape[0]), FPS, crf=CRF, faststart=True)
         for _ in range(FPS * HOLD_S if shot.step == d.last else 1):

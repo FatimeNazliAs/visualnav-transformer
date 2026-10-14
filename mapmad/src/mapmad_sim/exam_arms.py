@@ -13,6 +13,7 @@ import math
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Sequence
 
+MAP_LAYERS = ("obstacle", "explored", "heat")  # the map tensor's channels, in order
 HEAT_SHIFT_SALT = "mapmad-p5-heat-shift"  # ablation 1: direction = sha256("<salt>/<episode_id>"), every distance
 
 
@@ -44,10 +45,20 @@ class ExamArm:
     waypoint_index: Optional[int] = None  # MapMaD arms: overrides `mapmad.waypoint_index` (dev waypoint test)
     hfov_deg: float = 66.5
     heat_shift_m: float = 0.0  # ablation 1: heat target moved this far (map arms only); 0 = the exam's heat
+    map_zero: Sequence[str] = ()  # layer ablation: these MAP_LAYERS are set to 0 in the policy's input
 
     def __post_init__(self) -> None:
-        if self.heat_shift_m and not self.map_given:
-            raise ValueError(f"arm {self.name}: heat_shift_m needs an arm that is given the map")
+        self.map_zero = tuple(self.map_zero)
+        if (self.heat_shift_m or self.map_zero) and not self.map_given:
+            raise ValueError(f"arm {self.name}: heat_shift_m / map_zero need an arm that is given the map")
+        bad = set(self.map_zero) - set(MAP_LAYERS)
+        if bad:
+            raise ValueError(f"arm {self.name}: unknown map layers {sorted(bad)} (known: {MAP_LAYERS})")
+
+    @property
+    def map_zero_indices(self) -> List[int]:
+        """Channel indices of the map layers this arm's policy gets as 0."""
+        return [MAP_LAYERS.index(n) for n in self.map_zero]
 
     @classmethod
     def from_config(cls, name: str, spec: Dict[str, Any]) -> "ExamArm":
@@ -82,12 +93,16 @@ class ExamArm:
         return shifted_heat_episode(episode, self.heat_shift_m) if self.heat_shift_m else episode
 
     def log_header(self, episode: Dict[str, Any]) -> Dict[str, Any]:
-        """Extra log-header fields of this arm (the heat shift, if any; none for the exam arms, so their logs keep
-        the exam's bytes)."""
-        if not self.heat_shift_m:
-            return {}
-        return {"heat_shift_m": self.heat_shift_m, "heat_shift_angle_rad": round(heat_shift_angle(episode["episode_id"]), 6),
-                "heat_box_center": [round(v, 4) for v in self.episode_for(episode)["target"]["box_center"]]}
+        """Extra log-header fields of this arm (heat shift, zeroed map layers; none for the exam arms, so their logs
+        keep the exam's bytes)."""
+        out: Dict[str, Any] = {}
+        if self.heat_shift_m:
+            out.update({"heat_shift_m": self.heat_shift_m,
+                        "heat_shift_angle_rad": round(heat_shift_angle(episode["episode_id"]), 6),
+                        "heat_box_center": [round(v, 4) for v in self.episode_for(episode)["target"]["box_center"]]})
+        if self.map_zero:
+            out["map_zero"] = list(self.map_zero)
+        return out
 
     @property
     def reset_goal(self) -> str:

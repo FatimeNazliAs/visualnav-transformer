@@ -7,7 +7,7 @@ Rows: the exam's C over all its seed runs (the exam table's number), the exam's 
 as the ablation runs), and each ablation arm. Metrics: success, SPL, stuck (share of runs with a >= 100-step
 collision streak), stuck streaks per run; mean [95% CI, home-clustered bootstrap, 10,000 resamples]. Paired a - b on
 the same episodes: ablation - C seed 0 (same noise seed; only the heat differs) and ablation - C (seed means).
-Report only (no pass/fail). Writes <out_dir>/<out>/ablation.md and ablation.json.
+Also paired a - C seed 0 per distance bin. Report only (no pass/fail). Writes <out_dir>/<out>/ablation.md and ablation.json.
 """
 
 import argparse
@@ -38,6 +38,7 @@ def main() -> None:
     p.add_argument("--arms", nargs="+", default=["C_h05", "C_h10"])
     p.add_argument("--out", default="ablation_heat/tables")
     p.add_argument("--boot-seed", type=int, default=0)
+    p.add_argument("--title", default="ablation 1: perturbed heat")
     args = p.parse_args()
     exam = RunLayout.load(args.config, subdir=args.exam_subdir)
     abl = RunLayout.load(args.config, subdir=args.subdir)
@@ -58,7 +59,7 @@ def main() -> None:
     per = A.episode_means(rows, METRICS)
     names = [all_seeds, seed0] + args.arms
 
-    lines = ["# Phase 5 ablation 1: perturbed heat (report only)", "",
+    lines = [f"# Phase 5 {args.title} (report only)", "",
              f"Exam set `{fp}` ({len(episodes)} episodes). Ablation runs from `{abl.root}`, seed index 0; the exam's "
              f"arm {args.base} from `{exam.root}`. Per episode = mean over its seed runs; mean [95% CI, home-clustered "
              f"bootstrap, {S.N_BOOT:,} resamples, seed {args.boot_seed}]. Crashed episodes dropped from all rows: "
@@ -97,6 +98,22 @@ def main() -> None:
         if per.get(name):
             r = group_rates(per[name], bin_of)
             lines.append(f"| {name} | " + " | ".join(f"{r[g][0]:.2f} ({int(r[g][1])})" if g in r else "-" for g in groups) + " |")
+    by_bin: Dict[str, Any] = {}
+    lines += ["", f"## Paired differences per distance bin (a - {seed0}, home CI)", "",
+              "| a | bin | n | homes | " + " | ".join(LABELS[m] for m in ("success", "spl", "stuck")) + " |",
+              "|---|---|---|---|---|---|---|"]
+    for arm in args.arms:
+        for g in groups:
+            if not (per.get(arm) and per.get(seed0)):
+                continue
+            ids = {i for i in per[arm] if bin_of[i] == g}
+            res = {m: S.paired({i: per[arm][i][m] for i in ids}, {i: v[m] for i, v in per[seed0].items() if i in ids},
+                               home_of, seed=args.boot_seed) for m in ("success", "spl", "stuck")}
+            name = f"{bins[g]:g}-{bins[g + 1]:g} m"
+            by_bin[f"{arm} - {seed0} | {name}"] = res
+            lines.append(f"| {arm} | {name} | {res['success']['n']} | {res['success']['homes']} | " + " | ".join(
+                f"{res[m]['diff']:+.3f} [{res[m]['home_ci'][0]:+.3f}, {res[m]['home_ci'][1]:+.3f}]"
+                for m in ("success", "spl", "stuck")) + " |")
     lines += ["", "## Failure types (runs)", "", "| arm | " + " | ".join(A.FAILURE_TYPES) + " |",
               "|---|" + "---|" * len(A.FAILURE_TYPES)]
     for name in names:
@@ -107,7 +124,8 @@ def main() -> None:
     out = abl.base / args.out
     out.mkdir(parents=True, exist_ok=True)
     (out / "ablation.md").write_text("\n".join(lines) + "\n")
-    A.write_json(out / "ablation.json", {"fingerprint": fp, "crashed": crashed, "arms": table, "paired": paired})
+    A.write_json(out / "ablation.json", {"fingerprint": fp, "crashed": crashed, "arms": table, "paired": paired,
+                                         "paired_by_bin": by_bin})
     print("\n".join(lines))
 
 

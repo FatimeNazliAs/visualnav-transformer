@@ -57,8 +57,8 @@ def map_settings(layout: RunLayout) -> Dict[str, Any]:
 class Policies:
     """One policy object per arm; the official NoMaD and the MapMaD model are each loaded once."""
 
-    def __init__(self, layout: RunLayout, device: torch.device) -> None:
-        self.layout, self.device = layout, device
+    def __init__(self, layout: RunLayout, device: torch.device, log_all_samples: bool = False) -> None:
+        self.layout, self.device, self.log_all_samples = layout, device, log_all_samples
         drive, sim = mapmad_config.robot()["drive"], mapmad_config.robot()["sim"]
         self.limits = dict(max_v=drive["max_v_mps"], max_w=drive["max_w_radps"], rate_hz=sim["control_hz"])
         self._nomad: Optional[NomadPolicy] = None
@@ -86,7 +86,7 @@ class Policies:
                            arm.mapmad_goal,
                            num_samples=m["num_samples"], sample_index=m["sample_index"], waypoint_index=int(index),
                            context_spacing=m["context_spacing"], step_m=m["step_m"], model=self._mapmad_model,
-                           **self.limits)
+                           zero_layers=arm.map_zero_indices, **self.limits)
         self._mapmad_model = pol.model
         self.hashes["mapmad"] = pol.checkpoint_sha256
         return pol
@@ -99,6 +99,8 @@ class Policies:
         if arm.name not in self.cache:
             self.cache[arm.name] = {"nomad": self.nomad, "planner": self.planner}[arm.policy]() \
                 if arm.policy != "mapmad" else self.mapmad(arm)
+            if self.log_all_samples and arm.policy != "planner":
+                self.cache[arm.name].log_all_samples = True
         return self.cache[arm.name]
 
     def header(self, arm: ExamArm) -> Dict[str, Any]:
@@ -128,6 +130,8 @@ def main() -> None:
     p.add_argument("--limit", type=int, default=0, help="at most this many episodes (0 = all)")
     p.add_argument("--subdir", default="runs", help="run outputs below <out_dir>/<subdir>")
     p.add_argument("--trace-maps", action="store_true", help="keep the map tensors + exact poses (parity check)")
+    p.add_argument("--log-all-samples", action="store_true",
+                   help="also log all sampled paths per step (policy.paths_all_m; report only)")
     p.add_argument("--shutdown-server", action="store_true")
     args = p.parse_args()
 
@@ -145,7 +149,7 @@ def main() -> None:
     seeds = args.seeds if args.seeds is not None else list(range(int(cfg["run"]["seeds"])))
     settings = map_settings(layout)
     deterministic_torch()
-    policies = Policies(layout, torch.device("cuda"))
+    policies = Policies(layout, torch.device("cuda"), args.log_all_samples)
     for arm in arms:
         policies.get(arm)  # build (and sha256-check) every policy before the first episode
     tag = f"{'+'.join(args.arms)}.shard{args.shard}"

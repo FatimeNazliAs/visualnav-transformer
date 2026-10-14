@@ -58,3 +58,17 @@ def test_heat_bearing_sign_and_sectors():
     assert abs(bearing_deg([0, 0, 0], 0.0, (0.0, -2.0))) < 1e-9 and sector(0.0) == "ahead"
     assert abs(bearing_deg([0, 0, 0], 0.0, (-2.0, 0.0)) - 90.0) < 1e-9 and sector(90.0) == "side-left"
     assert sector(bearing_deg([0, 0, 0], 0.0, (1.0, 2.0))) == "behind-right"
+
+
+def test_overlap_counts_and_paired_on_both_solved():
+    from vint_train.mapmad.closed_loop.exam_overlap import overlap
+
+    def row(ok, steps, spl):
+        return {"success": float(ok), "steps": steps, "spl": spl}
+
+    a = {"e1": row(1, 100, 0.9), "e2": row(1, 50, 0.8), "e3": row(0, 1000, 0.0), "e4": row(1, 70, 0.7)}
+    b = {"e1": row(1, 80, 0.95), "e2": row(1, 60, 0.9), "e3": row(1, 90, 0.9), "e4": row(0, 1000, 0.0)}
+    r = overlap(a, b, {f"e{i}": f"h{i}" for i in range(1, 5)}, boot_seed=0)
+    assert (r["a_successes"], r["b_successes"], r["both"], r["a_only"], r["b_only"]) == (3, 3, 2, 1, 1)
+    assert r["steps"]["median_a"] == 75 and r["steps"]["median_b"] == 70 and r["steps"]["paired"]["diff"] == 5.0
+    assert r["steps"]["a_better_share"] == 0.5 and r["spl"]["a_better_share"] == 0.0

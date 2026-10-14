@@ -6,9 +6,9 @@ naz_mapmad_habitat, from /app/visualnav-transformer:
     python mapmad/scripts/p5_meeting_clips.py --config mapmad/configs/p5_exam.yaml --pick-bin 1 --arms C \
         --title "... {distance:.1f} m ..." --out videos/meeting/2_success_C_long.mp4
 
-One driver: the focused layout (p5_focused_video.full_frame). Two drivers: two 640 px columns side by side (camera;
-map input with the logged plan | whole-house overview; step, walking distance to the nearest view point,
-collisions, STUCK), the same start, the same clock; a finished driver holds its last frame with its SUCCESS /
+One driver: the focused layout (p5_focused_video.full_frame). Two or three drivers: 640 / 426 px columns side by
+side (camera; map input with the logged plan | whole-house overview; step, walking distance to the nearest view
+point, collisions, STUCK), the same start, the same clock; a finished driver holds its last frame with its SUCCESS /
 FAILED stamp. Every clip: 1280 px wide, a 3 s title card (the one-line title), 12 fps = 3x real time (4 Hz
 control), the last frame held 2 s, H.264 CRF 28, +faststart, no audio.
 --cut-stuck-s S: a stuck streak longer than S s of clip time is shown for S s, then a 1 s card says how many steps
@@ -31,8 +31,7 @@ from vint_train.mapmad.closed_loop import video
 
 FPS = 12  # 3x real time
 TITLE_S, HOLD_S, CUT_CARD_S = 3, 2, 1
-COL_W = F.WIDTH // 2
-HEAD, MAP_COL, TEXT_H, TOP = 40, COL_W // 2, 90, 44
+HEAD, TEXT_H, TOP = 40, 90, 44
 SHORT_LABELS = ("map input (6.4 m)", "map (NOT given)")
 
 
@@ -51,25 +50,38 @@ def pick_fastest(layout: RunLayout, arm: str, distance_bin: int, seed_index: int
     return episode_id, step
 
 
-def column(d: F.Driver, shot: F.Shot, name: str) -> np.ndarray:
-    """One driver's 640 px column for a side-by-side clip."""
-    head = np.zeros((HEAD, COL_W, 3), np.uint8)
-    video.text(head, f"{name}: {F.P.ARM_NAMES.get(name, F.P.ARM_NAMES.get(d.arm.name, d.arm.policy))}", (10, 27), 0.65)
+def column(d: F.Driver, shot: F.Shot, name: str, col_w: int) -> np.ndarray:
+    """One driver's column for a side-by-side clip, col_w px wide (640 for two drivers; sizes and fonts scale
+    with col_w / 640)."""
+    f = col_w / 640.0
+    sc = lambda v: int(round(v * f))  # noqa: E731
+    head = np.zeros((HEAD, col_w, 3), np.uint8)
+    video.text(head, f"{name}: {F.P.ARM_NAMES.get(name, F.P.ARM_NAMES.get(d.arm.name, d.arm.policy))}", (10, 27),
+               0.65 * f)
     if shot.step == d.last:
         s, c = F.status(d)
-        video.text(head, s, (COL_W - 175, 28), 0.65, c)
-    local = F.map_picture(shot.tensor, d.arm.map_given, shot.points, shot.chosen, MAP_COL, SHORT_LABELS)
-    plan = F.letterbox(shot.plan, MAP_COL, MAP_COL)
-    text = np.full((TEXT_H, COL_W, 3), 25, np.uint8)
+        video.text(head, s, (col_w - sc(175), 28), 0.65 * f, c)
+    map_col = col_w // 2
+    local = F.map_picture(shot.tensor, d.arm.map_given, shot.points, shot.chosen, map_col, SHORT_LABELS)
+    plan = F.letterbox(shot.plan, map_col, map_col)
+    text = np.full((TEXT_H, col_w, 3), 25, np.uint8)
     vp = "-" if shot.vp is None else f"{shot.vp:.2f} m"
-    video.text(text, f"step {shot.step}   to target {vp}", (12, 36), 0.7)
-    video.text(text, f"collisions {shot.collisions}", (12, 74), 0.7)
+    video.text(text, f"step {shot.step}   to target {vp}", (12, 36), 0.7 * f)
+    video.text(text, f"collisions {shot.collisions}", (12, 74), 0.7 * f)
     if shot.stuck:
-        cv2.rectangle(text, (COL_W - 200, 14), (COL_W - 14, 76), video.RED, -1)
-        video.text(text, "STUCK", (COL_W - 178, 62), 1.3)
-    col = np.vstack([head, shot.cam, np.hstack([local, plan]), text])
+        cv2.rectangle(text, (col_w - sc(200), 14), (col_w - sc(14), 76), video.RED, -1)
+        video.text(text, "STUCK", (col_w - sc(178), 62), 1.3 * f)
+    cam = shot.cam if shot.cam.shape[1] == col_w else cv2.resize(
+        shot.cam, (col_w, 2 * round(col_w * 3 / 8)), interpolation=cv2.INTER_AREA)
+    col = np.vstack([head, cam, np.hstack([local, plan]), text])
     cv2.line(col, (0, 0), (0, col.shape[0] - 1), (90, 90, 90), 2)
     return col
+
+
+def even_pad(img: np.ndarray, width: int) -> np.ndarray:
+    """img padded (dark, right / bottom) to `width` and an even height (H.264 yuv420)."""
+    h, w = img.shape[:2]
+    return cv2.copyMakeBorder(img, 0, h % 2, 0, width - w, cv2.BORDER_CONSTANT, value=(0, 0, 0))
 
 
 def top_bar(e: Dict, width: int) -> np.ndarray:
@@ -119,7 +131,7 @@ def main() -> None:
     p.add_argument("--subdir", default="runs")
     p.add_argument("--episode", help="episode id (or --pick-bin)")
     p.add_argument("--pick-bin", type=int, help="distance bin: pick the first arm's fastest success there")
-    p.add_argument("--arms", nargs="+", required=True, help="one or two config arms")
+    p.add_argument("--arms", nargs="+", required=True, help="one to three config arms")
     p.add_argument("--names", nargs="*", default=[], help="display names, e.g. C_wp1=C")
     p.add_argument("--seed-index", type=int, default=0)
     p.add_argument("--title", required=True)
@@ -127,8 +139,8 @@ def main() -> None:
     p.add_argument("--out", required=True, help="below <outputs>/<out_dir>")
     p.add_argument("--gpu", type=int, default=0)
     args = p.parse_args()
-    if len(args.arms) not in (1, 2) or (args.episode is None) == (args.pick_bin is None):
-        raise SystemExit("one or two --arms, and exactly one of --episode / --pick-bin")
+    if len(args.arms) not in (1, 2, 3) or (args.episode is None) == (args.pick_bin is None):
+        raise SystemExit("one to three --arms, and exactly one of --episode / --pick-bin")
     layout = RunLayout.load(args.config, subdir=args.subdir)
     episode_id = args.episode
     if args.pick_bin is not None:
@@ -159,8 +171,9 @@ def main() -> None:
         if len(drivers) == 1:
             img = F.full_frame(drivers[0], current[0], F.focused_title(drivers[0]))
         else:
-            cols = [column(d, s, names.get(d.arm.name, d.arm.name)) for d, s in zip(drivers, current)]
-            img = np.vstack([top_bar(e, F.WIDTH), np.hstack(cols)])
+            col_w = F.WIDTH // len(drivers)
+            cols = np.hstack([column(d, s, names.get(d.arm.name, d.arm.name), col_w) for d, s in zip(drivers, current)])
+            img = even_pad(np.vstack([top_bar(e, cols.shape[1]), cols]), F.WIDTH)
         if writer is None:
             writer = video.VideoWriter(out, (img.shape[1], img.shape[0]), FPS, crf=F.CRF, faststart=True)
             for _ in range(FPS * TITLE_S):

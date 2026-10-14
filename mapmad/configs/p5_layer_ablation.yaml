@@ -1,0 +1,11 @@
+# Phase 5 layer ablation (report only; rules in p5_rules_log.md, 2026-10-14): arm C with map layers set to 0 in the
+# policy's input (exam_arms.ExamArm.map_zero; the online map itself is built as in the exam), on the frozen exam set,
+# seed index 0. Everything else is p5_exam.yaml (checkpoint, settings, noise seeds, success test). Run on the host:
+#   PAIRS="0 0 0 1 1 1" mapmad/scripts/run_p5.sh --config /app/visualnav-transformer/mapmad/configs/p5_layer_ablation.yaml \
+#       --arms C_heat_only C_no_heat --seeds 0 --subdir layer_ablation/runs
+# Table (vs the exam's arm C): python -m vint_train.mapmad.closed_loop.exam_ablation --config <this file> \
+#   --subdir layer_ablation/runs --arms C_heat_only C_no_heat --out layer_ablation/tables --title "layer ablation"
+extends: p5_exam.yaml
+arms:
+  C_heat_only: {policy: mapmad, photo: false, map: true, map_zero: [obstacle, explored]}
+  C_no_heat: {policy: mapmad, photo: false, map: true, map_zero: [heat]}
