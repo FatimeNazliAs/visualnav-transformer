@@ -110,13 +110,15 @@ def compose(rgb: np.ndarray, map_img: np.ndarray, caption: str, status: str, sta
 class VideoWriter:
     """Streams RGB frames into an H.264 mp4 (imageio-ffmpeg's bundled ffmpeg)."""
 
-    def __init__(self, path: Path, size: Tuple[int, int], fps: float) -> None:
+    def __init__(self, path: Path, size: Tuple[int, int], fps: float, crf: int = 23, faststart: bool = False) -> None:
+        """crf: H.264 quality (higher = smaller file); faststart: index at the file start (plays while loading)."""
         import imageio_ffmpeg
 
         path.parent.mkdir(parents=True, exist_ok=True)
         self.size = size
+        params = ["-crf", str(crf)] + (["-movflags", "+faststart"] if faststart else [])
         self.writer = imageio_ffmpeg.write_frames(str(path), size, fps=fps, codec="libx264", pix_fmt_out="yuv420p",
-                                                  macro_block_size=8, quality=None, output_params=["-crf", "23"])
+                                                  macro_block_size=8, quality=None, output_params=params)
         self.writer.send(None)
 
     def write(self, frame: np.ndarray) -> None:

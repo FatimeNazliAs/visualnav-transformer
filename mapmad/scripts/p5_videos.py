@@ -22,7 +22,7 @@ import argparse
 import math
 import sys
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import cv2
 import numpy as np
@@ -71,7 +71,8 @@ class FloorPlan:
         self.base = heat_overlay(self.t.base, np.exp(-d ** 2 / (2 * sigma ** 2)), 0.6)
         self.episode = episode
 
-    def draw(self, path: List[List[float]], yaw: float) -> np.ndarray:
+    def draw(self, path: List[List[float]], yaw: float, px: Optional[int] = PLAN_PX) -> np.ndarray:
+        """The plan with the path so far and the robot; resized to px x px (None = the plan's own pixels)."""
         img = self.base.copy()
         e, t = self.episode, self.t
         for vp in e["target"]["view_points"]:
@@ -86,7 +87,7 @@ class FloorPlan:
         tip = here + (np.array([-math.sin(yaw), -math.cos(yaw)]) * 16).astype(int)
         cv2.arrowedLine(img, tuple(int(v) for v in here), tuple(int(v) for v in tip), video.YELLOW, 3, cv2.LINE_AA,
                         tipLength=0.5)
-        return cv2.resize(img, (PLAN_PX, PLAN_PX), interpolation=cv2.INTER_AREA)
+        return img if px is None else cv2.resize(img, (px, px), interpolation=cv2.INTER_AREA)
 
 
 def local_picture(tensor: np.ndarray, given: bool) -> np.ndarray:
