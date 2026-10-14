@@ -220,6 +220,9 @@ docker exec -w /app/visualnav-transformer naz_mapmad_habitat python mapmad/scrip
 # one driver per file, 1280 px (camera, map input with the logged waypoints, overview, STUCK label)
 docker exec -w /app/visualnav-transformer naz_mapmad_habitat python mapmad/scripts/p5_focused_video.py \
     --config mapmad/configs/p5_exam.yaml --episode <id> --arm C --out videos/focused/<id>_C.mp4
+# presentation clips (1 or 2 drivers side by side, 3x speed, title card; --pick-bin, --cut-stuck-s)
+docker exec -w /app/visualnav-transformer naz_mapmad_habitat python mapmad/scripts/p5_meeting_clips.py \
+    --config mapmad/configs/p5_exam.yaml --episode <id> --arms C E --title "..." --out videos/meeting/<name>.mp4
 ```
 
 Unattended (everything after S-dev up to the G5 table, one command; Naz 2026-10-11): `scripts/run_p5_rest.sh` runs
