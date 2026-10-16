@@ -9,6 +9,7 @@ One client at a time; after `bye` the next client may connect, `close` ends the 
 
 import argparse
 import hmac
+import json
 import math
 import socket
 import traceback
@@ -17,25 +18,29 @@ from typing import Any, Callable, Dict, Optional, Tuple
 
 from mapmad_bridge import protocol
 
-RobotFactory = Callable[..., Any]  # (split, home, hfov_deg[, depth=True]) -> LimoSim-like robot
+RobotFactory = Callable[..., Any]  # (split, home, hfov_deg[, depth=True][, camera={...}]) -> LimoSim-like robot
 
 
 def limo_factory(gpu: int, seed: int = 0) -> RobotFactory:
     """Robots built from configs/robot_limo.yaml (LIMO-sized floor map) with the requested camera FOV; depth=True
-    adds the depth camera the online map needs (Phase 5)."""
+    adds the depth camera the online map needs (Phase 5); camera = a Phase 7 camera setting (CameraSetting config
+    dict with its "name": lens, height, pitch, floor map)."""
     from mapmad_sim import config
+    from mapmad_sim.camera_setting import CameraSetting
     from mapmad_sim.robot import LimoSim, RobotSpec
 
-    def make(split: str, home: str, hfov_deg: float, depth: bool = False) -> Any:
-        return LimoSim(split, home, RobotSpec.from_config(config.robot(), hfov_deg=hfov_deg), depth=depth, gpu=gpu,
-                       seed=seed)
+    def make(split: str, home: str, hfov_deg: float, depth: bool = False, camera: Optional[Dict[str, Any]] = None) -> Any:
+        spec = RobotSpec.from_config(config.robot(), hfov_deg=hfov_deg)
+        if camera is not None:
+            spec = CameraSetting.from_config(camera["name"], camera).apply(spec)
+        return LimoSim(split, home, spec, depth=depth, gpu=gpu, seed=seed)
 
     return make
 
 
 class SimService:
-    """Answers protocol requests; keeps one home loaded and reloads it only when home, camera FOV or the need for a
-    depth camera change.
+    """Answers protocol requests; keeps one home loaded and reloads it only when home, camera FOV, the need for a
+    depth camera or the Phase 7 camera setting (`camera` at reset; absent = robot_limo.yaml's camera) change.
 
     Phase 5 (`outputs` at reset): "map" -> every reply carries the policy's 3 x 64 x 64 map tensor ("map"), "grid"
     -> the whole-storey grids for the planner ("grid", plus "goal_rect" at reset), both from mapmad_sim.online_map
@@ -47,7 +52,7 @@ class SimService:
     def __init__(self, factory: RobotFactory) -> None:
         self.factory = factory
         self.robot: Optional[Any] = None
-        self.key: Optional[Tuple[str, str, float, bool]] = None
+        self.key: Optional[Tuple[str, str, float, bool, Optional[str]]] = None
         self.target = None
         self.view_points: Optional[Any] = None
         self.online_map: Optional[Any] = None
@@ -60,7 +65,7 @@ class SimService:
                     "hfov_deg": self.key[2] if self.key else None}
         if cmd == "reset":
             return self.reset(msg["episode"], msg["hfov_deg"], msg["goal_photo"], msg["topdown_m_per_px"],
-                              msg.get("outputs") or {})
+                              msg.get("outputs") or {}, msg.get("camera"))
         if cmd == "step":
             if self.robot is None or self.target is None:
                 raise RuntimeError("step before reset")
@@ -69,12 +74,16 @@ class SimService:
         raise ValueError(f"unknown command {cmd!r}")
 
     def reset(self, episode: Dict[str, Any], hfov_deg: float, goal_photo: bool, m_per_px: float,
-              outputs: Dict[str, Any]) -> Dict[str, Any]:
+              outputs: Dict[str, Any], camera: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         depth = bool(outputs.get("map") or outputs.get("grid"))
-        key = (episode["split"], episode["home"], float(hfov_deg), depth)
+        camera_key = json.dumps(camera, sort_keys=True) if camera is not None else None
+        key = (episode["split"], episode["home"], float(hfov_deg), depth, camera_key)
         if key != self.key:
             self.close()
-            self.robot = self.factory(*key[:3], depth=True) if depth else self.factory(*key[:3])
+            kwargs: Dict[str, Any] = {"depth": True} if depth else {}
+            if camera is not None:
+                kwargs["camera"] = camera
+            self.robot = self.factory(*key[:3], **kwargs)
             self.key = key
         self.target = episode["target"]["point"]
         self.view_points = episode["target"].get("view_points")

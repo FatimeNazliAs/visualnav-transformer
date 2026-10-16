@@ -145,3 +145,10 @@ Runs land in `/outputs/mapmad/p4_train/<A|B>_<time>/`. Then:
 Original NoMaD files get only small hooks behind `map_input` (`false` = the old NoMaD, byte-identical):
 `nomad_vint.py`, `nomad.py`, `vint_dataset.py` (`_index_path`), `train.py` (loaders, weight load, loop,
 `logs_root`, `base_config`; Phase 4: the two-group optimizer when `lr_schedule` is set, `--resume`). Extra packages go in `train/requirements-mapmad.txt` (none added in Phase 3).
+
+Phase 7 (fair camera; commands in `mapmad/README.md`, "Phase 7: fair camera"):
+- `sacson_convert.py` — SACSoN bags -> NoMaD format with NoMaD's unchanged `train/process_bags.py` (a `rosbag` stand-in
+  backed by `rosbags`); `sacson_scale.py` — SACSoN odometry scale from its AR-tag detections (report: not metric).
+- `closed_loop/p7_choice.py` — the choice rule (p7_rules.md §6) as a pure function; `closed_loop/p7_tables.py` —
+  sweep tables, CIs, paired differences vs pin018, the choice, report-only extra, `camera_fair.yaml`.
+- `closed_loop/nomad_policy.py` — `context_spacing` (default 1 = deployment exactly; the extra uses 3).

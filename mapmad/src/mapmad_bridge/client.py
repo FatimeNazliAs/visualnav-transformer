@@ -61,10 +61,13 @@ class SimClient:
         return reply
 
     def reset(self, episode: Dict[str, Any], hfov_deg: float, goal_photo: bool, topdown_m_per_px: float = 0.05,
-              outputs: Optional[Dict[str, Any]] = None) -> Frame:
+              outputs: Optional[Dict[str, Any]] = None, camera: Optional[Dict[str, Any]] = None) -> Frame:
         """Load the episode's home (if needed) with this camera FOV and put the robot on its start. `outputs`
-        (Phase 5) asks for the map tensor / planner grid with every frame (protocol.py)."""
-        kwargs = {"outputs": outputs} if outputs else {}
+        (Phase 5) asks for the map tensor / planner grid with every frame; `camera` (Phase 7) is a camera setting
+        (mapmad_sim.camera_setting config dict with "name") instead of LIMO's camera (protocol.py)."""
+        kwargs: Dict[str, Any] = {"outputs": outputs} if outputs else {}
+        if camera is not None:
+            kwargs["camera"] = camera
         r = self._call("reset", episode=episode, hfov_deg=float(hfov_deg), goal_photo=bool(goal_photo),
                        topdown_m_per_px=float(topdown_m_per_px), **kwargs)
         return Frame(rgb=r["rgb"], state=r["state"], goal_rgb=r["goal_rgb"], topdown=r["topdown"],

@@ -7,3 +7,6 @@ objectnav: /objectnav                 # ObjectNav HM3D v2 episodes (read-only): 
 habitat_starter: /opt/habitat-starter # toolbox inside the image (its data/ is mounted read-only)
 mapmad_data: /mapmad_data             # generated practice drives
 outputs: /outputs/mapmad              # results, one folder per phase (p0_setup, ...)
+nomad_data: /data                    # NoMaD datasets (GoStanford, SACSoN; read-only in the Habitat container)
+recon: /recon                        # RECON in NoMaD format (read-only; Phase 7 lens sheet + height)
+recon_raw: /recon_raw                # RECON hdf5 files (read-only; Phase 7 height)

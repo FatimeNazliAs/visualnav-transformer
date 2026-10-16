@@ -239,3 +239,59 @@ nvidia-smi && screen -dmS mapmad_p5_rest bash mapmad/scripts/run_p5_rest.sh   # 
 Outputs in `/outputs/mapmad/p5_exam/`: `dev/`, `exam_set/`, `runs/` (`logs/<arm>/<episode>__s<k>.jsonl`,
 `summaries/`, `timing/`, `progress.shard<k>.log`, `run_info.*.json`), `tables/`, `figures/`, `videos/`, `checks/`,
 `phase5_log.md`.
+
+## Phase 7: fair camera
+
+Finds the camera where the **original NoMaD** drives best and fixes it for later phases (`configs/camera_fair.yaml`).
+Rules: `/outputs/mapmad/p7_camera/p7_rules.md` (+ `.sha256`); config `configs/p7_sweep.yaml`; outputs in
+`/outputs/mapmad/p7_camera/` (`audit/`, `lens/`, `height/`, `episodes/`, `sweep/`, `phase7_log.md`).
+
+New code: `src/mapmad_sim/lens.py` (double-sphere fisheye + equidistant / OpenCV pinhole models: project, unproject),
+`src/mapmad_sim/camera_setting.py` (a sweep camera: lens x height x pitch, applied to `RobotSpec`), `RobotSpec.fisheye`
+(None = the pinhole, unchanged; else the colour and semantic cameras become that fisheye, black outside its image
+circle), the optional `camera` at `reset` (server, client, protocol), `ExamArm.camera` / `episode_type` /
+`context_spacing`, `run_exam.py --arm-major`; `src/mapmad_sim/floor_height.py` (Method B, floor motion).
+
+```bash
+# 7.0 audit: the official repo at a pinned commit vs our arms (read-only) -> audit/audit_table.md
+git clone https://github.com/robodhruv/visualnav-transformer.git <scratch> && git -C <scratch> checkout dca79815b704
+docker exec -w /app/visualnav-transformer/train -e PYTHONPATH=/app/visualnav-transformer/mapmad/src naz_mapmad \
+    python -m pytest -q -p no:cacheprovider vint_train/mapmad/tests/test_deployment_rules.py
+
+# 7.2 SACSoN: download (resumable, sizes + SHA256SUMS), convert with NoMaD's own process_bags.py (rosbag shim)
+SACSON_RAW=/mnt/shared_disk/nazli/nomad_data/sacson_raw mapmad/scripts/p7_download_sacson.sh
+docker exec -w /app/visualnav-transformer/train naz_mapmad bash -c 'mkdir -p /tmp/in && for f in /data/sacson_raw/*/; do
+    mkdir -p /tmp/in/$(basename $f) && ln -sf $f*.bag /tmp/in/$(basename $f)/; done &&
+    python -m vint_train.mapmad.sacson_convert -d sacson -i /tmp/in -o /data/sacson -s 4.0'
+
+# 7.1 lens: fitted to SACSoN's frames (no calibration file without sign-in) -> lens/sacson_lens.json; tests
+docker exec -w /app/visualnav-transformer naz_mapmad_habitat python mapmad/scripts/p7_lens.py fit
+docker exec -w /app/visualnav-transformer/mapmad -e PYTHONPATH=/app/visualnav-transformer/mapmad/src:/app/visualnav-transformer/mapmad/tests \
+    naz_mapmad_habitat python -m pytest -q -p no:cacheprovider tests/test_lens.py tests/test_camera_setting.py
+# (tests/p7_render_reference.py recorded the pinhole reference hashes with mapmad @ e97b875)
+
+# 7.4 height: Method B per dataset (+ synthetic check); SACSoN odometry scale from AR tags; Method A = height/method_a.md
+for d in recon sacson go_stanford; do docker exec -e OMP_NUM_THREADS=1 -w /app/visualnav-transformer naz_mapmad_habitat \
+    python mapmad/scripts/p7_height.py estimate --dataset $d --workers 10; done
+docker exec -w /app/visualnav-transformer/train naz_mapmad python -m vint_train.mapmad.sacson_scale \
+    --bags /data/sacson_raw --out /outputs/mapmad/p7_camera/height/sacson_odom_scale.json
+
+# 7.3 S-lens sheet (real frames vs renders, also at 96 x 96; layout rows at 0.15-0.55 m)
+docker exec -w /app/visualnav-transformer naz_mapmad_habitat python mapmad/scripts/p7_lens.py sheet --gpu 1
+
+# 7.5 episodes: 60 new in view, + Phase 1's 90 in exam format, freeze (drops step-0 successes), shares per camera
+for s in new assemble freeze shares; do docker exec -w /app/visualnav-transformer naz_mapmad_habitat \
+    python mapmad/scripts/make_p7_episodes.py $s --gpu 1; done
+
+# 7.8 sweep, unattended (after S-sweep; code committed first): checks, determinism, 16 arms x 3 seeds on 6 pairs,
+# tables + choice, report-only extra, video, camera_fair.yaml. Dry run: P7_CONFIG=p7_dryrun.yaml P7_ALLOW_DIRTY=1
+nvidia-smi && screen -dmS mapmad_p7_sweep bash -c 'P7_COMMIT=<hash> bash mapmad/scripts/run_p7_sweep.sh'
+# or wait for free GPUs (both -> 6 pairs, one -> 3 pairs), re-run the rendering tests there, launch, watch the session:
+screen -dmS mapmad_p7_launch bash -c 'P7_COMMIT=<hash> bash mapmad/scripts/p7_wait_and_launch.sh'
+
+# 7.9 tables / choice / video again from the logs
+docker exec -w /app/visualnav-transformer/train -e PYTHONPATH=/app/visualnav-transformer/mapmad/src naz_mapmad \
+    python -m vint_train.mapmad.closed_loop.p7_tables --config /app/visualnav-transformer/mapmad/configs/p7_sweep.yaml
+docker exec -w /app/visualnav-transformer naz_mapmad_habitat python mapmad/scripts/p7_videos.py \
+    --config mapmad/configs/p7_sweep.yaml --subdir sweep/runs --pick 7710
+```

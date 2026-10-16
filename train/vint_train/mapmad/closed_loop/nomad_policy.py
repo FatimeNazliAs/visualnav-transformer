@@ -8,6 +8,8 @@
 4. get_action (un-normalise deltas with action_stats, cumulative sum) -> path 0, waypoint 2, times MAX_V / RATE;
 5. pd_controller -> (v, w).
 All random draws (noise, fake goal, scheduler) come from one torch.Generator seeded at reset.
+context_spacing (Phase 7 report-only extra; default 1 = the above exactly): the 4 pictures are every k-th of the
+last 3k + 1 control steps, and the policy waits until all of them exist.
 Frame queue (deployment `callback_obs`): append the newest picture, drop the oldest beyond context_size + 1; no
 padding: until 4 pictures exist, deployment publishes no waypoint and the robot stands (here: (0, 0)).
 """
@@ -63,9 +65,11 @@ class NomadPolicy(Policy):
 
     def __init__(self, weights: str, cfg: Dict[str, Any], device: torch.device, num_samples: int = 8,
                  sample_index: int = 0, waypoint_index: int = 2, max_v: float = 0.2, max_w: float = 0.4,
-                 rate_hz: float = 4.0) -> None:
-        self._setup(load_nomad(weights, cfg, device), cfg, device, num_samples, sample_index, waypoint_index, max_v,
-                    max_w, rate_hz)
+                 rate_hz: float = 4.0, context_spacing: int = 1, model: Optional[torch.nn.Module] = None) -> None:
+        self._setup(model if model is not None else load_nomad(weights, cfg, device), cfg, device, num_samples,
+                    sample_index, waypoint_index, max_v, max_w, rate_hz)
+        self.spacing = int(context_spacing)
+        self.context_frames = cfg["context_size"] * self.spacing + 1
 
     def _setup(self, model: torch.nn.Module, cfg: Dict[str, Any], device: torch.device, num_samples: int,
                sample_index: int, waypoint_index: int, max_v: float, max_w: float, rate_hz: float) -> None:
@@ -96,7 +100,8 @@ class NomadPolicy(Policy):
 
     def encoder_inputs(self, obs: Observation) -> Dict[str, torch.Tensor]:
         """The vision encoder's keyword inputs for this step (deployment: 4 newest pictures + goal or a masked one)."""
-        obs_images = self._pictures(obs.frames)
+        frames = obs.frames if self.spacing == 1 else obs.frames[::-1][::self.spacing][::-1]
+        obs_images = self._pictures(frames)
         if obs.goal_image is None:  # explore.py: random goal picture, masked
             goal = torch.randn((1, 3, *self.image_size), generator=self.generator, device=self.device)
             mask = torch.ones(1).long().to(self.device)

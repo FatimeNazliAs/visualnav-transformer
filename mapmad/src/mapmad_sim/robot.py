@@ -8,6 +8,9 @@ above it, so a 4x4 depth camera under the robot measures the floor at every pose
 Floor map: HM3D's baked navmesh is for a 1.5 m tall agent (space under tables counts as blocked). It is rebuilt
 at load with LIMO's size (robot_limo.yaml `navmesh`: radius, height, max step, cell height); its sha256 is kept.
 
+Lens (Phase 7): `RobotSpec.fisheye` None = Habitat's pinhole (the default, unchanged); a DoubleSphere turns the colour
+(and semantic) camera into that fisheye, black outside its image circle; the depth camera stays LIMO's pinhole.
+
 One command (v, w), v clipped to [0, max_v] and |w| to max_w, is held for 1 / control_hz seconds and integrated
 exactly along its arc in `substeps` moves. Each move goes through the navmesh (`try_step`: slides along walls).
 The command is a collision if its moves together came up more than collision_tol_m short of the intended
@@ -21,8 +24,12 @@ from typing import Any, Dict, Optional, Sequence, Tuple
 
 import numpy as np
 
+from mapmad_sim.lens import DoubleSphere
+
 FLOOR_PROBE = "floor_probe"
 FLOOR_LABEL = "floor_label"
+COLOR = "color_sensor"
+SEMANTIC = "semantic_sensor"
 UP = np.array([0.0, 1.0, 0.0])
 
 
@@ -46,6 +53,7 @@ class RobotSpec:
     probe_hfov_deg: float
     probe_max_m: float
     navmesh: Tuple[Tuple[str, Any], ...] = ()  # robot_limo.yaml `navmesh` entries (hashable)
+    fisheye: Optional[DoubleSphere] = None  # Phase 7 lens option: None = the pinhole colour camera (default)
 
     @classmethod
     def from_config(cls, robot: Dict[str, Any], hfov_deg: Optional[float] = None) -> "RobotSpec":
@@ -145,6 +153,12 @@ class LimoSim:
                                             sensor_height=spec.camera_height_m, depth_sensor=depth,
                                             semantic_sensor=semantic, gpu_device_id=gpu, seed=seed)
         cfg = make_cfg(settings)
+        if spec.fisheye is not None:  # Phase 7: colour (+ semantic) camera become the fisheye; depth stays a pinhole
+            sensors = cfg.agents[0].sensor_specifications
+            for k, s in enumerate(sensors):
+                if s.uuid in (COLOR, SEMANTIC):
+                    sensors[k] = spec.fisheye.habitat_spec(s.uuid, s.position, s.orientation)
+                    sensors[k].sensor_type = s.sensor_type
         probe = habitat_sim.CameraSensorSpec()
         probe.uuid, probe.sensor_type = FLOOR_PROBE, habitat_sim.SensorType.DEPTH
         probe.resolution, probe.hfov = [4, 4], spec.probe_hfov_deg
@@ -287,11 +301,13 @@ class LimoSim:
             sensor = self.sim._sensors[uuid]
             sensor.draw_observation()
             out[uuid] = np.asarray(sensor.get_observation())
-        obs = {"rgb": np.ascontiguousarray(out.pop("color_sensor")[..., :3])}
+        rgb = np.ascontiguousarray(out.pop(COLOR)[..., :3])
+        obs = {"rgb": rgb if self.spec.fisheye is None else self.spec.fisheye.apply_circle(rgb)}
         if "depth_sensor" in out:
             obs["depth"] = out["depth_sensor"]
-        if "semantic_sensor" in out:
-            obs["semantic"] = out["semantic_sensor"]
+        if SEMANTIC in out:  # a fisheye's labels are 0 (nothing) outside its image circle, like its black ring
+            sem = out[SEMANTIC]
+            obs["semantic"] = sem if self.spec.fisheye is None else self.spec.fisheye.apply_circle(sem)
         return obs
 
     def surface_id(self) -> int:

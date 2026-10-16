@@ -59,6 +59,9 @@ cmd_habitat() {
         -v "$MAPMAD_DATA":/mapmad_data \
         -v "$NOMAD_OUTPUTS":/outputs \
         -v "$HABITAT_STARTER/data":/opt/habitat-starter/data:ro \
+        -v "$NOMAD_DATA":/data:ro \
+        -v "$RECON_PROCESSED":/recon:ro \
+        -v "$RECON_RAW":/recon_raw:ro \
         "$HABITAT_IMAGE" sleep infinity
 }
 
@@ -71,6 +74,8 @@ cmd_nomad() {
         "${USER_ARGS[@]}" --shm-size 8g \
         -v "$REPO":/app/visualnav-transformer "${GIT_ARGS[@]}" \
         -v "$NOMAD_DATA":/data \
+        -v "$RECON_PROCESSED":/recon:ro \
+        -v "$RECON_RAW":/recon_raw:ro \
         -v "$NOMAD_OUTPUTS":/outputs \
         -v "$MAPMAD_DATA":/mapmad_data \
         -v "$WANDB_CONFIG":/tmp/.config/wandb \

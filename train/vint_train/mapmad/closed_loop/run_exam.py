@@ -66,7 +66,9 @@ class Policies:
         self.cache: Dict[str, Any] = {}
         self.hashes: Dict[str, str] = {}
 
-    def nomad(self) -> NomadPolicy:
+    def nomad(self, arm: Optional[ExamArm] = None) -> NomadPolicy:
+        """The official NoMaD; an arm with its own context_spacing (Phase 7 extra) gets its own policy object on the
+        same weights."""
         if self._nomad is None:
             n = self.layout.cfg["nomad"]
             weights = self.layout.resolve(n["weights"])
@@ -74,6 +76,11 @@ class Policies:
             cfg = yaml.safe_load(self.layout.resolve(n["config"]).read_text())
             self._nomad = NomadPolicy(str(weights), cfg, self.device, num_samples=n["num_samples"],
                                       sample_index=n["sample_index"], waypoint_index=n["waypoint_index"], **self.limits)
+        if arm is not None and arm.context_spacing not in (None, 1):
+            n = self.layout.cfg["nomad"]
+            return NomadPolicy("", self._nomad.cfg, self.device, num_samples=n["num_samples"],
+                               sample_index=n["sample_index"], waypoint_index=n["waypoint_index"],
+                               context_spacing=arm.context_spacing, model=self._nomad.model, **self.limits)
         return self._nomad
 
     def mapmad(self, arm: ExamArm) -> MapMaDPolicy:
@@ -97,8 +104,8 @@ class Policies:
 
     def get(self, arm: ExamArm):
         if arm.name not in self.cache:
-            self.cache[arm.name] = {"nomad": self.nomad, "planner": self.planner}[arm.policy]() \
-                if arm.policy != "mapmad" else self.mapmad(arm)
+            self.cache[arm.name] = self.nomad(arm) if arm.policy == "nomad" else \
+                self.planner() if arm.policy == "planner" else self.mapmad(arm)
             if self.log_all_samples and arm.policy != "planner":
                 self.cache[arm.name].log_all_samples = True
         return self.cache[arm.name]
@@ -108,12 +115,22 @@ class Policies:
         return {"weights_sha256": self.hashes.get(arm.weights_key)} if arm.weights_key else {}
 
 
-def work(episodes: List[Dict[str, Any]], arms: List[ExamArm], seeds: List[int], shard: int, num_shards: int):
-    """(episode, seed index, arm) in run order for this shard."""
-    for e in episodes[shard::num_shards]:
+def work(episodes: List[Dict[str, Any]], arms: List[ExamArm], seeds: List[int], shard: int, num_shards: int,
+         arm_major: bool = False):
+    """(episode, seed index, arm) in run order for this shard; arms that don't run on an episode's type are left out.
+    arm_major (Phase 7): all of one arm's runs before the next arm, so a home is loaded once per camera setting."""
+    mine = episodes[shard::num_shards]
+    if arm_major:
+        for arm in arms:
+            for e in mine:
+                for k in seeds:
+                    if k in arm.seed_indices([k]) and arm.runs_on(e):
+                        yield e, k, arm
+        return
+    for e in mine:
         for k in seeds:
             for arm in arms:
-                if k in arm.seed_indices([k]):
+                if k in arm.seed_indices([k]) and arm.runs_on(e):
                     yield e, k, arm
 
 
@@ -133,6 +150,7 @@ def main() -> None:
     p.add_argument("--log-all-samples", action="store_true",
                    help="also log all sampled paths per step (policy.paths_all_m; report only)")
     p.add_argument("--shutdown-server", action="store_true")
+    p.add_argument("--arm-major", action="store_true", help="run arm by arm (Phase 7: one home load per camera)")
     args = p.parse_args()
 
     layout = RunLayout.load(args.config, subdir=args.subdir)
@@ -157,7 +175,7 @@ def main() -> None:
                                 "weights_sha256": policies.hashes, "map_settings": settings, "robot": mapmad_config.robot(),
                                 "torch": torch.__version__, "gpu": torch.cuda.get_device_name(0)},
                   0, name=f"run_info.{tag}.json")
-    todo = list(work(episodes, arms, seeds, args.shard, args.num_shards))
+    todo = list(work(episodes, arms, seeds, args.shard, args.num_shards, args.arm_major))
     progress = layout.progress(tag)
     sim = SimClient(args.host, args.port)
     t_start, done = time.time(), 0

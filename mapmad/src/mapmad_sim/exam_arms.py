@@ -5,6 +5,10 @@ both containers use the same rules (runner, gate, videos, S-freeze estimate).
     arm.outputs            # what the simulator server sends with every frame
     arm.seed_indices([0, 1, 2])   # the planner (deterministic) runs index 0 only
     arm.episode_for(episode)      # ablation 1 (perturbed heat): the episode with its heat box moved by heat_shift_m
+
+Phase 7 (configs/p7_sweep.yaml): an arm may name a camera setting (`camera: <name>` of the config's `cameras:`;
+the server then renders with that lens / height on that floor map) and an episode type it runs on
+(`episode_type: in_view | out_of_view`). Arms without them behave exactly as in Phase 5.
 """
 
 import copy
@@ -46,6 +50,9 @@ class ExamArm:
     hfov_deg: float = 66.5
     heat_shift_m: float = 0.0  # ablation 1: heat target moved this far (map arms only); 0 = the exam's heat
     map_zero: Sequence[str] = ()  # layer ablation: these MAP_LAYERS are set to 0 in the policy's input
+    camera: Optional[Dict[str, Any]] = None  # Phase 7: camera setting config dict with "name" (None = LIMO's camera)
+    episode_type: Optional[str] = None  # Phase 7: run only on episodes of this type (None = all)
+    context_spacing: Optional[int] = None  # Phase 7 extra: official NoMaD's context frame every k-th step (None = 1)
 
     def __post_init__(self) -> None:
         self.map_zero = tuple(self.map_zero)
@@ -54,6 +61,8 @@ class ExamArm:
         bad = set(self.map_zero) - set(MAP_LAYERS)
         if bad:
             raise ValueError(f"arm {self.name}: unknown map layers {sorted(bad)} (known: {MAP_LAYERS})")
+        if self.camera is not None:
+            self.hfov_deg = float(self.camera.get("hfov_deg", self.hfov_deg))
 
     @property
     def map_zero_indices(self) -> List[int]:
@@ -88,8 +97,17 @@ class ExamArm:
         """The seed index of the run that stands for `seed_index` (the planner: always 0)."""
         return 0 if self.deterministic else seed_index
 
+    def runs_on(self, episode: Dict[str, Any]) -> bool:
+        """Phase 7: the arm runs on this episode (its type matches episode_type, or no type is set)."""
+        return self.episode_type is None or episode.get("type") == self.episode_type
+
     def episode_for(self, episode: Dict[str, Any]) -> Dict[str, Any]:
-        """The episode as this arm's simulator server gets it (heat box shifted for ablation 1; else unchanged)."""
+        """The episode as this arm's simulator server gets it (heat box shifted for ablation 1; with a Phase 7 camera,
+        the floor-map hash of that camera's floor map; else unchanged)."""
+        if self.camera is not None:
+            out = dict(episode)
+            out["navmesh_sha256"] = episode["navmesh_sha256_by_floor_map"][floor_map_key(self.camera)]
+            return out
         return shifted_heat_episode(episode, self.heat_shift_m) if self.heat_shift_m else episode
 
     def log_header(self, episode: Dict[str, Any]) -> Dict[str, Any]:
@@ -102,6 +120,8 @@ class ExamArm:
                         "heat_box_center": [round(v, 4) for v in self.episode_for(episode)["target"]["box_center"]]})
         if self.map_zero:
             out["map_zero"] = list(self.map_zero)
+        if self.camera is not None:
+            out["camera"] = self.camera["name"]
         return out
 
     @property
@@ -120,6 +140,22 @@ class ExamArm:
         return self.policy if self.policy in ("nomad", "mapmad") else None
 
 
+def floor_map_key(camera: Dict[str, Any]) -> str:
+    """Phase 7: the episode-file key of a camera's floor map = its agent height in metres, "0.55" or e.g. "1.00"."""
+    from mapmad_sim import config
+    from mapmad_sim.camera_setting import CameraSetting
+
+    limo = float(config.robot()["navmesh"]["agent_height_m"])
+    return f"{CameraSetting.from_config(camera['name'], camera).floor_map_height(limo):.2f}"
+
+
 def arms_of(cfg: Dict[str, Any], names: Optional[Sequence[str]] = None) -> List[ExamArm]:
-    """The config's arms (all, or these names in this order)."""
-    return [ExamArm.from_config(n, cfg["arms"][n]) for n in (names or list(cfg["arms"]))]
+    """The config's arms (all, or these names in this order); a `camera: <name>` is replaced by that entry of
+    cfg["cameras"] (with its name)."""
+    out = []
+    for n in names or list(cfg["arms"]):
+        spec = dict(cfg["arms"][n])
+        if isinstance(spec.get("camera"), str):
+            spec["camera"] = {"name": spec["camera"], **cfg["cameras"][spec["camera"]]}
+        out.append(ExamArm.from_config(n, spec))
+    return out

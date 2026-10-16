@@ -77,8 +77,9 @@ def run_episode(sim, policy: Policy, episode: Dict[str, Any], arm: ExamArm, run:
     import time
 
     outputs = dict(arm.outputs, map_settings=map_settings)
+    camera = {"camera": arm.camera} if arm.camera is not None else {}  # Phase 7 camera setting
     first = sim.reset(episode, arm.hfov_deg, goal_photo=arm.photo, topdown_m_per_px=run.topdown_m_per_px,
-                      outputs=outputs)
+                      outputs=outputs, **camera)
     if first.navmesh_sha256 != episode["navmesh_sha256"]:
         raise FloorMapMismatch(f"{episode['episode_id']}: live floor map {first.navmesh_sha256[:12]} != the set's "
                                f"{episode['navmesh_sha256'][:12]} (robot_limo.yaml navmesh changed?)")

@@ -1,0 +1,9 @@
+# Phase 7 driver dry run (test only): the whole run_p7_sweep.sh chain on 6 in-view + 3 out-of-view episodes of the
+# frozen set (own fingerprint), 15-step timeout, own folder /outputs/mapmad/p7_dryrun/. Never judged.
+#   P7_CONFIG=p7_dryrun.yaml P7_ALLOW_DIRTY=1 P7_PAIRS="0 1" bash mapmad/scripts/run_p7_sweep.sh
+
+extends: p7_sweep.yaml
+out_dir: p7_dryrun
+
+run:
+  max_steps: 15

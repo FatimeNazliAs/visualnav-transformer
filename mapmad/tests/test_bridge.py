@@ -104,6 +104,26 @@ def test_service_reset_step_and_home_reload():
     assert len(made) == 2 and made[0].closed  # new FOV: new robot, old one closed
 
 
+def test_service_reloads_on_a_new_camera_setting():
+    """Phase 7: `camera` at reset reaches the factory; a new setting rebuilds the robot, the same one does not;
+    no camera = the Phase 5 call (factory without a camera argument)."""
+    made, cams = [], []
+
+    def factory(s, h, f, camera=None):
+        cams.append(camera)
+        made.append(FakeRobot(s, h, f))
+        return made[-1]
+
+    service = SimService(factory)
+    base = {"cmd": "reset", "episode": EPISODE, "hfov_deg": 66.5, "goal_photo": False, "topdown_m_per_px": 0.05}
+    fish = {"name": "fish025", "lens": "fisheye", "height_m": 0.25, "pitch_deg": 0.0}
+    service.handle(base)
+    service.handle({**base, "camera": fish})
+    service.handle({**base, "camera": dict(fish)})
+    service.handle({**base, "camera": {**fish, "name": "fish055", "height_m": 0.55}})
+    assert cams == [None, fish, {**fish, "name": "fish055", "height_m": 0.55}] and len(made) == 3 and made[1].closed
+
+
 def test_step_before_reset_is_an_error():
     with pytest.raises(RuntimeError):
         SimService(FakeRobot).handle({"cmd": "step", "v": 0.1, "w": 0.0})

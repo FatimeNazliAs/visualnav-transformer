@@ -1,0 +1,95 @@
+# Phase 7 — fair camera (kickoff prompt + "Phase 7 confirmation" block, 2026-10-16; block items in brackets).
+# Original NoMaD only, dev homes only. Read by mapmad/scripts/make_p7_episodes.py (Habitat side) and
+# vint_train.mapmad.closed_loop.run_exam / p7_* (NoMaD side). Paths are relative to paths.yaml `outputs`
+# (/outputs/mapmad) unless they start with repo:.
+
+out_dir: p7_camera
+episodes_dir: episodes               # the frozen sweep set: <out_dir>/episodes/episodes.json (+ .sha256)
+
+episodes:                            # [6] built by make_p7_episodes.py
+  reuse:                             # Phase 1 episodes (frozen files; fingerprints checked)
+    - {file: p1_baseline_spec/episodes/episodes.json,
+       fingerprint: 8ea943b20aecd1df4c4a8ae92f588ee0e5f50a83dd16f6e13be81a552b4a351a, types: [in_view, out_of_view]}
+    - {file: p1_spec_iv_extra/episodes/episodes.json,
+       fingerprint: f1916fa5573a06bd2abaf6a320fc24a4827541d8553c5ee9aece9be75f301e94, types: [in_view]}
+  new:                               # 60 new in-view episodes, Phase 1 rules
+    rules_from: p1_spec_iv_extra.yaml  # its `episodes` block (in view: >= 1% at pinhole 0.18 m, 3-8 m, <= 2 per category)
+    seed: 1001
+    id_prefix: p7x                   # p7x-iv-<home>-<k>
+    homes: [00746-RTV2n6fXB2w, 00440-wPLokgvCnuk, 00272-kA2nG18hCAr, 00330-WhNyDTnd9g5, 00241-h6nwVLpAKQz,
+            00732-Z2DQddYp1fn, 00081-5biL7VEkByM, 00534-DBBESbk4Y3k, 00397-ZNanfzgCdm3, 00401-H8rQCnvBgo6]
+    per_home: 6
+    total: 60
+  set_rules_from: p5_exam.yaml       # its `set_rules`: view points (snap <= 0.2 m, real floor), goal photo
+                                     # (closest to 1.0 m from the box, >= 5% target pixels, checked at pinhole 0.18 m)
+  floor_map_cameras: {}              # [5] cameras above 0.55 m would need a raised floor map; none since Naz's 3b
+                                     # (heights 0.18 / 0.25 / 0.45 / 0.55 m) -> LIMO's floor map for every camera
+  drop_start_within_m: 0.2           # Naz 4b: episodes whose start is already a primary success (walking distance to a
+                                     # view point <= 0.2 m) are dropped
+
+run:                                 # [6] Phase 5's metrics and episode loop
+  success_key: vp_geodesic_m         # primary: walking distance to the nearest usable view point <= 0.2 m, oracle stop
+  success_m: 0.2
+  max_steps: 1000
+  report_success_at: [500]
+  secondary_m: {target_point: 1.0, any_side: 1.0}   # Phase 1 metric = target point <= 1.0 m
+  stuck_steps: 100
+  seeds: 3
+  seed_salt: mapmad-p7               # noise seed = first 8 hex of sha256("<salt>/<episode_id>/<index>"), every setting
+  topdown_m_per_px: 0.05
+  video_fps: 8
+
+map_settings:                        # required by the runner; unused by NoMaD arms (no map, no depth requested)
+  builder: p2_datagen.yaml
+  crop: repo:train/config/mapmad_p4_C.yaml
+
+nomad:                               # official NoMaD, Phase 1/5 setup (audit: p7_camera/audit/audit_table.md)
+  weights: weights/official/nomad.pth
+  weights_sha256: 70f79b8262527e20e56ced64a3e3d7ef91855bc9e7c3fa348d78edcb83c6a333
+  config: weights/official/nomad.yaml
+  num_samples: 8
+  sample_index: 0
+  waypoint_index: 2
+
+sacson_lens: &sacson {fx: 117.591603, fy: 117.591603, cx: 82.192118, cy: 54.023754, xi: 0.8, alpha: 0.72, width: 160, height: 120, circle_px: 96.909709}
+                                     # [2] double sphere fitted to SACSoN's frames (lens/sacson_lens.json, 170 deg circle,
+                                     # 160 x 120 = SACSoN's resolution, already 4:3); Naz 2a
+
+cameras:                             # [5] + Naz 3b: lens x height; forward offset 0.084 m, collision body = LIMO's
+  pin018: {lens: pinhole, height_m: 0.18, pitch_deg: -2.0, hfov_deg: 66.5}    # LIMO (Phase 5 camera)
+  fish018: {lens: fisheye, height_m: 0.18, pitch_deg: 0.0, hfov_deg: 66.5, double_sphere: *sacson}
+  pin025: {lens: pinhole, height_m: 0.25, pitch_deg: -2.0, hfov_deg: 66.5}    # SACSoN (Method A)
+  fish025: {lens: fisheye, height_m: 0.25, pitch_deg: 0.0, hfov_deg: 66.5, double_sphere: *sacson}
+  pin045: {lens: pinhole, height_m: 0.45, pitch_deg: -2.0, hfov_deg: 66.5}    # RECON photo (Method A; Naz 3b)
+  fish045: {lens: fisheye, height_m: 0.45, pitch_deg: 0.0, hfov_deg: 66.5, double_sphere: *sacson}
+  pin055: {lens: pinhole, height_m: 0.55, pitch_deg: -2.0, hfov_deg: 66.5}    # GoStanford (Method A)
+  fish055: {lens: fisheye, height_m: 0.55, pitch_deg: 0.0, hfov_deg: 66.5, double_sphere: *sacson}
+
+arms:                                # main = B (NoMaD + goal photo, in view); secondary = A (explore, out of view)
+  B_pin018: {policy: nomad, photo: true, camera: pin018, episode_type: in_view}
+  A_pin018: {policy: nomad, photo: false, camera: pin018, episode_type: out_of_view}
+  B_fish018: {policy: nomad, photo: true, camera: fish018, episode_type: in_view}
+  A_fish018: {policy: nomad, photo: false, camera: fish018, episode_type: out_of_view}
+  B_pin025: {policy: nomad, photo: true, camera: pin025, episode_type: in_view}
+  A_pin025: {policy: nomad, photo: false, camera: pin025, episode_type: out_of_view}
+  B_fish025: {policy: nomad, photo: true, camera: fish025, episode_type: in_view}
+  A_fish025: {policy: nomad, photo: false, camera: fish025, episode_type: out_of_view}
+  B_pin045: {policy: nomad, photo: true, camera: pin045, episode_type: in_view}
+  A_pin045: {policy: nomad, photo: false, camera: pin045, episode_type: out_of_view}
+  B_fish045: {policy: nomad, photo: true, camera: fish045, episode_type: in_view}
+  A_fish045: {policy: nomad, photo: false, camera: fish045, episode_type: out_of_view}
+  B_pin055: {policy: nomad, photo: true, camera: pin055, episode_type: in_view}
+  A_pin055: {policy: nomad, photo: false, camera: pin055, episode_type: out_of_view}
+  B_fish055: {policy: nomad, photo: true, camera: fish055, episode_type: in_view}
+  A_fish055: {policy: nomad, photo: false, camera: fish055, episode_type: out_of_view}
+  # p7_rules.md §7 compatibility check: the Phase 5 camera path (no camera setting) vs B_pin018, same seed
+  B_limo: {policy: nomad, photo: true, episode_type: in_view}
+  # p7_rules.md §8 report-only extra: only the winner's arm runs (108 in-view episodes x seed index 0)
+  X_pin018_cs3: {policy: nomad, photo: true, camera: pin018, episode_type: in_view, context_spacing: 3}
+  X_fish018_cs3: {policy: nomad, photo: true, camera: fish018, episode_type: in_view, context_spacing: 3}
+  X_pin025_cs3: {policy: nomad, photo: true, camera: pin025, episode_type: in_view, context_spacing: 3}
+  X_fish025_cs3: {policy: nomad, photo: true, camera: fish025, episode_type: in_view, context_spacing: 3}
+  X_pin045_cs3: {policy: nomad, photo: true, camera: pin045, episode_type: in_view, context_spacing: 3}
+  X_fish045_cs3: {policy: nomad, photo: true, camera: fish045, episode_type: in_view, context_spacing: 3}
+  X_pin055_cs3: {policy: nomad, photo: true, camera: pin055, episode_type: in_view, context_spacing: 3}
+  X_fish055_cs3: {policy: nomad, photo: true, camera: fish055, episode_type: in_view, context_spacing: 3}
