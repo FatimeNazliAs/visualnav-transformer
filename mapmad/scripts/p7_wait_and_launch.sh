@@ -4,9 +4,11 @@
 #
 #   screen -dmS mapmad_p7_launch bash -c 'P7_COMMIT=<hash> bash mapmad/scripts/p7_wait_and_launch.sh'
 #
-# Every CHECK_S seconds (nvidia-smi): both GPUs free -> P7_PAIRS="0 0 0 1 1 1"; only one free -> 3 pairs on it (the
-# results do not depend on the number of pairs). Before the launch: tests/test_lens.py (lens off = byte-identical
-# pictures; known 3D point = predicted pixel) on that GPU; a failure stops here (no sweep). Then the driver runs in
+# Every CHECK_S seconds (nvidia-smi). A GPU counts as free only after FREE_CHECKS consecutive checks without another
+# user's process (default 4 x 300 s = 20 min; Naz, 2026-10-17, after a GPU free at one check was taken again a minute
+# after the launch). Both free -> P7_PAIRS="0 0 0 1 1 1"; only one -> 3 pairs on it (results do not depend on pairs).
+# Before the launch: tests/test_lens.py (lens off = byte-identical pictures; known 3D point = predicted pixel) on that
+# GPU; a failure stops here (no sweep). Then the driver runs in
 # screen `mapmad_p7_sweep`; this script stays and logs when that session ends (a kill -9 leaves no STOP_reason.txt).
 # Log: <p7>/driver/launch.log. Never commits; touches only our containers.
 set -uo pipefail
@@ -17,6 +19,7 @@ OUT_MOUNT="$(docker inspect -f '{{range .Mounts}}{{if eq .Destination "/outputs"
 P7="$OUT_MOUNT/mapmad/p7_camera"
 LOG="$P7/driver/launch.log"
 CHECK_S="${CHECK_S:-300}"
+FREE_CHECKS="${FREE_CHECKS:-4}"
 : "${P7_COMMIT:?set P7_COMMIT to the committed sweep code}"
 mkdir -p "$P7/driver"
 
@@ -35,14 +38,20 @@ free_gpus() {  # indices of GPUs without another user's compute process (display
         < <(nvidia-smi --query-gpu=index,uuid --format=csv,noheader)
 }
 
-say "launcher start (commit $P7_COMMIT, check every $CHECK_S s)"
+say "launcher start (commit $P7_COMMIT, check every $CHECK_S s, free = $FREE_CHECKS consecutive free checks)"
+declare -A streak=([0]=0 [1]=0)
 last=""
 while true; do
     nvidia-smi >> "$P7/driver/nvidia_smi.log" 2>&1
-    mapfile -t free < <(free_gpus)
+    mapfile -t free_now < <(free_gpus)
+    for g in 0 1; do
+        if [[ " ${free_now[*]} " == *" $g "* ]]; then streak[$g]=$((streak[$g] + 1)); else streak[$g]=0; fi
+    done
+    free=()
+    for g in 0 1; do (( streak[$g] >= FREE_CHECKS )) && free+=("$g"); done
     if (( ${#free[@]} >= 2 )); then pairs="0 0 0 1 1 1"; gpu=0; break; fi
     if (( ${#free[@]} == 1 )); then g=${free[0]}; pairs="$g $g $g"; gpu=$g; break; fi
-    state="both GPUs used by other users' jobs"
+    state="free-check streaks: GPU0 ${streak[0]}/$FREE_CHECKS, GPU1 ${streak[1]}/$FREE_CHECKS"
     [[ "$state" != "$last" ]] && say "waiting: $state"
     last="$state"
     sleep "$CHECK_S"
