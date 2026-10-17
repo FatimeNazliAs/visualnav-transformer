@@ -22,7 +22,6 @@ freeze: an episode is invalid on a floor map if its start is not navigable on it
 """
 
 import argparse
-import dataclasses
 import json
 import math
 from collections import Counter
@@ -33,7 +32,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 
 from mapmad_sim import config, episodes, objectnav
-from mapmad_sim.camera_setting import CameraSetting
+from mapmad_sim.camera_setting import CameraSetting, floor_map_key, with_floor_map
 from mapmad_sim.exam_set import HomeSetBuilder, SetRules
 from mapmad_sim.robot import LimoSim, RobotSpec
 from mapmad_sim.run_info import save_run_info
@@ -42,24 +41,13 @@ from mapmad_sim.run_layout import RunLayout
 CONFIG = config.CONFIG_DIR / "p7_sweep.yaml"
 
 
-def layout_of(path: Path) -> RunLayout:
-    return RunLayout.load(path)
-
-
-def folder(layout: RunLayout) -> Path:
-    return layout.episodes_dir
-
-
 def limo_spec() -> RobotSpec:
     return RobotSpec.from_config(config.robot())
 
 
-def floor_map_spec(height_m: float) -> RobotSpec:
-    """LIMO with its floor map built for this agent height (the camera stays LIMO's)."""
-    spec = limo_spec()
-    nav = dict(spec.navmesh)
-    nav["agent_height_m"] = height_m
-    return dataclasses.replace(spec, navmesh=tuple(sorted(nav.items())))
+def limo_floor_map_key() -> str:
+    """Key of LIMO's own floor map ("0.55")."""
+    return floor_map_key(float(config.robot()["navmesh"]["agent_height_m"]))
 
 
 # --- new -----------------------------------------------------------------------------------------------------------
@@ -70,9 +58,9 @@ def pair_key(e: Dict[str, Any]) -> Tuple[str, int, Tuple[float, ...]]:
 
 
 def cmd_new(args: argparse.Namespace) -> None:
-    layout = layout_of(args.config)
+    layout = RunLayout.load(args.config)
     cfg = layout.cfg["episodes"]["new"]
-    out = folder(layout) / "new_iv.json"
+    out = layout.episodes_dir / "new_iv.json"
     if out.exists() and not args.force:
         raise SystemExit(f"{out} exists; --force to rebuild")
     p1cfg = RunLayout.load(config.CONFIG_DIR / cfg["rules_from"]).cfg["episodes"]
@@ -139,8 +127,8 @@ def convert(e: Dict[str, Any], builder: HomeSetBuilder, goals: Dict[int, Any], r
                 "goal_photo_share": photo["share"], "goal_photo_rank": photo["rank"],
                 "goal_photo_box_distance_m": photo["box_distance_m"], "phase1_goal_photo_position": e["goal_photo_position"],
                 "phase1_goal_photo_yaw": e["goal_photo_yaw"], "start_vp_geodesic_m": round(vp, 4) if math.isfinite(vp) else None,
-                "distance_bin": None, "navmesh_sha256": hashes["0.55"], "navmesh_sha256_by_floor_map": dict(hashes)})
-    if e.get("navmesh_sha256") != hashes["0.55"]:
+                "distance_bin": None, "navmesh_sha256": hashes[limo_floor_map_key()], "navmesh_sha256_by_floor_map": dict(hashes)})
+    if e.get("navmesh_sha256") != hashes[limo_floor_map_key()]:
         return None, "Phase 1 floor-map hash differs from today's LIMO floor map"
     return out, ""
 
@@ -153,17 +141,17 @@ def floor_heights(layout: RunLayout) -> List[float]:
 
 
 def cmd_assemble(args: argparse.Namespace) -> None:
-    layout = layout_of(args.config)
+    layout = RunLayout.load(args.config)
     ecfg = layout.cfg["episodes"]
-    src = phase1_episodes(layout) + json.loads((folder(layout) / "new_iv.json").read_text())["episodes"]
+    src = phase1_episodes(layout) + json.loads((layout.episodes_dir / "new_iv.json").read_text())["episodes"]
     rules = SetRules.from_config(RunLayout.load(config.CONFIG_DIR / ecfg["set_rules_from"]).cfg["set_rules"])
     heights = floor_heights(layout)
     kept, dropped = [], {}
     for home in sorted({e["home"] for e in src}):
         hashes = {}
         for h in heights:
-            with LimoSim("train", home, floor_map_spec(h), gpu=args.gpu) as r:
-                hashes[f"{h:.2f}"] = r.navmesh_sha256
+            with LimoSim("train", home, with_floor_map(limo_spec(), h), gpu=args.gpu) as r:
+                hashes[floor_map_key(h)] = r.navmesh_sha256
         goals = {g.object_id: g for g in objectnav.home_goals("train", home)}
         with LimoSim("train", home, limo_spec(), semantic=True, gpu=args.gpu, seed=ecfg["new"]["seed"]) as robot:
             builder = HomeSetBuilder(robot, list(goals.values()), rules, np.random.default_rng(0))
@@ -175,7 +163,7 @@ def cmd_assemble(args: argparse.Namespace) -> None:
                     kept.append(out)
         print(f"{home}: {sum(e['home'] == home for e in kept)} kept, floor maps {list(hashes)}", flush=True)
     kept.sort(key=lambda e: (e["type"] != "in_view", e["home"], e["episode_id"]))
-    (folder(layout) / "assembled.json").write_text(json.dumps({"created": now(), "dropped": dropped, "episodes": kept},
+    (layout.episodes_dir / "assembled.json").write_text(json.dumps({"created": now(), "dropped": dropped, "episodes": kept},
                                                               indent=1) + "\n")
     print(f"{len(kept)} assembled, {len(dropped)} dropped: {dropped}")
 
@@ -196,8 +184,8 @@ def invalid_reason(robot: LimoSim, e: Dict[str, Any]) -> str:
 
 
 def cmd_freeze(args: argparse.Namespace) -> None:
-    layout = layout_of(args.config)
-    out = folder(layout)
+    layout = RunLayout.load(args.config)
+    out = layout.episodes_dir
     if (out / "episodes.json").exists() and not args.force:
         raise SystemExit(f"{out / 'episodes.json'} exists (frozen); --force to replace it")
     eps = json.loads((out / "assembled.json").read_text())["episodes"]
@@ -208,12 +196,12 @@ def cmd_freeze(args: argparse.Namespace) -> None:
     invalid: Dict[str, Dict[str, str]] = {}
     for h in sorted(set(floor_heights(layout))):
         for home in sorted({e["home"] for e in eps}):
-            with LimoSim("train", home, floor_map_spec(h), gpu=args.gpu) as robot:
+            with LimoSim("train", home, with_floor_map(limo_spec(), h), gpu=args.gpu) as robot:
                 for e in (e for e in eps if e["home"] == home):
-                    assert robot.navmesh_sha256 == e["navmesh_sha256_by_floor_map"][f"{h:.2f}"], "floor map changed"
+                    assert robot.navmesh_sha256 == e["navmesh_sha256_by_floor_map"][floor_map_key(h)], "floor map changed"
                     why = invalid_reason(robot, e)
                     if why:
-                        invalid.setdefault(f"{h:.2f}", {})[e["episode_id"]] = why
+                        invalid.setdefault(floor_map_key(h), {})[e["episode_id"]] = why
     drop = set(invalid.get(f"{tallest:.2f}", {}))
     near = float(layout.cfg["episodes"].get("drop_start_within_m", -1.0))
     at_start = sorted(e["episode_id"] for e in eps if e["episode_id"] not in drop and e["start_vp_geodesic_m"] is not None
@@ -258,8 +246,8 @@ def cmd_shares(args: argparse.Namespace) -> None:
     item 6: reported per setting; the frozen set is not changed)."""
     from mapmad_sim.camera_setting import cameras_of
 
-    layout = layout_of(args.config)
-    eps, fp = episodes.load_episodes(folder(layout) / "episodes.json")
+    layout = RunLayout.load(args.config)
+    eps, fp = episodes.load_episodes(layout.episodes_dir / "episodes.json")
     rows: Dict[str, Dict[str, Dict[str, float]]] = {}
     for name, cam in cameras_of(layout.cfg).items():
         rows[name] = {}
@@ -282,8 +270,8 @@ def cmd_shares(args: argparse.Namespace) -> None:
         allg = [v["goal_photo"] for v in r.values()]
         lines.append(f"| {name} | {np.median([v['start'] for v in iv]):.4f} | {sum(v['start'] == 0 for v in iv)} | "
                      f"{np.median(allg):.3f} | {sum(g < 0.05 for g in allg)} |")
-    (folder(layout) / "shares.json").write_text(json.dumps({"fingerprint": fp, "shares": rows}, indent=1) + "\n")
-    (folder(layout) / "shares.md").write_text("\n".join(lines) + "\n")
+    (layout.episodes_dir / "shares.json").write_text(json.dumps({"fingerprint": fp, "shares": rows}, indent=1) + "\n")
+    (layout.episodes_dir / "shares.md").write_text("\n".join(lines) + "\n")
     print("\n".join(lines))
 
 

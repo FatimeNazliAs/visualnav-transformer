@@ -11,6 +11,7 @@ merged into that file's (nested keys replaced one by one; a key set to null is r
 both containers.
 """
 
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
@@ -60,6 +61,25 @@ def parse_run_id(name: str) -> Tuple[str, int]:
 def partial_path(log: Path) -> Path:
     """Where a log is written until its episode is complete (then renamed to `log`)."""
     return log.with_name(log.name + ".partial")
+
+
+def write_text_atomic(path: Path, text: str) -> None:
+    """Write `text` to `path` so a reader (or a resumed run) sees either no file or the whole file: write a temporary
+    file next to it, then rename it into place."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    tmp.write_text(text)
+    os.replace(tmp, path)
+
+
+def try_claim(path: Path) -> bool:
+    """Phase 7 dynamic hand-out: create the claim file `path`; True only for the one runner that created it."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        os.close(os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY))
+    except FileExistsError:
+        return False
+    return True
 
 
 @dataclass(frozen=True)
@@ -116,6 +136,11 @@ class RunLayout:
         """Phase 5: episode ids with a crash record in any of these arms (all arms by default), sorted."""
         files = [p for a in (arms or ["*"]) for p in (self.root / "summaries").glob(f"{a}/*.crash.json")]
         return sorted({parse_run_id(p.name)[0] for p in files})
+
+    def claim(self, token: str, arm: str, run: str) -> Path:
+        """Phase 7: the claim file of one run in one launch (`token`); a relaunch uses a new token, so claims of runs
+        that a stopped launch never finished do not block them."""
+        return self.root / "claims" / token / arm / run
 
     def trace(self, arm: str, run: str) -> Path:
         """Phase 5: the per-step map tensors and poses of one run (--trace-maps, map parity)."""

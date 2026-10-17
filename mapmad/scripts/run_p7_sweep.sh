@@ -89,7 +89,7 @@ done_step() { [[ -f "$DRV/$1.done" || " ${P7_SKIP:-} " == *" $1 "* ]]; }
 mark() { date -Is > "$DRV/$1.done"; note "step $1 done"; }
 nomad() { docker exec -e MPLCONFIGDIR=/tmp/mpl -e PYTHONPATH=$APP/mapmad/src -w $APP/train "$NOMAD" python -m "$@"; }
 habitat() { docker exec -w $APP "$HABITAT" python "$@"; }
-runs() { PAIRS="$1" BASE_PORT=5560 "$REPO/mapmad/scripts/run_p5.sh" --config "$CFG" "${@:2}"; }
+runs() { PAIRS="$1" BASE_PORT=5560 HANDOUT=dynamic "$REPO/mapmad/scripts/run_p5.sh" --config "$CFG" "${@:2}"; }
 
 gpus_free() {  # every process on the GPUs this driver uses (P7_PAIRS), other than the display server, must be ours
     nvidia-smi >> "$DRV/nvidia_smi.log" 2>&1

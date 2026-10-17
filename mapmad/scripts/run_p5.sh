@@ -11,12 +11,16 @@
 # the environment (never a command line). Server output: <outputs>/<out_dir>/<subdir>/server_pair<k>.log.
 # A server that dies (non-zero exit, e.g. a segfault) is restarted after 3 s; the runner reconnects and retries the
 # episode (block item 13b). Runners get the §0.7 memory setting (expandable_segments; memory handling only).
+# HANDOUT=dynamic (Phase 7): instead of fixed shards, every runner takes the next unclaimed run (run_exam --claims,
+# one fresh token per call), so all pairs stay busy until the end.
 set -euo pipefail
 
 HABITAT=naz_mapmad_habitat
 NOMAD=naz_mapmad
 PAIRS=(${PAIRS:-0 1})
 BASE_PORT=${BASE_PORT:-5560}
+CLAIMS=()
+[[ "${HANDOUT:-shards}" == dynamic ]] && CLAIMS=(--claims "$(date +%Y%m%d_%H%M%S)_$$")
 SUBDIR="runs"
 CONFIG=""
 args=("$@")
@@ -45,7 +49,7 @@ for i in "${!PAIRS[@]}"; do
         -e PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True -e CUBLAS_WORKSPACE_CONFIG=:4096:8 \
         -e PYTHONPATH=/app/visualnav-transformer/mapmad/src -w /app/visualnav-transformer/train "$NOMAD" \
         python -m vint_train.mapmad.closed_loop.run_exam --port "$port" --shard "$i" --num-shards "${#PAIRS[@]}" \
-        --shutdown-server "$@" &
+        --shutdown-server "${CLAIMS[@]}" "$@" &
     pids+=($!)
 done
 status=0

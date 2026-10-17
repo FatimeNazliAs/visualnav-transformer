@@ -10,12 +10,13 @@ Frames: robot = x forward, y left, z up (ROS / NoMaD odometry); camera = OpenCV 
 `forward_m` in front of the turning centre and h above the floor, pitched by `pitch` (+ = up), no roll.
 Camera models: anything with project / unproject of mapmad_sim.lens.
 
-    est = estimate_pair(img1, img2, lens, rel_pose, heights, pitches)   # -> PairEstimate(h, pitch, ncc, ...)
+    surface = score_grid(img1, img2, lens, rel_pose, heights, pitches)   # one pair: NCC per (pitch, height)
+    est = pool(np.stack(surfaces), heights, pitches)                     # many pairs -> PooledEstimate
 """
 
 import math
 from dataclasses import dataclass
-from typing import Any, Optional, Sequence, Tuple
+from typing import Any, Sequence, Tuple
 
 import numpy as np
 
@@ -40,17 +41,6 @@ def inverse_pose(rel: Tuple[float, float, float]) -> Tuple[float, float, float]:
     dx, dy, dyaw = rel
     c, s = math.cos(dyaw), math.sin(dyaw)
     return -(c * dx + s * dy), -(-s * dx + c * dy), -dyaw
-
-
-@dataclass(frozen=True)
-class PairEstimate:
-    """Best (height, pitch) of one picture pair and how clearly it won."""
-
-    height_m: float
-    pitch_deg: float
-    ncc: float  # NCC at the best grid point
-    ncc_margin: float  # best NCC minus the best NCC at heights > 20% away (how unique the peak is)
-    n_pixels: int
 
 
 def floor_pixels(lens: Any, rows: Tuple[float, float], cols: Tuple[float, float], step: int) -> np.ndarray:
@@ -148,21 +138,3 @@ def pool(surfaces: np.ndarray, heights: Sequence[float], pitches: Sequence[float
                           pitch_range_deg=tuple(float(v) for v in np.percentile(boot[:, 1], percentiles)),
                           n_pairs=len(s))
 
-
-def estimate_pair(img1: np.ndarray, img2: np.ndarray, lens: Any, rel: Tuple[float, float, float],
-                  heights: Sequence[float], pitches: Sequence[float], forward_m: float = 0.0,
-                  rows: Tuple[float, float] = (0.62, 0.95), cols: Tuple[float, float] = (0.2, 0.8), step: int = 2,
-                  min_valid: float = 0.5, max_range_m: float = 4.0, fixed_pitch: Optional[float] = None) -> PairEstimate:
-    """Grid search (height x pitch) for one pair of grey float pictures; rows / cols = the floor region as fractions of
-    the picture. fixed_pitch: search heights at this pitch only."""
-    pixels = floor_pixels(lens, rows, cols, step)
-    heights = np.asarray(heights, dtype=np.float64)
-    pitch_list = [fixed_pitch] if fixed_pitch is not None else list(pitches)
-    scores = np.stack([warp_scores(img1, img2, lens, pixels, rel, heights, p, forward_m, min_valid, max_range_m)
-                       for p in pitch_list])
-    k, i = np.unravel_index(int(np.argmax(scores)), scores.shape)
-    best_h = float(heights[i])
-    far = np.abs(heights - best_h) > 0.2 * best_h
-    margin = float(scores[k, i] - scores[:, far].max()) if far.any() else 0.0
-    return PairEstimate(height_m=best_h, pitch_deg=float(pitch_list[k]), ncc=float(scores[k, i]), ncc_margin=margin,
-                        n_pixels=len(pixels))

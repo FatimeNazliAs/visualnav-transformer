@@ -152,3 +152,5 @@ Phase 7 (fair camera; commands in `mapmad/README.md`, "Phase 7: fair camera"):
 - `closed_loop/p7_choice.py` — the choice rule (p7_rules.md §6) as a pure function; `closed_loop/p7_tables.py` —
   sweep tables, CIs, paired differences vs pin018, the choice, report-only extra, `camera_fair.yaml`.
 - `closed_loop/nomad_policy.py` — `context_spacing` (default 1 = deployment exactly; the extra uses 3).
+- `closed_loop/run_exam.py` — `--arm-major` (one home load per camera) and `--claims <token>` (every runner takes the
+  next unclaimed run of this launch, so no pair idles; results do not depend on which pair runs a run).

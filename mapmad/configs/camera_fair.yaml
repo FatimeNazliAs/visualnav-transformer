@@ -1,0 +1,14 @@
+# Phase 7 result: the fair camera = where the original NoMaD drives best (p7_rules.md §6, applied
+# mechanically to the sweep on episodes bddbb734…; tables in /outputs/mapmad/p7_camera/sweep/).
+# Camera for all later phases (LIMO's camera only when the model is final). Load with
+# mapmad_sim.camera_setting.CameraSetting.from_config(name, this dict).
+name: pin025
+lens: pinhole
+height_m: 0.25
+pitch_deg: -2.0
+forward_of_base_m: 0.084
+hfov_deg: 66.5
+resolution:
+- 320
+- 240
+double_sphere: null

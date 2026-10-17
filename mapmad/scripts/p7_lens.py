@@ -12,6 +12,7 @@ no-op, the resize to 96 x 96 happens in the policy as for every camera).
 """
 
 import argparse
+import dataclasses
 import glob
 import json
 import math
@@ -22,6 +23,7 @@ import numpy as np
 
 from mapmad_sim import config
 from mapmad_sim.lens import DoubleSphere
+from mapmad_sim.run_layout import RunLayout
 
 FOV_DEG = 170.0  # SACSoN paper (arXiv 2306.01874, Sec. IV-A): "a 170 deg wide-angle RGB camera"
 DARK_SHARE = 0.25  # mean-image pixels darker than this share of the median brightness are outside the lens (0.35+
@@ -29,8 +31,13 @@ DARK_SHARE = 0.25  # mean-image pixels darker than this share of the median brig
 #                    54.0 / 49.3 / 36.7, radius 97.4 / 96.9 / 95.8 / 96.1 px)
 
 
+def p7_dir() -> Path:
+    """<outputs>/<out_dir> of the sweep config (p7_sweep.yaml): every Phase 7 output folder lives below it."""
+    return RunLayout.load(config.CONFIG_DIR / "p7_sweep.yaml").base
+
+
 def out_dir() -> Path:
-    return config.paths()["outputs"] / "p7_camera" / "lens"
+    return p7_dir() / "lens"
 
 
 def mean_image(pattern: str, max_frames: int, seed: int) -> np.ndarray:
@@ -195,7 +202,7 @@ def cmd_sheet(args: argparse.Namespace) -> None:
 
     lens = DoubleSphere.from_config(json.loads((out_dir() / "sacson_lens.json").read_text())["double_sphere"])
     fish = lambda h: CameraSetting(f"fisheye_{h:.2f}", "fisheye", h, 0.0, double_sphere=lens)  # noqa: E731
-    eps = json.loads((config.paths()["outputs"] / "p7_camera" / "episodes" / "episodes.json").read_text())["episodes"]
+    eps = json.loads(RunLayout.load(config.CONFIG_DIR / "p7_sweep.yaml").episodes_file.read_text())["episodes"]
     homes = sorted({e["home"] for e in eps})
     rng = np.random.default_rng(args.seed)
     roots = {"go_stanford": config.paths()["nomad_data"], "sacson": config.paths()["nomad_data"], "recon": config.paths()["recon"]}
@@ -203,7 +210,7 @@ def cmd_sheet(args: argparse.Namespace) -> None:
     k = 0
     for ds in ("go_stanford", "sacson", "recon"):
         for kind, rel in SHEET_REAL[ds]:
-            spec = dataclasses_replace_depth90(RobotSpec.from_config(config.robot()), SHEET_HEIGHT[ds])
+            spec = level_depth90_spec(RobotSpec.from_config(config.robot()), SHEET_HEIGHT[ds])
             for _ in range(len(homes)):  # corridor / room: the next home that has one (homes rarely have corridors)
                 home = homes[k % len(homes)]
                 k += 1
@@ -244,10 +251,8 @@ def cmd_sheet(args: argparse.Namespace) -> None:
     print(out_dir() / "lens_sheet.png", out.shape)
 
 
-def dataclasses_replace_depth90(spec, height_m: float):
+def level_depth90_spec(spec, height_m: float):
     """LIMO with a level 90 deg (pinhole) camera at the render height, for picking views by depth."""
-    import dataclasses
-
     return dataclasses.replace(spec, hfov_deg=90.0, camera_height_m=height_m, pitch_deg=0.0)
 
 

@@ -32,7 +32,7 @@ def limo_factory(gpu: int, seed: int = 0) -> RobotFactory:
     def make(split: str, home: str, hfov_deg: float, depth: bool = False, camera: Optional[Dict[str, Any]] = None) -> Any:
         spec = RobotSpec.from_config(config.robot(), hfov_deg=hfov_deg)
         if camera is not None:
-            spec = CameraSetting.from_config(camera["name"], camera).apply(spec)
+            spec = CameraSetting.from_wire(camera).apply(spec)
         return LimoSim(split, home, spec, depth=depth, gpu=gpu, seed=seed)
 
     return make

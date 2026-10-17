@@ -142,11 +142,10 @@ class ExamArm:
 
 def floor_map_key(camera: Dict[str, Any]) -> str:
     """Phase 7: the episode-file key of a camera's floor map = its agent height in metres, "0.55" or e.g. "1.00"."""
-    from mapmad_sim import config
-    from mapmad_sim.camera_setting import CameraSetting
+    from mapmad_sim import camera_setting, config
 
     limo = float(config.robot()["navmesh"]["agent_height_m"])
-    return f"{CameraSetting.from_config(camera['name'], camera).floor_map_height(limo):.2f}"
+    return camera_setting.floor_map_key(camera_setting.CameraSetting.from_wire(camera).floor_map_height(limo))
 
 
 def arms_of(cfg: Dict[str, Any], names: Optional[Sequence[str]] = None) -> List[ExamArm]:

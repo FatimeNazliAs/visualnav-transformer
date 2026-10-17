@@ -250,7 +250,10 @@ New code: `src/mapmad_sim/lens.py` (double-sphere fisheye + equidistant / OpenCV
 `src/mapmad_sim/camera_setting.py` (a sweep camera: lens x height x pitch, applied to `RobotSpec`), `RobotSpec.fisheye`
 (None = the pinhole, unchanged; else the colour and semantic cameras become that fisheye, black outside its image
 circle), the optional `camera` at `reset` (server, client, protocol), `ExamArm.camera` / `episode_type` /
-`context_spacing`, `run_exam.py --arm-major`; `src/mapmad_sim/floor_height.py` (Method B, floor motion).
+`context_spacing`, `run_exam.py --arm-major` and `--claims` (dynamic hand-out: with `HANDOUT=dynamic`, `run_p5.sh`
+gives every pair the next unclaimed run instead of a fixed shard; the Phase 7 driver uses it); summaries and crash
+records are written atomically (`run_layout.write_text_atomic`); `src/mapmad_sim/floor_height.py` (Method B, floor
+motion; tests `tests/test_floor_height.py`).
 
 ```bash
 # 7.0 audit: the official repo at a pinned commit vs our arms (read-only) -> audit/audit_table.md

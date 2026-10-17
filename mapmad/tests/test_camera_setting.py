@@ -1,12 +1,12 @@
 """Phase 7 camera settings and sweep arms (no simulator): what a setting changes on the robot, arm rules, config."""
 
 import dataclasses
-from pathlib import Path
 
 import pytest
 
 from mapmad_sim import config
-from mapmad_sim.camera_setting import CameraSetting, cameras_of
+from mapmad_sim import camera_setting
+from mapmad_sim.camera_setting import CameraSetting, cameras_of, with_floor_map
 from mapmad_sim.exam_arms import ExamArm, arms_of, floor_map_key
 from mapmad_sim.lens import DoubleSphere
 from mapmad_sim.robot import RobotSpec
@@ -37,6 +37,20 @@ def test_floor_map_rises_only_above_limo_height():
     assert CameraSetting("b", "pinhole", 0.95, -2.0).floor_map_height(0.55) == 1.0
     nav = dict(CameraSetting("b", "pinhole", 0.95, -2.0).apply(limo()).navmesh)
     assert nav["agent_height_m"] == 1.0 and nav["agent_radius_m"] == 0.195
+
+
+def test_floor_map_helpers_and_wire_form():
+    """One floor-map key format ("0.55") for the episode file and the arms; the wire dict (config entry + name)
+    round-trips; with_floor_map changes only the navmesh agent height."""
+    assert camera_setting.floor_map_key(0.55) == "0.55" and camera_setting.floor_map_key(1.0) == "1.00"
+    fish = CameraSetting("fish055", "fisheye", 0.55, 0.0, double_sphere=LENS)
+    again = CameraSetting.from_wire({"name": "fish055", **fish.to_config()})
+    assert again.name == "fish055" and again.to_config() == fish.to_config()  # (to_config rounds the lens numbers)
+    raised = with_floor_map(limo(), 1.0)
+    assert dict(raised.navmesh)["agent_height_m"] == 1.0
+    assert dataclasses.replace(raised, navmesh=limo().navmesh) == limo()
+    tall = CameraSetting("pin095", "pinhole", 0.95, -2.0)
+    assert floor_map_key({"name": "pin095", **tall.to_config()}) == "1.00"
 
 
 def test_lens_and_parameters_must_agree():

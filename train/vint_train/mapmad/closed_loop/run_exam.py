@@ -6,8 +6,11 @@
 Work: this shard's episodes (every num_shards-th of the set, so one episode's arms and seeds stay together and its
 home stays loaded) x seed indices (`run.seeds`; the deterministic planner only index 0) x arms. Noise seed =
 exam_runner.noise_seed(salt, episode, index), the same for every arm (block item 7).
+With --claims TOKEN (Phase 7 dynamic hand-out) every runner walks the whole run list and takes the next run nobody has
+claimed in this launch (claims/<TOKEN>/<arm>/<run>, created exclusively), so no pair idles while another still has a
+queue; results do not depend on which pair runs a run (same noise seed, fresh reset).
 Resumable at the episode level: a (arm, episode, seed) with a summary is skipped; a log is complete only once
-renamed from .partial. Infrastructure errors (simulator/bridge exceptions, block item 13b) are retried up to 2
+renamed from .partial; summaries and crash records are written to a temporary file and renamed into place. Infrastructure errors (simulator/bridge exceptions, block item 13b) are retried up to 2
 times with the same seed on a fresh connection; then summaries/<arm>/<episode>__s<k>.crash.json records the episode (the analysis
 drops it from all arms). Any other exception stops the shard (a possible bug: item 13).
 Checkpoint sha256 checked when each policy is built (exam_runner start). Writes under <outputs>/<out_dir>/<subdir>:
@@ -34,7 +37,7 @@ from mapmad_sim import config as mapmad_config  # noqa: E402
 from mapmad_sim.episodes import load_episodes  # noqa: E402
 from mapmad_sim.run_info import save_run_info  # noqa: E402
 from mapmad_sim.exam_arms import arms_of  # noqa: E402
-from mapmad_sim.run_layout import RunLayout, read_config, run_id  # noqa: E402
+from mapmad_sim.run_layout import RunLayout, read_config, run_id, try_claim, write_text_atomic  # noqa: E402
 from vint_train.mapmad.closed_loop.exam_runner import ExamArm, ExamSettings, Trace, noise_seed, run_episode  # noqa: E402
 from vint_train.mapmad.closed_loop.mapmad_policy import MapMaDPolicy, check_sha256  # noqa: E402
 from vint_train.mapmad.closed_loop.nomad_policy import NomadPolicy  # noqa: E402
@@ -151,6 +154,7 @@ def main() -> None:
                    help="also log all sampled paths per step (policy.paths_all_m; report only)")
     p.add_argument("--shutdown-server", action="store_true")
     p.add_argument("--arm-major", action="store_true", help="run arm by arm (Phase 7: one home load per camera)")
+    p.add_argument("--claims", default="", help="launch token: take runs from a shared queue instead of a fixed shard")
     args = p.parse_args()
 
     layout = RunLayout.load(args.config, subdir=args.subdir)
@@ -175,7 +179,8 @@ def main() -> None:
                                 "weights_sha256": policies.hashes, "map_settings": settings, "robot": mapmad_config.robot(),
                                 "torch": torch.__version__, "gpu": torch.cuda.get_device_name(0)},
                   0, name=f"run_info.{tag}.json")
-    todo = list(work(episodes, arms, seeds, args.shard, args.num_shards, args.arm_major))
+    shard, num_shards = (0, 1) if args.claims else (args.shard, args.num_shards)  # --shard then only names the files
+    todo = list(work(episodes, arms, seeds, shard, num_shards, args.arm_major))
     progress = layout.progress(tag)
     sim = SimClient(args.host, args.port)
     t_start, done = time.time(), 0
@@ -187,6 +192,8 @@ def main() -> None:
             crash = layout.crash(arm.name, rid)
             if summary.exists() or crash.exists():
                 continue
+            if args.claims and not try_claim(layout.claim(args.claims, arm.name, rid)):
+                continue  # another pair runs it
             seed = noise_seed(cfg["run"]["seed_salt"], e["episode_id"], k)
             errors = []
             for attempt in range(RETRIES + 1):
@@ -208,14 +215,12 @@ def main() -> None:
                         pass
                     sim = SimClient(args.host, args.port)
             else:
-                summary.parent.mkdir(parents=True, exist_ok=True)
-                crash.write_text(json.dumps({"errors": errors}, indent=1))
+                write_text_atomic(crash, json.dumps({"errors": errors}, indent=1))
                 continue
             wall = time.perf_counter() - t0
             if trace is not None and trace.maps:
                 trace.save(layout.trace(arm.name, rid))
-            summary.parent.mkdir(parents=True, exist_ok=True)
-            summary.write_text(json.dumps(result, indent=1, sort_keys=True) + "\n")
+            write_text_atomic(summary, json.dumps(result, indent=1, sort_keys=True) + "\n")
             timing = layout.timing(arm.name, args.shard)
             timing.parent.mkdir(parents=True, exist_ok=True)
             arr = np.array(ms) if ms else np.zeros(1)

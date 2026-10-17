@@ -18,6 +18,19 @@ from mapmad_sim.lens import DoubleSphere
 
 LENSES = ("pinhole", "fisheye")
 CAMERA_CLEARANCE_M = 0.05  # floor-map height = camera height + this, when the camera is above the LIMO height
+DEFAULT_HFOV_DEG = 66.5  # LIMO's colour camera (robot_limo.yaml)
+
+
+def floor_map_key(agent_height_m: float) -> str:
+    """Episode-file key of the floor map built for this agent height: "0.55" (LIMO) or e.g. "1.00"."""
+    return f"{agent_height_m:.2f}"
+
+
+def with_floor_map(spec: Any, agent_height_m: float) -> Any:
+    """The RobotSpec with its floor map (navmesh) built for this agent height; everything else unchanged."""
+    nav = dict(spec.navmesh)
+    nav["agent_height_m"] = agent_height_m
+    return dataclasses.replace(spec, navmesh=tuple(sorted(nav.items())))
 
 
 @dataclasses.dataclass(frozen=True)
@@ -28,7 +41,7 @@ class CameraSetting:
     lens: str
     height_m: float
     pitch_deg: float
-    hfov_deg: float = 66.5  # pinhole only (and the depth camera)
+    hfov_deg: float = DEFAULT_HFOV_DEG  # pinhole only (and the depth camera)
     double_sphere: Optional[DoubleSphere] = None  # fisheye only
 
     def __post_init__(self) -> None:
@@ -41,8 +54,13 @@ class CameraSetting:
     def from_config(cls, name: str, cfg: Dict[str, Any]) -> "CameraSetting":
         ds = cfg.get("double_sphere")
         return cls(name=name, lens=cfg["lens"], height_m=float(cfg["height_m"]), pitch_deg=float(cfg["pitch_deg"]),
-                   hfov_deg=float(cfg.get("hfov_deg", 66.5)),
+                   hfov_deg=float(cfg.get("hfov_deg", DEFAULT_HFOV_DEG)),
                    double_sphere=DoubleSphere.from_config(ds) if ds else None)
+
+    @classmethod
+    def from_wire(cls, d: Dict[str, Any]) -> "CameraSetting":
+        """From the dict that travels over the bridge and into the logs: the config entry plus its "name"."""
+        return cls.from_config(d["name"], d)
 
     def to_config(self) -> Dict[str, Any]:
         """Plain JSON-able dict (round trip with from_config, apart from the name)."""
@@ -58,11 +76,9 @@ class CameraSetting:
 
     def apply(self, spec: Any) -> Any:
         """The RobotSpec with this camera (height, pitch, lens) and its floor map."""
-        nav = dict(spec.navmesh)
-        nav["agent_height_m"] = self.floor_map_height(float(nav["agent_height_m"]))
+        spec = with_floor_map(spec, self.floor_map_height(float(dict(spec.navmesh)["agent_height_m"])))
         return dataclasses.replace(spec, camera_height_m=self.height_m, pitch_deg=self.pitch_deg,
-                                   hfov_deg=self.hfov_deg, fisheye=self.double_sphere,
-                                   navmesh=tuple(sorted(nav.items())))
+                                   hfov_deg=self.hfov_deg, fisheye=self.double_sphere)
 
 
 def cameras_of(cfg: Dict[str, Any]) -> Dict[str, CameraSetting]:

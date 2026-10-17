@@ -31,6 +31,7 @@ import numpy as np
 from mapmad_sim import config
 from mapmad_sim.floor_height import pool, relative_pose, score_grid
 from mapmad_sim.lens import DoubleSphere, Equidistant, OpenCVPinhole
+from mapmad_sim.run_layout import RunLayout
 
 HEIGHTS = np.round(np.arange(0.08, 1.501, 0.01), 3)
 PITCHES = np.arange(-12.0, 12.01, 1.0)
@@ -38,8 +39,18 @@ RECON_CAMERA = dict(fx=272.547, fy=266.358, cx=320.0, cy=220.0, width=640, heigh
                     k1=-0.038483, k2=-0.010456, p1=0.003930, p2=-0.001007)  # train/vint_train/data/data_config.yaml
 
 
+def p7_dir() -> Path:
+    """<outputs>/<out_dir> of the sweep config (p7_sweep.yaml): every Phase 7 output folder lives below it."""
+    return RunLayout.load(config.CONFIG_DIR / "p7_sweep.yaml").base
+
+
 def out_dir() -> Path:
-    return config.paths()["outputs"] / "p7_camera" / "height"
+    return p7_dir() / "height"
+
+
+def sacson_lens() -> DoubleSphere:
+    """The double sphere fitted to SACSoN's frames (7.1, p7_lens.py fit)."""
+    return DoubleSphere.from_config(json.loads((p7_dir() / "lens" / "sacson_lens.json").read_text())["double_sphere"])
 
 
 def dataset_spec(name: str, go_stanford_f: float = None) -> Dict[str, Any]:
@@ -48,9 +59,7 @@ def dataset_spec(name: str, go_stanford_f: float = None) -> Dict[str, Any]:
     if name == "recon":
         return {"glob": str(p["recon"] / "*"), "lens": OpenCVPinhole(**RECON_CAMERA), "forward_m": 0.45}
     if name == "sacson":
-        lens = DoubleSphere.from_config(json.loads((config.paths()["outputs"] / "p7_camera" / "lens" /
-                                                    "sacson_lens.json").read_text())["double_sphere"])
-        return {"glob": str(p["nomad_data"] / "sacson" / "*"), "lens": lens, "forward_m": 0.0}
+        return {"glob": str(p["nomad_data"] / "sacson" / "*"), "lens": sacson_lens(), "forward_m": 0.0}
     if name == "go_stanford":
         f = go_stanford_f or 80.0 / (math.pi / 2)  # 180 deg across the 160 px width
         return {"glob": str(p["nomad_data"] / "raw" / "go_stanford" / "go_stanford" / "no*vc_*"),
@@ -150,7 +159,8 @@ def cmd_synthetic(args: argparse.Namespace) -> None:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tests"))
     from p7_synthetic_height import synthetic_pairs
 
-    lens = DoubleSphere.from_config(json.loads((out_dir().parent / "lens" / "sacson_lens.json").read_text())["double_sphere"])
+    lens = sacson_lens()
+    forward_m = float(config.robot()["camera"]["forward_of_base_m"])  # the simulated LIMO's camera offset
     rows = []
     for name, fish, model in [("pinhole90", None, OpenCVPinhole.from_hfov(90.0, 320, 240)), ("fisheye", lens, lens)]:
         for h in args.heights:
@@ -158,7 +168,7 @@ def cmd_synthetic(args: argparse.Namespace) -> None:
             import cv2
 
             surf = np.stack([score_grid(cv2.GaussianBlur(a, (0, 0), 1.0), cv2.GaussianBlur(b, (0, 0), 1.0), model, rel,
-                                        HEIGHTS, PITCHES, forward_m=0.084) for a, b, rel in pairs])
+                                        HEIGHTS, PITCHES, forward_m=forward_m) for a, b, rel in pairs])
             rows.append({"camera": name, "true_height_m": h, **summarise(surf, args.boot, args.seed)})
             print(json.dumps(rows[-1], default=float))
     (out_dir() / "method_b_synthetic.json").write_text(json.dumps(rows, indent=1, default=float) + "\n")

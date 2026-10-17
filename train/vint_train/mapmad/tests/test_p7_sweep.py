@@ -4,6 +4,7 @@ import numpy as np
 import torch
 
 from mapmad_sim.exam_arms import ExamArm
+from mapmad_sim.run_layout import try_claim, write_text_atomic
 from vint_train.mapmad.closed_loop.nomad_policy import NomadPolicy
 from vint_train.mapmad.closed_loop.policy import Observation
 from vint_train.mapmad.closed_loop.run_exam import work
@@ -18,6 +19,27 @@ def test_work_filters_episode_types_and_keeps_every_run():
     runs = list(work(EPS, [B, A], [0, 1, 2], 0, 1))
     assert len(runs) == 3 * 3 + 2 * 3
     assert all((arm is B) == (e["type"] == "in_view") for e, _, arm in runs)
+
+
+def test_claims_hand_each_run_to_exactly_one_runner(tmp_path):
+    """Dynamic hand-out: runners walking the same list in turn take disjoint runs that together cover the list; a
+    new launch token starts with no claims."""
+    todo = [(e["episode_id"], k, arm.name) for e, k, arm in work(EPS, [B, A], [0, 1, 2], 0, 1, arm_major=True)]
+    taken = {0: [], 1: [], 2: []}
+    for i, run in enumerate(todo * 3):  # every runner tries every run
+        r = i % 3
+        if try_claim(tmp_path / "t1" / run[2] / f"{run[0]}__s{run[1]}"):
+            taken[r].append(run)
+    got = [run for runs in taken.values() for run in runs]
+    assert sorted(got) == sorted(todo) and len(got) == len(set(got))
+    assert try_claim(tmp_path / "t2" / "B_c" / "iv0__s0")
+
+
+def test_atomic_write_leaves_only_the_whole_file(tmp_path):
+    path = tmp_path / "summaries" / "B_c" / "iv0__s0.json"
+    write_text_atomic(path, '{"a": 1}\n')
+    write_text_atomic(path, '{"a": 2}\n')
+    assert path.read_text() == '{"a": 2}\n' and [q.name for q in path.parent.iterdir()] == ["iv0__s0.json"]
 
 
 def test_arm_major_order_is_the_same_runs_arm_by_arm():

@@ -18,6 +18,7 @@ import numpy as np
 import yaml
 
 from mapmad_bridge import steplog
+from mapmad_sim import config as mapmad_config
 from mapmad_sim.camera_setting import cameras_of
 from mapmad_sim.episodes import load_episodes
 from mapmad_sim.exam_arms import arms_of
@@ -152,7 +153,7 @@ def main() -> None:
         (out / "choice.md").write_text("# Camera choice (p7_rules.md §6, applied mechanically)\n\n" + "\n".join(steps) +
                                        f"\n\n**Winner: {win}**\n")
         if args.write_camera:
-            write_camera(cams[win], win, fp, args.camera_out)
+            write_camera(cams[win], win, fp, args.camera_out, layout.root.parent)
         extra = extra_report(layout, win, home_of)
         if extra:
             (out / "extra.md").write_text(extra)
@@ -176,14 +177,17 @@ def extra_report(layout: RunLayout, win: str, home_of: Dict[str, str]) -> str:
             f"home CI [{d['home_ci'][0]:+.3f}, {d['home_ci'][1]:+.3f}] {flag}\n- never changes the choice (p7_rules.md §8)\n")
 
 
-def write_camera(cam, name: str, fp: str, path: Path) -> None:
+def write_camera(cam, name: str, fp: str, path: Path, tables_dir: Path) -> None:
     """mapmad/configs/camera_fair.yaml: the camera for all later phases."""
+    robot = mapmad_config.robot()
+    pinhole_px = [int(robot["sim"]["render_width"]), int(robot["sim"]["render_height"])]
     doc = {"name": name, "lens": cam.lens, "height_m": cam.height_m, "pitch_deg": cam.pitch_deg,
-           "forward_of_base_m": 0.084, "hfov_deg": cam.hfov_deg if cam.lens == "pinhole" else None,
-           "resolution": ([cam.double_sphere.width, cam.double_sphere.height] if cam.double_sphere else [320, 240]),
+           "forward_of_base_m": float(robot["camera"]["forward_of_base_m"]),
+           "hfov_deg": cam.hfov_deg if cam.lens == "pinhole" else None,
+           "resolution": ([cam.double_sphere.width, cam.double_sphere.height] if cam.double_sphere else pinhole_px),
            "double_sphere": cam.double_sphere.to_config() if cam.double_sphere else None}
     head = ("# Phase 7 result: the fair camera = where the original NoMaD drives best (p7_rules.md §6, applied\n"
-            f"# mechanically to the sweep on episodes {fp[:8]}…; tables in /outputs/mapmad/p7_camera/sweep/).\n"
+            f"# mechanically to the sweep on episodes {fp[:8]}…; tables in {tables_dir}/).\n"
             "# Camera for all later phases (LIMO's camera only when the model is final). Load with\n"
             "# mapmad_sim.camera_setting.CameraSetting.from_config(name, this dict).\n")
     path.write_text(head + yaml.safe_dump(doc, sort_keys=False))
