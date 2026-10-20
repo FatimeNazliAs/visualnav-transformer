@@ -9,6 +9,10 @@ sorted by drive count (labelled homes first), then by name; a worker takes the n
 (<dataset>/_claims/<token>/<home>, run_layout.try_claim) and is not finished (<dataset>/_homes/<home>.json). Every drive
 is seeded by its id (datagen_v2.drive_seed), so results do not depend on the number of workers, GPUs or the order.
 A relaunch uses a new token: homes claimed but unfinished by a stopped launch are redone from their seeds.
+GPU withdrawal: when the driver finds the worker's GPU no longer free (another user's job), it writes
+<stop-dir>/STOP_gpu<k>_<token> (--stop-dir = the driver's run folder); before its next drive the worker gives its home back (datagen_v2.withdraw_home:
+incomplete drives -> _partial/<home>__<token>, claim removed) and exits; workers on free GPUs pick the home up again
+(they repeat the queue pass until a pass claims nothing).
 Writes drives to <mapmad_data>/<dataset folder>/, progress to <outputs>/p8_search_data/<dataset>/progress_<worker>.jsonl,
 config + seed + git commit to <dataset folder>/_runs/.
 """
@@ -22,12 +26,12 @@ import argparse  # noqa: E402
 import json  # noqa: E402
 import time  # noqa: E402
 from pathlib import Path  # noqa: E402
-from typing import Any, Dict, List  # noqa: E402
+from typing import Any, Callable, Dict, Iterator, List  # noqa: E402
 
 import numpy as np  # noqa: E402
 
 from mapmad_sim import config, home_splits, objectnav  # noqa: E402
-from mapmad_sim.datagen_v2 import generate_home  # noqa: E402
+from mapmad_sim.datagen_v2 import HomeWithdrawn, generate_home, withdraw_home  # noqa: E402
 from mapmad_sim.run_info import save_run_info  # noqa: E402
 from mapmad_sim.run_layout import read_config, try_claim, write_text_atomic  # noqa: E402
 
@@ -55,6 +59,31 @@ def queue(homes: List[str], labelled: set, per_home: Dict[str, Dict[str, int]]) 
     return sorted(homes, key=lambda h: (-n[h], h))
 
 
+def gpu_stop_file(stop_dir: Path, gpu: int, token: str) -> Path:
+    """The driver's withdrawal flag for one GPU of one launch (run_p8_gen.sh writes it)."""
+    return stop_dir / f"STOP_gpu{gpu}_{token}"
+
+
+def queue_passes(order: List[str], dataset_dir: Path, claims: Path,
+                 stop: Callable[[], bool] = lambda: False) -> Iterator[str]:
+    """Homes this worker claims, in queue order; passes repeat until one claims nothing, so a home given back by a
+    withdrawn worker (claim removed) is picked up again. `stop` (the GPU's withdrawal flag) is checked before every
+    claim: a withdrawn worker never claims another home."""
+    while True:
+        claimed = False
+        for home in order:
+            if stop():
+                return
+            if (dataset_dir / "_homes" / f"{home}.json").exists():
+                continue
+            if not try_claim(claims / home):
+                continue
+            claimed = True
+            yield home
+        if not claimed:
+            return
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--config", type=Path, default=CONFIG)
@@ -65,6 +94,8 @@ def main() -> None:
     p.add_argument("--homes", nargs="*", help="debug: only these homes (5-digit prefixes)")
     p.add_argument("--out-name", help="debug / checks: write to <mapmad_data>/<out-name> instead of the dataset folder")
     p.add_argument("--only", nargs="*", help="debug / byte-identity: only these drive ids")
+    p.add_argument("--count-unfinished", action="store_true", help="print the number of unfinished homes and exit")
+    p.add_argument("--stop-dir", type=Path, help="driver's run folder: STOP_gpu<k>_<token> there withdraws this worker")
     p.add_argument("--counts", help='override drives per labelled home, e.g. \'{"search": 40, "explore": 4}\' (pro-rata cut)')
     args = p.parse_args()
 
@@ -91,6 +122,9 @@ def main() -> None:
 
     name = args.out_name or cfg["datasets"][args.dataset]
     dataset_dir = paths["mapmad_data"] / name
+    if args.count_unfinished:  # the driver's end check: homes of this queue without _homes/<home>.json
+        print(sum(not (dataset_dir / "_homes" / f"{h}.json").exists() for h in order))
+        return
     progress_dir = out_root / "checks" / args.out_name if args.out_name else out_root / args.dataset
     progress_dir.mkdir(parents=True, exist_ok=True)
     save_run_info(dataset_dir / "_runs", {**vars(args), "config_file": str(args.config), "config": cfg,
@@ -101,14 +135,22 @@ def main() -> None:
     keep_failed = bool(cfg["record"]["keep_failed"][args.dataset])
     t0 = time.time()
     n = 0
-    for home in order:
-        if (dataset_dir / "_homes" / f"{home}.json").exists():
-            continue
-        if not try_claim(dataset_dir / "_claims" / args.token / home):
-            continue
+    claims = dataset_dir / "_claims" / args.token
+    stop_file = gpu_stop_file(args.stop_dir, args.gpu, args.token) if args.stop_dir else Path("/nonexistent/STOP")
+    for home in queue_passes(order, dataset_dir, claims, stop_file.exists):
         lab = home in set(labelled)
-        s = generate_home(cfg, dataset_dir, home, lab, args.gpu, prefix,
-                          per_home["labelled" if lab else "unlabelled"], keep_failed, args.only)
+        try:
+            s = generate_home(cfg, dataset_dir, home, lab, args.gpu, prefix,
+                              per_home["labelled" if lab else "unlabelled"], keep_failed, args.only,
+                              should_stop=stop_file.exists)
+        except HomeWithdrawn:
+            dest = withdraw_home(dataset_dir, home, claims / home, args.token)
+            line = {"time": time.strftime("%Y-%m-%d %H:%M:%S"), "worker": args.worker, "gpu": args.gpu, "home": home,
+                    "withdrawn": True, "partial": str(dest) if dest else None}
+            with open(log, "a") as f:
+                f.write(json.dumps(line) + "\n")
+            print(json.dumps(line), flush=True)
+            return
         n += 1
         outcomes: Dict[str, int] = {}
         for d in s["summaries"]:

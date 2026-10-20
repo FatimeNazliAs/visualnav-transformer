@@ -819,10 +819,31 @@ class HomeGeneratorV2:
         return meta
 
 
+class HomeWithdrawn(Exception):
+    """The worker's GPU stopped being free: the home was given back (withdraw_home) before its next drive."""
+
+
+def withdraw_home(dataset_dir: Path, home: str, claim: Optional[Path], tag: str) -> Optional[Path]:
+    """Give an unfinished home back: its incomplete drive folders _tmp/<home> -> _partial/<home>__<tag> (kept, not
+    deleted) and its claim file removed, so a worker on a free GPU redoes it from the same seeds. Returns the
+    _partial folder (None if nothing was written yet)."""
+    tmp = dataset_dir / "_tmp" / home
+    dest = None
+    if tmp.exists():
+        dest = dataset_dir / "_partial" / f"{home}__{tag}"
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        os.replace(tmp, dest)
+    if claim is not None and claim.exists():
+        claim.unlink()
+    return dest
+
+
 def generate_home(cfg: Dict[str, Any], dataset_dir: Path, home: str, labelled: bool, gpu: int, prefix: str,
-                  counts: Dict[str, int], keep_failed: bool, only: Optional[Sequence[str]] = None) -> Dict[str, Any]:
+                  counts: Dict[str, int], keep_failed: bool, only: Optional[Sequence[str]] = None,
+                  should_stop: Optional[Callable[[], bool]] = None) -> Dict[str, Any]:
     """All drives of one home into dataset_dir (resumable as Phase 2: _tmp/<home> -> moved when the home is done;
-    _homes/<home>.json marks it finished). `only`: debug, just these drive ids."""
+    _homes/<home>.json marks it finished). `only`: debug, just these drive ids. `should_stop` (checked before every
+    drive): True -> HomeWithdrawn (the caller gives the home back with withdraw_home)."""
     done = dataset_dir / "_homes" / f"{home}.json"
     if done.exists():
         return json.loads(done.read_text())
@@ -835,7 +856,11 @@ def generate_home(cfg: Dict[str, Any], dataset_dir: Path, home: str, labelled: b
     gen = HomeGeneratorV2(cfg, home, labelled, gpu)
     try:
         ids = [(d, k) for d, k in home_drive_ids(prefix, home, counts) if only is None or d in only]
-        summaries = [gen.drive(d, k, tmp, failed_tmp) for d, k in ids]
+        summaries = []
+        for d, k in ids:
+            if should_stop is not None and should_stop():
+                raise HomeWithdrawn(home)
+            summaries.append(gen.drive(d, k, tmp, failed_tmp))
     finally:
         gen.close()
     for d in sorted(p for p in tmp.iterdir() if p.name != "_failed"):

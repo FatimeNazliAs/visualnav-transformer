@@ -4,8 +4,10 @@
 
 Picks 3 search + 2 exploration drives of the finished full dataset (numpy seed 8, different homes), regenerates
 exactly those ids (datagen_v2.generate_home with `only`) into <mapmad_data>/p8_regen_check/ (check data, rebuilt every
-time), and compares every file of each drive folder: byte-identical, except mapmad_meta.json, where only the timing
-fields (seconds, cpu_seconds) may differ. Result: <outputs>/p8_search_data/checks/regen_check.json.
+time), and compares every file of each drive folder: byte-identical, except the teacher's wall-clock timing, which
+is a measurement, not drive content: mapmad_frames.npz = every array equal except teacher_ms (ms per teacher step);
+mapmad_meta.json = equal except seconds, cpu_seconds, teacher_ms_median, teacher_ms_p95 and bytes (the npz size
+follows teacher_ms). Result: <outputs>/p8_search_data/checks/regen_check.json.
 """
 
 import argparse
@@ -20,7 +22,8 @@ from mapmad_sim import config
 from mapmad_sim.datagen_v2 import generate_home
 from mapmad_sim.run_layout import read_config, write_text_atomic
 
-TIMING = ("seconds", "cpu_seconds")
+TIMING = ("seconds", "cpu_seconds", "teacher_ms_median", "teacher_ms_p95", "bytes")  # meta fields from wall-clock time
+TIMING_ARRAYS = ("teacher_ms",)  # mapmad_frames.npz
 
 
 def pick(data: Path, rng: np.random.Generator) -> List[Dict[str, Any]]:
@@ -47,6 +50,12 @@ def same_drive(a: Path, b: Path) -> Dict[str, Any]:
             ja, jb = (json.loads(f.read_text()) for f in (fa, fb))
             if {k: v for k, v in ja.items() if k not in TIMING} != {k: v for k, v in jb.items() if k not in TIMING}:
                 differ.append(name)
+        elif name == "mapmad_frames.npz":
+            with np.load(fa) as za, np.load(fb) as zb:
+                if set(za.files) != set(zb.files) or any(
+                        not np.array_equal(za[k], zb[k], equal_nan=za[k].dtype.kind == "f")
+                        for k in za.files if k not in TIMING_ARRAYS):
+                    differ.append(name)
         elif fa.read_bytes() != fb.read_bytes():
             differ.append(name)
     return {"files": len(names), "differ": differ, "pass": not differ}

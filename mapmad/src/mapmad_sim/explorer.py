@@ -1,4 +1,5 @@
-"""The explorer teacher of MapMaD v2 (plan v2 §8.2, Phase 8 block item 1; rules frozen in configs/p8_rules.md).
+"""The explorer teacher of MapMaD v2 (plan v2 §8.2, Phase 8 block item 1; rules frozen in configs/p8_rules.md, changed
+by p8_rules_v2.md / p8_rules_v3.md; the full run used option A = p8_datagen_v3a.yaml: blacklist window 80, no ring).
 
 ONE pure function, `teacher_step(own_map, pose, state, seen, spec)` -> (Decision, new state): the robot's own online
 map (whole storey, 10 cm), its pose, the teacher's memory (committed frontier, its recent path lengths, blacklist,
@@ -89,7 +90,6 @@ class TeacherSpec:
     preferred_clearance_m: float = 0.445  # path shape only: obstacle-cell centre distance kept where there is room
     clearance_weight: float = 4.0
     bbox_margin_m: float = 1.0  # planning window = known cells + robot + goals, plus this
-    frontier_uninflated_fallback: bool = False  # proposal P4 (S-pilot): no frontier reachable -> once without inflation
     frontier_ignore_trajectory_m: float = 0.0  # p8_rules_v2.md 1b: frontier cells this close to the past path ignored
 
     @classmethod
@@ -115,7 +115,6 @@ class TeacherState:
     blacklist: Tuple[Tuple[float, float, float], ...] = ()  # dropped goals: (x, y, radius)
     known_instances: Tuple[int, ...] = ()  # instances seen when the approach goal was last chosen
     approach: Optional[Tuple[int, XY]] = None  # (instance id, view point)
-    uninflated: bool = False  # proposal P4: the committed goal was chosen by the uninflated fallback
     ring_fallback: bool = False  # rules v3: the committed goal was chosen on the plain frontier (no ring goal left)
 
 
@@ -311,13 +310,6 @@ def _frontier_free(pl: _Planner) -> np.ndarray:
     return (pl.explored & ~pl.blocked) | pl.near_robot | pl.blind  # explored free cells (+ the robot's blind zone)
 
 
-def _uninflated(pl: _Planner) -> None:
-    """Proposal P4: plan the frontier search without inflation (known obstacle cells stay blocked)."""
-    pl.blocked = pl.obstacle.copy()
-    pl.blocked[pl.near_robot] = False
-    pl.blind = pl.blind | (pl._disk_mask(pl.spec.blind_m) & ~pl.explored & ~pl.blocked)
-
-
 def _frontier_field(pl: _Planner) -> Tuple[np.ndarray, np.ndarray]:
     free = _frontier_free(pl)
     if not pl.inside(pl.robot):
@@ -358,17 +350,9 @@ def _explore(m: OwnMap, pose: Pose, state: TeacherState, spec: TeacherSpec, mode
 
 def _explore_inflation(m: OwnMap, pose: Pose, state: TeacherState, spec: TeacherSpec,
                        mode: str) -> Tuple[Decision, TeacherState]:
-    """Rule 1: nearest frontier, commitment, tie, blacklist (P4: if nothing is reachable, once more uninflated)."""
+    """Rule 1 (nearest frontier, commitment, tie, blacklist) on this step's planning grid."""
     extra = [state.committed] if state.committed else []
-    if not (spec.frontier_uninflated_fallback and state.uninflated and state.committed):
-        dec, st = _explore_on(_Planner(m, pose, extra, spec), m, pose, state, spec, mode)
-        if not spec.frontier_uninflated_fallback or dec.mode not in (NO_FRONTIER, BLACKLIST_EXHAUSTED):
-            return dec, replace(st, uninflated=False)
-    pl = _Planner(m, pose, extra, spec)  # P4: nothing reachable with inflation (or the commitment came from here)
-    _uninflated(pl)
-    dec2, st2 = _explore_on(pl, m, pose, state, spec, mode)
-    dec2.info["uninflated"] = True
-    return dec2, replace(st2, uninflated=st2.committed is not None)
+    return _explore_on(_Planner(m, pose, extra, spec), m, pose, state, spec, mode)
 
 
 def _explore_on(pl: "_Planner", m: OwnMap, pose: Pose, state: TeacherState, spec: TeacherSpec,

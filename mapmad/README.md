@@ -298,3 +298,45 @@ docker exec -w /app/visualnav-transformer/train -e PYTHONPATH=/app/visualnav-tra
 docker exec -w /app/visualnav-transformer naz_mapmad_habitat python mapmad/scripts/p7_videos.py \
     --config mapmad/configs/p7_sweep.yaml --subdir sweep/runs --pick 7710
 ```
+
+## Phase 8: search map v2, explorer teacher, drives
+
+Map v2 (`train/vint_train/mapmad/map_v2.py`: frontier layer, sparse target fusion, near/far windows), the goal-blind
+explorer teacher (`mapmad_sim/explorer.py`, one pure function `teacher_step`), the drive generator v2
+(`mapmad_sim/datagen_v2.py`, `target_layer.py`) and the OVON val converter (`mapmad_sim/ovon.py`). Rules: frozen in
+`configs/p8_rules.md` (+ `p8_rules_v2.md`, `p8_rules_v3.md`, each with its sha256 in /outputs/mapmad/p8_search_data/).
+The full dataset `habitat_mapmad_v2` was made with option A = `configs/p8_datagen_v3a.yaml`.
+
+```bash
+# 8.0 checks: OVON splits (download + convert + loader), camera = camera_fair.yaml, map parity (2 dev drives)
+docker exec -w /app/visualnav-transformer naz_mapmad_habitat python mapmad/scripts/p8_ovon_check.py
+docker exec -w /app/visualnav-transformer naz_mapmad_habitat python mapmad/scripts/p8_camera_check.py --gpu 1
+docker exec -w /app/visualnav-transformer naz_mapmad_habitat python mapmad/scripts/p8_map_parity.py --gpu 1 \
+    --config mapmad/configs/p8_datagen_v3a.yaml --out-name map_parity_v3a.json
+
+# GPU free-watcher (20-min rule; the drivers read its gpu_free.json), once per session
+screen -dmS mapmad_p8_gpuwatch bash mapmad/scripts/gpu_free_watch.sh /mnt/shared_disk/nazli/nomad_outputs/mapmad/p8_search_data/driver
+
+# pilot (20 homes x 10 drives, ~5 min; CONFIG/TAG for another rule set) and its report (numbers, sheet, 2 videos)
+CONFIG=mapmad/configs/p8_datagen_v3a.yaml TAG=rules3a W0=0 bash mapmad/scripts/p8_launch.sh pilot
+docker exec -w /app/visualnav-transformer naz_mapmad_habitat python mapmad/scripts/p8_pilot_report.py --gpu 1 \
+    --config mapmad/configs/p8_datagen_v3a.yaml --out /outputs/mapmad/p8_search_data/pilot_rules3a
+
+# full run (committed code only; 12 workers on GPU 1; W0=0 keeps GPU 0 out; a GPU that stops being free is withdrawn;
+# relaunch = resume, unfinished homes are redone from their seeds)
+W0=0 CONFIG=mapmad/configs/p8_datagen_v3a.yaml bash mapmad/scripts/p8_launch.sh full
+
+# after it: splits (+ tiny), collision list, stats, determinism (5 drives regenerated), format check (G8 row 4)
+C=mapmad/configs/p8_datagen_v3a.yaml
+docker exec -w /app/visualnav-transformer naz_mapmad_habitat bash -c "python mapmad/scripts/make_p2_splits.py traj-names --config $C \
+    && python mapmad/scripts/make_p2_splits.py traj-names --config $C --tiny 4 && python mapmad/scripts/make_p2_splits.py collisions --config $C"
+docker exec -w /app/visualnav-transformer naz_mapmad_habitat python mapmad/scripts/p8_full_stats.py --config $C
+docker exec -w /app/visualnav-transformer naz_mapmad_habitat python mapmad/scripts/p8_regen_check.py --gpu 1 --config $C
+docker exec -w /app/visualnav-transformer/train -e PYTHONPATH=/app/visualnav-transformer/mapmad/src naz_mapmad python -m \
+    vint_train.mapmad.format_check --config config/mapmad_v2_format_check.yaml --split-dir /mapmad_data/splits/habitat_mapmad_v2
+docker exec naz_mapmad bash -c 'R=/outputs/mapmad/p8_search_data/format_check/run && mkdir -p $R && cd $R && ln -sfn \
+    /app/visualnav-transformer/train/config config && python /app/visualnav-transformer/train/train.py -c config/mapmad_v2_format_check.yaml'
+```
+- The teacher's frontier for a frame = `map_v2.layers_at` with the drive's `frontier_ignore_trajectory_m` (0 for
+  option A = the plain frontier); with the ring (option C) the plain frontier on frames where `ring_fallback` is set.
+- `teacher_ms` (wall-clock ms per teacher step) is the only saved value that differs between two runs of one drive id.
