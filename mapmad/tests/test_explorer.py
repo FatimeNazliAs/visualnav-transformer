@@ -52,6 +52,24 @@ def test_exploration_drive_label():
     assert d.mode == "explore"
 
 
+def test_trajectory_ring_hides_frontier_near_the_path_with_fallback():
+    # rules v3: the corridor's end frontier (row 39, X 3.95) lies within 0.7 m of a robot at X 3.4 -> hidden by the
+    # ring; no other frontier -> the plain frontier is used (fallback) and its commitment keeps the plain frontier
+    from vint_train.mapmad.map_v2 import visited_mask
+    obstacle, explored = corridor(40)
+    spec = TeacherSpec(frontier_ignore_trajectory_m=0.7)
+    ring = visited_mask(obstacle.shape, (0.0, 0.0), RES, np.array([[3.4, 0.6]]), 0.7)
+    m = OwnMap(obstacle, explored, (0.0, 0.0), RES, None, ring)
+    d, st = teacher_step(m, (3.4, 0.6, 0.0), TeacherState(), spec=spec)
+    assert d.mode == SEARCH and math.isclose(d.goal[0], 3.95) and d.info["ring_fallback"] and st.ring_fallback
+    d2, st2 = teacher_step(m, (3.4, 0.6, 0.0), st, spec=spec)
+    assert not d2.new_choice and d2.goal == d.goal and d2.info["ring_fallback"] and st2.ring_fallback
+    far = OwnMap(obstacle, explored, (0.0, 0.0), RES, None,
+                 visited_mask(obstacle.shape, (0.0, 0.0), RES, np.array([[1.0, 0.6]]), 0.7))
+    d3, st3 = teacher_step(far, (1.0, 0.6, 0.0), TeacherState(), spec=spec)
+    assert d3.mode == SEARCH and not d3.info.get("ring_fallback") and not st3.ring_fallback
+
+
 def two_frontiers(left_end: int, right_end: int) -> tuple:
     """A T: a known cross corridor (rows 40-51) with unknown beyond columns left_end / right_end."""
     obstacle = np.zeros((100, 100), bool)

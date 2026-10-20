@@ -37,6 +37,10 @@ Bumps (implementation note, p8_rules.md §8): cells where the robot was stopped 
 show (OwnMap.bumped, from the drive loop's collisions) count as obstacles for planning.
 No frontier left and target never seen -> mode NO_FRONTIER (search failure); frontiers left but every one dropped ->
 BLACKLIST_EXHAUSTED. Poses and points are (X, Y[, yaw]) in the 2D frame of traj_data.pkl (frames.py).
+Trajectory ring (p8_rules_v3.md, `frontier_ignore_trajectory_m` > 0, OwnMap.visited): frontier cells within 0.7 m of the
+robot's past positions are ignored -- unless no other frontier goal is available (no_frontier / blacklist_exhausted
+with the ring): then the plain frontier is used (Decision.info["ring_fallback"]), and a goal chosen that way keeps the
+plain frontier until its commitment ends (TeacherState.ring_fallback); then the ring is tried first again.
 """
 
 import math
@@ -112,6 +116,7 @@ class TeacherState:
     known_instances: Tuple[int, ...] = ()  # instances seen when the approach goal was last chosen
     approach: Optional[Tuple[int, XY]] = None  # (instance id, view point)
     uninflated: bool = False  # proposal P4: the committed goal was chosen by the uninflated fallback
+    ring_fallback: bool = False  # rules v3: the committed goal was chosen on the plain frontier (no ring goal left)
 
 
 @dataclass
@@ -326,6 +331,33 @@ def _dropped(p: XY, blacklist: Sequence[Tuple[float, float, float]]) -> bool:
 
 
 def _explore(m: OwnMap, pose: Pose, state: TeacherState, spec: TeacherSpec, mode: str) -> Tuple[Decision, TeacherState]:
+    """Rule 1 with the rules v3 trajectory ring (module docstring): the ring frontier first; the plain frontier only
+    when the ring leaves no goal, or while a goal chosen on it is committed."""
+    stuck = (NO_FRONTIER, BLACKLIST_EXHAUSTED)
+    if m.visited is None:
+        return _explore_inflation(m, pose, state, spec, mode)
+    plain = replace(m, visited=None)
+    if state.ring_fallback and state.committed is not None:
+        dec, st = _explore_inflation(plain, pose, state, spec, mode)
+        if not dec.new_choice and dec.mode not in stuck:  # the fallback commitment goes on
+            dec.info["ring_fallback"] = True
+            return dec, st
+        state = replace(st, committed=None, lengths=(), ring_fallback=False)  # it ended: the ring first again
+        dropped = dec.dropped
+    else:
+        dropped = None
+    dec, st = _explore_inflation(m, pose, state, spec, mode)
+    dec.dropped = dec.dropped or dropped
+    if dec.mode not in stuck:
+        return dec, replace(st, ring_fallback=False)
+    dec2, st2 = _explore_inflation(plain, pose, st, spec, mode)
+    dec2.dropped = dec2.dropped or dec.dropped
+    dec2.info["ring_fallback"] = dec2.mode not in stuck  # the plain frontier gave a goal
+    return dec2, replace(st2, ring_fallback=st2.committed is not None)
+
+
+def _explore_inflation(m: OwnMap, pose: Pose, state: TeacherState, spec: TeacherSpec,
+                       mode: str) -> Tuple[Decision, TeacherState]:
     """Rule 1: nearest frontier, commitment, tie, blacklist (P4: if nothing is reachable, once more uninflated)."""
     extra = [state.committed] if state.committed else []
     if not (spec.frontier_uninflated_fallback and state.uninflated and state.committed):

@@ -1,0 +1,5 @@
+# Phase 8 rules v3 option C (p8_rules_v3.md, Naz 2026-10-20): v2 + ring fallback (code: explorer._explore; on whenever
+# teacher.frontier_ignore_trajectory_m > 0). Re-pilot on the same 20 homes / drive ids; full run if >= 84.7%.
+extends: p8_datagen_v2.yaml
+datasets:
+  pilot: pilot_habitat_mapmad_v2_rules3

@@ -142,6 +142,10 @@ def numbers(dataset: Path, cfg: Dict[str, Any], workers: int) -> Dict[str, Any]:
         "wall_recovery_pct": pct(sum(d["wall_recovery_realised"] for d in kept), len(kept)),
         "kick_pct": pct(sum(d["kick_done"] for d in kept), len(kept)),
         "safety_step_frames_pct": pct(sum(d["safety_steps"] for d in kept), frames),
+        "ring_fallback_frames_pct": {  # rules v3: frames whose teacher goal came from the plain frontier
+            "kept": pct(sum(d.get("ring_fallback_frames", 0) for d in kept), frames),
+            "search_attempted": pct(sum(d.get("ring_fallback_frames", 0) for d in search), sum(d["frames"] for d in search)),
+            "explore": pct(sum(d.get("ring_fallback_frames", 0) for d in explore), sum(d["frames"] for d in explore))},
         "phase_share_pct": {k: pct(v, frames) for k, v in phases.items()},
         "categories": dict(Counter(d["category"] for d in search)),
         "by_category": by_category(search),
@@ -206,6 +210,7 @@ def numbers_md(n: Dict[str, Any]) -> str:
              f"- Collision drives: **{n['collision_drives_pct']}%** (< 2%); detours realised {n['detour_realised_pct']}% (≥ 25%); "
              f"wall recoveries {n['wall_recovery_pct']}% (≥ 10%); kicks {n['kick_pct']}%",
              f"- Safety-step frames: {n['safety_step_frames_pct']}%; phase shares {n['phase_share_pct']} %",
+             f"- Ring fallback frames (teacher goal from the plain frontier): {n['ring_fallback_frames_pct']} %",
              f"- Categories (search): {n['categories']}", "",
              "## Per category (search drives)", "",
              "| category | success | failures by cause | homes failing start filter | dropped draws (drop rate) |",
@@ -340,7 +345,9 @@ class DriveView:
         pose = (float(self.xy[t, 0]), float(self.xy[t, 1]), float(self.yaw[t]))
         origin, res = self.dm["origin"], float(self.dm["resolution"])
         tgt = self.tgt if self.has_target else None
-        ring = float(self.meta.get("frontier_ignore_trajectory_m", 0.0))  # the frontier the teacher used
+        ring = float(self.meta.get("frontier_ignore_trajectory_m", 0.0))  # the frontier the teacher used:
+        if "ring_fallback" in self.fr and self.fr["ring_fallback"][t]:  # the plain one on ring-fallback frames
+            ring = 0.0
         noisy = layers_at(self.dm, t, tgt, "noisy", positions=self.xy, visited_m=ring)
         clean = layers_at(self.dm, t, tgt, "clean", positions=self.xy, visited_m=ring)
         near_n, near_c = near_window(noisy, origin, res, pose), near_window(clean, origin, res, pose)

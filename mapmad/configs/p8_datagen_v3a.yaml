@@ -1,0 +1,7 @@
+# Phase 8 rules v3 option A (p8_rules_v3.md): fix 2 + start filter + 3A detours, no trajectory ring. Used for the full
+# run only if the C re-pilot (p8_datagen_v3.yaml) is below 84.7%.
+extends: p8_datagen_v2.yaml
+datasets:
+  pilot: pilot_habitat_mapmad_v2_rules3a   # (not piloted: A's estimate comes from the fix 2 drives)
+teacher:
+  frontier_ignore_trajectory_m: 0.0

@@ -184,8 +184,9 @@ def layers_at(drive_map: Dict[str, np.ndarray], t: int, target: Optional[Dict[st
     file). `drive_map` = mapmad_map.npz's dict (or OnlineMap's live arrays); `target` = mapmad_target.npz's dict;
     target_key = "noisy" (training input) or "clean" (simulator truth). positions + visited_m > 0: the frontier the
     teacher used (p8_rules_v2.md item 1b; positions = traj_data.pkl's, frames 0..t are used; frontier cells within
-    visited_m of them are dropped; visited_m = mapmad_meta.json's frontier_ignore_trajectory_m); without them: the
-    plain frontier (rules item 3). Both come from the same saved files."""
+    visited_m of them are dropped; visited_m = mapmad_meta.json's frontier_ignore_trajectory_m; rules v3: on frames
+    where mapmad_frames.npz's ring_fallback is True the teacher used the plain frontier); without them: the plain
+    frontier (rules item 3). Both come from the same saved files."""
     obstacle = known_at(drive_map["obstacle_first_seen"], t)
     explored = known_at(drive_map["explored_first_seen"], t)
     if target is None:

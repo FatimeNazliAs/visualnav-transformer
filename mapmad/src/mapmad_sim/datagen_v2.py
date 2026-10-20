@@ -199,6 +199,7 @@ class Record:
     new_choice: List[bool] = field(default_factory=list)
     dropped: List[int] = field(default_factory=list)
     clusters: List[int] = field(default_factory=list)
+    ring_fallback: List[bool] = field(default_factory=list)  # rules v3: the teacher's goal came from the plain frontier
     teacher_ms: List[float] = field(default_factory=list)
     blacklist_events: List[Tuple[int, float, float, float]] = field(default_factory=list)  # frame, x, y, radius
     seen_events: List[Tuple[int, int]] = field(default_factory=list)
@@ -373,6 +374,7 @@ class DriveRunnerV2:
         rec.new_choice.append(bool(dec.new_choice))
         rec.dropped.append(DROPPED.index(dec.dropped or ""))
         rec.clusters.append(int(dec.n_clusters))
+        rec.ring_fallback.append(bool(dec.info.get("ring_fallback", False)))
 
     @staticmethod
     def _log_move(rec: Record, v: float, w: float, collided: bool, motion: str, forced: bool, travelled: float) -> None:
@@ -620,6 +622,7 @@ def frame_arrays(rec: Record) -> Dict[str, np.ndarray]:
             "path_length_m": f32(rec.path_len), "new_choice": np.asarray(rec.new_choice, bool),
             "dropped": np.asarray(rec.dropped, np.uint8), "dropped_names": np.asarray(DROPPED),
             "frontier_clusters": np.asarray(rec.clusters, np.int32), "teacher_ms": f32(rec.teacher_ms),
+            "ring_fallback": np.asarray(rec.ring_fallback, bool),
             "blacklist_events": np.asarray(rec.blacklist_events, np.float64).reshape(-1, 4),
             "seen_events": np.asarray(rec.seen_events, np.int64).reshape(-1, 2),
             "bump_events": np.asarray(rec.bump_events, np.float64).reshape(-1, 3),
@@ -668,7 +671,8 @@ def drive_stats(rec: Record) -> Dict[str, Any]:
             "wall_recovery_steps": rec.wall_recovery_steps,
             "teacher_ms_median": round(float(np.median(ms)), 3), "teacher_ms_p95": round(float(np.percentile(ms, 95)), 3),
             "detections": len(rec.detections), "false_marks": len(rec.false_marks), "bumps": len(rec.bump_events),
-            "safety_steps": int(sum(rec.safety)), "safety_failed": rec.safety_failed}
+            "safety_steps": int(sum(rec.safety)), "safety_failed": rec.safety_failed,
+            "ring_fallback_frames": int(sum(rec.ring_fallback))}
 
 
 def write_drive(folder: Path, rec: Record, fmap: FirstSeenMap, fusions: Dict[str, TargetFusion], meta: Dict[str, Any],
