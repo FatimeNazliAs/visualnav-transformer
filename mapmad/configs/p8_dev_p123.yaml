@@ -1,0 +1,11 @@
+# Phase 8 dev check (not a pilot attempt): proposals P1 + P2 + P3 (S-pilot decisions for Naz).
+# P2: detours due with >= 2.5 m of teacher path (was 3.0), asked in 50% of drives (was 35%).
+# P3: safety step margins 0.25 m (path) / 0.20 m (robot) from the floor map's edge (were 0.20 / 0.15).
+extends: p8_dev_p1.yaml
+variations:
+  detour:
+    share: 0.5
+motion:
+  detour_ahead_m: 2.0
+  safety_clearance_m: 0.25
+  safety_robot_clearance_m: 0.20

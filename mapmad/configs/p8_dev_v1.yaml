@@ -1,0 +1,3 @@
+# Phase 8 dev check (not a pilot attempt): the frozen rules on the 10 Phase 1 dev homes (val-drive split), baseline
+# for the S-pilot proposals.
+extends: p8_datagen.yaml

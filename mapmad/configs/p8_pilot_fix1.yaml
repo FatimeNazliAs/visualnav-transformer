@@ -1,0 +1,12 @@
+# Phase 8 pilot FIX ATTEMPT 1 (p8_rules.md §6 + §9): pilot success v1 = 128/160 = 80% < 90%.
+# Only allowed teacher parameters change. Chosen on the dev homes (not the pilot homes): failed pilot drives dropped
+# goals mostly as "reached but still a frontier" (444 of 1,005 drops) -- with commit 0.5 m the unknown side lies
+# inside pin025's ~0.55 m blind zone; 0.65 m keeps it in view. Window 80 steps: a 180 deg re-target turn alone takes
+# ~31 of the 40 steps. Dev homes (32 search drives): v1 26, A (1.0 / 80) 23, B (0.8 / 80) 25, C (0.65 / 80) 27,
+# D (0.5 / 80) 27 -> C.
+extends: p8_datagen.yaml
+datasets:
+  pilot: pilot_habitat_mapmad_v2_fix1
+teacher:
+  commit_reach_m: 0.65
+  blacklist_window_steps: 80

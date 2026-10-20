@@ -1,0 +1,8 @@
+# Phase 8 pilot FIX ATTEMPT 2 (p8_rules.md §6 + §9): attempt 1 (commit 0.65 m, window 80) = 121/160 = 75.6%.
+# Only allowed teacher parameters change: commit distance back to 0.5 m, blacklist window 80 steps (a 180 deg re-target
+# turn takes ~31 of 40 steps). Dev homes: D (0.5 / 80) 27/32 vs v1 26/32.
+extends: p8_datagen.yaml
+datasets:
+  pilot: pilot_habitat_mapmad_v2_fix2
+teacher:
+  blacklist_window_steps: 80

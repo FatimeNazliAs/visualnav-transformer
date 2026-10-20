@@ -1,0 +1,4 @@
+# Phase 8 dev check (not a pilot attempt): proposals P1 + P5 (S-pilot decisions for Naz).
+extends: p8_dev_p1.yaml
+proposals:
+  seeable_targets: true

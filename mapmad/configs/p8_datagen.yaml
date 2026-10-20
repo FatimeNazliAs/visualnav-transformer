@@ -1,0 +1,93 @@
+# Phase 8 — search drives + exploration drives with the explorer teacher (v2 plan §8.2-8.3, Phase 8 block items 1-6).
+# Read by mapmad/scripts/generate_drives_v2.py (Habitat side). Rules frozen in configs/p8_rules.md (+ sha256 before
+# the pilot). Blocks not set here come from p2_datagen.yaml (motion, map, sampling floor rules, variations).
+extends: p2_datagen.yaml             # nested blocks merge key by key: new names (drives_v2) avoid mixing with p2 ones
+
+out_dir: p8_search_data
+camera: camera_fair.yaml             # pin025 (Phase 7): colour + depth camera 0.25 m, pitch -2 deg, 66.5 deg, 320 x 240
+seed: 20261020                       # drive seed = sha256("<seed>:<drive id>") -> results do not depend on workers / order
+
+datasets:                            # name: folder below mapmad_data
+  full: habitat_mapmad_v2
+  pilot: pilot_habitat_mapmad_v2
+id_prefix: {full: p8d, pilot: p8p}   # drive id = <prefix>-<home>-<search|explore>-<n:03d>
+
+homes:
+  splits_file: p2_home_splits.json   # frozen val-drive split (10 Phase 1 homes + 30 unlabelled, seed 2610)
+  pilot_v2:                          # block item 6: 20 LABELLED train homes, none val-drive
+    n_homes: 20
+    seed: 808
+
+drives_v2:                           # block item 5 (full run): 145 x 40 search + 800 x 8 explore
+  labelled: {search: 40, explore: 8}
+  unlabelled: {explore: 8}
+pilot_drives_v2:                     # block item 6: 20 homes x (8 search + 2 explore)
+  labelled: {search: 8, explore: 2}
+  unlabelled: {explore: 2}
+cut_order:                           # block item 5: if the pilot predicts > budget: explore -> 4 / home first, then pro rata
+  explore_min: 4
+
+budget:
+  gb: 120
+  hours: 4.0
+
+sampling:
+  search_geodesic_m: [3.0, 15.0]     # start -> nearest view point of the category (block item 4)
+  visibility_headings: 8             # no instance of the category visible in any of 8 headings at the start
+  start_tries: 200
+  category_redraw_every: 20          # a category whose starts keep failing is redrawn after this many tries
+
+teacher:                             # block item 1 (explorer.TeacherSpec)
+  inflation_m: 0.195
+  start_clear_m: 0.3
+  blind_m: 0.6                       # unknown cells this close to the robot are passable (pin025 sees the floor from ~0.55 m)
+  min_cluster: 4
+  commit_reach_m: 0.5
+  tie_margin_m: 0.5
+  blacklist_window_steps: 40
+  blacklist_min_progress_m: 0.5
+  blacklist_radius_m: 0.5
+  reached_radius_m: 0.2              # a reached goal that stays a frontier: dropped with this radius (rest of the cluster stays)
+  arrive_m: 0.1
+  face_tolerance_deg: 15.0
+  lookahead_m: 0.5
+  preferred_clearance_m: 0.445       # path SHAPE only (choice by plain length): Phase 2 clearance preference, 0.195 + 0.25 m
+  clearance_weight: 4.0
+  bbox_margin_m: 1.0
+
+target_layer:                        # block item 2 (target_layer.NoiseSpec)
+  min_pixels: 200
+  max_depth_m: 4.0
+  confidence: [0.4, 1.0]
+  miss_p: 0.2
+  false_p: 0.05
+  false_value: [0.3, 0.7]
+  false_blob_cells: 3
+
+motion:                              # block item 4 (motion as Phase 2) + the v2 additions
+  retarget_turn_deg: 30.0            # new frontier / target choice with the aim > 30 deg off -> spot turn until < 30 deg
+  look_move_m: 1.0                   # stuck (no frontier / all dropped): one full look-around turn per place this far apart
+  look_stop_m: 1.0                   # ... which stops early once the teacher has a frontier >= 1 m away by path
+  bump_ahead_m: 0.3                  # a forward move stopped short: the cell this far ahead is blocked for the teacher (bumps)
+  safety_ahead_m: 1.0                # safety step: the teacher path's next 1 m must keep ...
+  safety_clearance_m: 0.20           # ... 0.20 m from the floor map's edge (robot itself: safety_robot_clearance_m), else a
+  safety_robot_clearance_m: 0.15     # ... short floor-map path (Phase 2 motion)
+  safety_limit_m: 3.0                # ... searched up to this path cost; if the safe point is not reachable within it,
+  safety_far_limit_m: 30.0           # ... the floor-map path to the teacher path's end (up to this cost)
+  kick_after_steps: [20, 200]        # online paths change every step: a kick is due after this many steps (not a path fraction)
+  detour_after_steps: [10, 150]      # first detour due after this many steps; a second one >= detour_gap_steps later
+  detour_gap_steps: 60
+  detour_ahead_m: 2.5                # detour route: robot -> sideways point (offset 0.5-1.5 m, p2 `detour`) -> rejoin the
+  detour_rejoin_m: 0.3               #   teacher path 2.5 m ahead; done within 0.3 m of the rejoin point ...
+  detour_max_steps: 80               #   ... or after 80 steps, or when the teacher switches to approach
+
+limits:                              # block item 4
+  max_steps: 2000                    # search drives: more -> discarded (timeout)
+  explore_steps: 1000                # exploration drives end here (complete, not discarded)
+  max_collision_streak: 20
+  success_m: 0.2                     # G8 row 3: walking distance to the nearest view point of any instance
+
+record:
+  jpg_quality: 90
+  metric_waypoint_spacing: 0.05
+  keep_failed: {pilot: true, full: false}   # pilot: failed / discarded drives kept in <dataset>/_failed/ for the sheet

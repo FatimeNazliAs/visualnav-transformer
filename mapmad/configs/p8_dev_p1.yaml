@@ -1,0 +1,6 @@
+# Phase 8 dev check (not a pilot attempt): proposal P1 only (S-pilot decision for Naz).
+# P1: unknown cells within 0.6 m of an earlier robot position never count as "unknown" for frontiers (teacher and the
+# network's frontier layer): the floor the camera's blind zone hides around the robot's own path is not unexplored.
+extends: p8_datagen.yaml
+proposals:
+  frontier_ignore_visited_m: 0.6

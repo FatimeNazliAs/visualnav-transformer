@@ -110,6 +110,24 @@ class FloorGrid:
                                      shape=(h * w, h * w)).tocsr()
         return self._graph
 
+    def plan_local(self, a_xy: Sequence[float], b_xy: Sequence[float], limit_m: float) -> Optional[np.ndarray]:
+        """As `plan`, but the search stops at path cost limit_m (fast for short hops; Phase 8 safety step)."""
+        a, b = self.nearest_free_cell(a_xy), self.nearest_free_cell(b_xy)
+        if a is None or b is None:
+            return None
+        w = self.mask.shape[1]
+        src, dst = a[0] * w + a[1], b[0] * w + b[1]
+        dist, pred = dijkstra(self.graph(), directed=False, indices=src, return_predecessors=True, limit=limit_m)
+        if not np.isfinite(dist[dst]):
+            return None
+        chain = [dst]
+        while chain[-1] != src:
+            chain.append(int(pred[chain[-1]]))
+        chain = np.array(chain[::-1])
+        pts = self.centre_of(chain // w, chain % w)
+        pts[0], pts[-1] = np.asarray(a_xy, dtype=np.float64), np.asarray(b_xy, dtype=np.float64)
+        return pts
+
     def plan(self, a_xy: Sequence[float], b_xy: Sequence[float]) -> Optional[np.ndarray]:
         """Cell-centre path (N, 2) from a to b (2D points), endpoints replaced by a and b; None if unreachable."""
         a, b = self.nearest_free_cell(a_xy), self.nearest_free_cell(b_xy)
