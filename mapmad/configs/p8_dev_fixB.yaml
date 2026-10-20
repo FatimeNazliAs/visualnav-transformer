@@ -1,5 +1,0 @@
-# Phase 8 dev check (not a pilot attempt): teacher parameters a pilot fix attempt may change (p8_rules.md §9).
-extends: p8_datagen.yaml
-teacher:
-  commit_reach_m: 0.8
-  blacklist_window_steps: 80

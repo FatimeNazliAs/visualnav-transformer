@@ -1,0 +1,15 @@
+# Phase 8 v2 rules (p8_rules_v2.md, Naz's S-pilot answers 2026-10-20): the re-pilot and the full run (8.3).
+# = pilot fix 2 (blacklist window 80) + 1b trajectory ring 0.7 m + 1c start filter + 3A detours.
+extends: p8_datagen.yaml
+datasets:
+  pilot: pilot_habitat_mapmad_v2_rules2   # re-pilot, same 20 homes and drive ids (p8p-...)
+teacher:
+  blacklist_window_steps: 80              # fix 2 (1a)
+  frontier_ignore_trajectory_m: 0.7       # 1b: frontier cells within 0.7 m of the robot's past positions are ignored
+sampling:
+  seeable_filter: true                    # 1c: category needs a view point + heading showing >= 200 px at <= 4 m
+variations:
+  detour:
+    share: 0.65                           # 3A: asked in 65% of drives (was 35%)
+motion:
+  detour_ahead_m: 2.0                     # 3A: due with >= 2.5 m of teacher path (= 2.0 + 0.5), rejoin 2.0 m ahead

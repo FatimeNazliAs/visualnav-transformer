@@ -2,13 +2,15 @@
 
     python mapmad/scripts/p8_pilot_report.py --gpu 1                       # inside naz_mapmad_habitat
     python mapmad/scripts/p8_pilot_report.py --gpu 1 --dataset-dir /mapmad_data/<other> --out <dir>   # a fix attempt
+    python mapmad/scripts/p8_pilot_report.py --config mapmad/configs/p8_datagen_v2.yaml --out <dir> --numbers-only
 
 Reads the pilot drives (<mapmad_data>/pilot_habitat_mapmad_v2: kept drives + _failed/ + _homes/*.json) and writes to
 <outputs>/p8_search_data/pilot/:
 - pilot_numbers.json / .md: teacher success and failures by cause, steps, s/drive, GB/drive, predicted full-run GB and
-  hours with the cut rule of block item 5, spot turns by type, ms per teacher step, variation shares, phase shares;
+  hours with the cut rule of block item 5, spot turns by type, ms per teacher step, variation shares, phase shares,
+  success and failure causes per category, the start filter's drop rates per category (rules v2 item 1c);
 - pilot_sheet.png: the numbers + 4 example frames (search, approach, arrived, exploration), each: camera | near window
-  (obstacle, explored, frontier, target noisy, target clean, all) | far window (same) | teacher path on the house plan
+  (obstacle, explored, frontier as the teacher used it, target noisy, target clean, all) | far window (same) | teacher path on the house plan
   (LIMO floor map) with the phase label;
 - videos/<drive>.mp4 for 1 search + 1 exploration drive (the same panels for every frame, 8 fps = 2x real time).
 The house plan is the LIMO floor map (navmesh) of the drive's storey: loading the train home needs a GPU (ours).
@@ -55,6 +57,41 @@ def drive_folder(dataset: Path, did: str) -> Optional[Path]:
 
 def pct(a: float, b: float) -> float:
     return round(100.0 * a / b, 1) if b else float("nan")
+
+
+def load_homes(dataset: Path) -> List[Dict[str, Any]]:
+    return [json.loads(f.read_text()) for f in sorted(dataset.glob("_homes/*.json"))]
+
+
+def by_category(search: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    """Teacher success and failure causes per category (attempted search drives)."""
+    out = {}
+    for c in sorted({d["category"] for d in search}):
+        ds = [d for d in search if d["category"] == c]
+        ok = sum(d["outcome"] == "success" for d in ds)
+        out[c] = {"n": ok, "of": len(ds), "pct": pct(ok, len(ds)),
+                  "failures": {k: v for k, v in Counter(d["outcome"] for d in ds).items() if k != "success"}}
+    return out
+
+
+def start_filter(homes: List[Dict[str, Any]], summaries: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    """Rules v2 item 1c per category: homes where the category fails the filter, and drive draws dropped by it
+    (drop rate = dropped draws / (dropped draws + search drives of the category)). Empty for the v1 rules."""
+    out: Dict[str, Dict[str, Any]] = {}
+    for h in homes:
+        for c, v in (h.get("categories") or {}).items():
+            e = out.setdefault(c, {"homes": 0, "homes_failing": 0, "dropped_draws": 0, "drives": 0, "renders": 0})
+            e["homes"] += 1
+            e["homes_failing"] += not v["seeable"]
+            e["renders"] += v["renders"]
+    for d in summaries:
+        for c in d.get("notes", {}).get("dropped_categories", []):
+            out[c]["dropped_draws"] += 1
+        if d["kind"] == "search" and d.get("category") in out:
+            out[d["category"]]["drives"] += 1
+    for e in out.values():
+        e["drop_rate_pct"] = pct(e["dropped_draws"], e["dropped_draws"] + e["drives"])
+    return out
 
 
 def numbers(dataset: Path, cfg: Dict[str, Any], workers: int) -> Dict[str, Any]:
@@ -107,6 +144,8 @@ def numbers(dataset: Path, cfg: Dict[str, Any], workers: int) -> Dict[str, Any]:
         "safety_step_frames_pct": pct(sum(d["safety_steps"] for d in kept), frames),
         "phase_share_pct": {k: pct(v, frames) for k, v in phases.items()},
         "categories": dict(Counter(d["category"] for d in search)),
+        "by_category": by_category(search),
+        "start_filter": start_filter(load_homes(dataset), s),
         "estimate": est,
     }
     return out
@@ -168,6 +207,15 @@ def numbers_md(n: Dict[str, Any]) -> str:
              f"wall recoveries {n['wall_recovery_pct']}% (≥ 10%); kicks {n['kick_pct']}%",
              f"- Safety-step frames: {n['safety_step_frames_pct']}%; phase shares {n['phase_share_pct']} %",
              f"- Categories (search): {n['categories']}", "",
+             "## Per category (search drives)", "",
+             "| category | success | failures by cause | homes failing start filter | dropped draws (drop rate) |",
+             "|---|---|---|---|---|",
+             *[f"| {c} | {v['n']}/{v['of']} = {v['pct']}% | {v['failures'] or '-'} | "
+               + (f"{n['start_filter'][c]['homes_failing']}/{n['start_filter'][c]['homes']} | "
+                  f"{n['start_filter'][c]['dropped_draws']} ({n['start_filter'][c]['drop_rate_pct']}%) |"
+                  if c in n["start_filter"] else "- | - |") for c, v in n["by_category"].items()],
+             *[f"| {c} | 0 drives | - | {e['homes_failing']}/{e['homes']} | {e['dropped_draws']} ({e['drop_rate_pct']}%) |"
+               for c, e in n["start_filter"].items() if c not in n["by_category"]], "",
              "## Full-run estimate (block item 5)",
              f"- Uncut (40 search / labelled home + 8 exploration / home): {e['uncut']['gb']} GB, {e['uncut']['hours']} h on {e['workers']} workers",
              f"- Plan: **{e['plan']['counts']} per home → {e['plan']['gb']} GB, {e['plan']['hours']} h**; cut: {e['plan']['cut']}",
@@ -292,8 +340,9 @@ class DriveView:
         pose = (float(self.xy[t, 0]), float(self.xy[t, 1]), float(self.yaw[t]))
         origin, res = self.dm["origin"], float(self.dm["resolution"])
         tgt = self.tgt if self.has_target else None
-        noisy = layers_at(self.dm, t, tgt, "noisy")
-        clean = layers_at(self.dm, t, tgt, "clean")
+        ring = float(self.meta.get("frontier_ignore_trajectory_m", 0.0))  # the frontier the teacher used
+        noisy = layers_at(self.dm, t, tgt, "noisy", positions=self.xy, visited_m=ring)
+        clean = layers_at(self.dm, t, tgt, "clean", positions=self.xy, visited_m=ring)
         near_n, near_c = near_window(noisy, origin, res, pose), near_window(clean, origin, res, pose)
         far_n, far_c = far_window(noisy, origin, res, pose), far_window(clean, origin, res, pose)
         cam = cv2.imread(str(self.folder / f"{t}.jpg"))
@@ -351,14 +400,16 @@ def pick(summaries: List[Dict[str, Any]], kind: str, rng: np.random.Generator) -
 
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--gpu", type=int, required=True)
+    p.add_argument("--gpu", type=int, default=None, help="needed unless --numbers-only (house plans)")
+    p.add_argument("--config", type=Path, default=CONFIG)
+    p.add_argument("--numbers-only", action="store_true")
     p.add_argument("--dataset-dir", type=Path, default=None)
     p.add_argument("--out", type=Path, default=None)
     p.add_argument("--workers", type=int, default=12)
     p.add_argument("--seed", type=int, default=8)
     p.add_argument("--fps", type=int, default=8)
     args = p.parse_args()
-    cfg = read_config(CONFIG)
+    cfg = read_config(args.config)
     paths = config.paths()
     dataset = args.dataset_dir or paths["mapmad_data"] / cfg["datasets"]["pilot"]
     out = args.out or paths["outputs"] / cfg["out_dir"] / "pilot"
@@ -367,6 +418,8 @@ def main() -> None:
     write_text_atomic(out / "pilot_numbers.json", json.dumps(n, indent=1) + "\n")
     write_text_atomic(out / "pilot_numbers.md", numbers_md(n))
     print(numbers_md(n))
+    if args.numbers_only:
+        return
 
     summaries = load_summaries(dataset)
     rng = np.random.default_rng(args.seed)

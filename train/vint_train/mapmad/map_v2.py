@@ -46,14 +46,15 @@ def _shift(mask: np.ndarray, di: int, dj: int, fill: bool) -> np.ndarray:
 
 
 def frontier_cells(obstacle: np.ndarray, explored: np.ndarray, visited: Optional[np.ndarray] = None) -> np.ndarray:
-    """Explored free cells with an unknown edge neighbour (before the cluster-size filter). `visited` (optional, the
-    proposal P1 at S-pilot): cells near earlier robot positions never count as unknown (the camera's blind zone)."""
+    """Explored free cells with an unknown edge neighbour (before the cluster-size filter). `visited` (optional,
+    p8_rules_v2.md item 1b): cells within 0.7 m of the robot's own past trajectory (visited_mask), which are never
+    frontier cells -- the camera's blind zone leaves a ring of fake frontier around every place the robot has been."""
     free = explored & ~obstacle
-    unknown = ~explored if visited is None else ~explored & ~visited
+    unknown = ~explored
     touch = np.zeros_like(free)
     for di, dj in ((1, 0), (-1, 0), (0, 1), (0, -1)):
         touch |= _shift(unknown, di, dj, False)
-    return free & touch
+    return free & touch if visited is None else free & touch & ~visited
 
 
 def label_clusters(mask: np.ndarray) -> Tuple[np.ndarray, int]:
@@ -101,7 +102,7 @@ def frontier(obstacle: np.ndarray, explored: np.ndarray, min_cluster: int = 4,
 
 def visited_mask(shape: Sequence[int], origin: Sequence[float], res: float, positions: np.ndarray,
                  radius_m: float) -> np.ndarray:
-    """Cells whose centre lies within radius_m of any of the (X, Y) positions (proposal P1)."""
+    """Cells whose centre lies within radius_m of any of the (X, Y) positions (the trajectory ring, frontier_cells)."""
     out = np.zeros((int(shape[0]), int(shape[1])), dtype=bool)
     if radius_m <= 0 or len(positions) == 0:
         return out
@@ -181,8 +182,10 @@ def layers_at(drive_map: Dict[str, np.ndarray], t: int, target: Optional[Dict[st
               visited_m: float = 0.0) -> Dict[str, np.ndarray]:
     """Whole-storey layers at frame t: obstacle, explored, frontier (bool) and target (float32; zeros without a target
     file). `drive_map` = mapmad_map.npz's dict (or OnlineMap's live arrays); `target` = mapmad_target.npz's dict;
-    target_key = "noisy" (training input) or "clean" (simulator truth). positions + visited_m > 0: proposal P1 (the
-    robot's positions at frames 0..t, traj_data.pkl; cells within visited_m of them never count as unknown)."""
+    target_key = "noisy" (training input) or "clean" (simulator truth). positions + visited_m > 0: the frontier the
+    teacher used (p8_rules_v2.md item 1b; positions = traj_data.pkl's, frames 0..t are used; frontier cells within
+    visited_m of them are dropped; visited_m = mapmad_meta.json's frontier_ignore_trajectory_m); without them: the
+    plain frontier (rules item 3). Both come from the same saved files."""
     obstacle = known_at(drive_map["obstacle_first_seen"], t)
     explored = known_at(drive_map["explored_first_seen"], t)
     if target is None:

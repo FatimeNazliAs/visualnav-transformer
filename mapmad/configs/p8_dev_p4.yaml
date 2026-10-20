@@ -1,4 +1,0 @@
-# Phase 8 dev check (not a pilot attempt): proposal P4 only.
-extends: p8_datagen.yaml
-teacher:
-  frontier_uninflated_fallback: true

@@ -86,6 +86,7 @@ class TeacherSpec:
     clearance_weight: float = 4.0
     bbox_margin_m: float = 1.0  # planning window = known cells + robot + goals, plus this
     frontier_uninflated_fallback: bool = False  # proposal P4 (S-pilot): no frontier reachable -> once without inflation
+    frontier_ignore_trajectory_m: float = 0.0  # p8_rules_v2.md 1b: frontier cells this close to the past path ignored
 
     @classmethod
     def from_config(cls, cfg: Dict) -> "TeacherSpec":
@@ -140,7 +141,7 @@ class OwnMap:
     origin: XY
     res: float
     bumped: Optional[np.ndarray] = None
-    visited: Optional[np.ndarray] = None  # proposal P1 (S-pilot): cells near earlier positions never count as unknown
+    visited: Optional[np.ndarray] = None  # rules v2 1b: cells within frontier_ignore_trajectory_m of the past path
 
 
 # --- grid helpers -----------------------------------------------------------------------------------------------

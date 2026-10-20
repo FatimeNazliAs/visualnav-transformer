@@ -1,8 +1,0 @@
-# Phase 8 dev check (not a pilot attempt): proposals P1 + P4 + P5 (S-pilot decisions for Naz).
-# P4: no frontier reachable with inflation -> search once more without inflation (as the approach rule already does).
-# P5: search targets only instances our camera can see (>= 200 px at <= 4 m) from >= 1 of up to 8 of their view points.
-extends: p8_dev_p1.yaml
-teacher:
-  frontier_uninflated_fallback: true
-proposals:
-  seeable_targets: true

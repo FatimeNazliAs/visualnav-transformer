@@ -123,13 +123,15 @@ class SearchTask:
 
 class HomeTasks:
     """Per-home lookups for search drives (labelled homes): instances per category with usable view points.
-    Proposal P5 (S-pilot, `proposals.seeable_targets`): only instances our camera can "see" (>= min_pixels at <= 4 m)
-    from at least one of up to 8 of their view points, facing the object, are targets."""
+    Start filter (p8_rules_v2.md item 1c, `sampling.seeable_filter`): a category is searchable in this home only if
+    from >= 1 usable view point of >= 1 of its instances, one of 8 headings (pin025) shows a usable instance of the
+    category with >= min_pixels at depth (0, max_depth] (the "seen" rule). Checked once per home, before any drive,
+    in a fixed order (no random draws: results do not depend on the drive order)."""
 
-    def __init__(self, sampler: DriveSampler, goals: Sequence[objectnav.Goal], seeable: Optional[NoiseSpec] = None) -> None:
+    def __init__(self, sampler: DriveSampler, goals: Sequence[objectnav.Goal], seeable: Optional[NoiseSpec] = None,
+                 headings: int = 8) -> None:
         self.sampler = sampler
         self.by_category: Dict[str, List[Instance]] = {}
-        self.unseeable: List[int] = []
         for g in goals:
             box = sampler.labels.box(g.object_id)
             if box is None:
@@ -137,26 +139,35 @@ class HomeTasks:
             vps = [p for p, _, _ in sampler.usable_view_points(g)]
             if not vps:
                 continue
-            inst = Instance(g.object_id, [float(v) for v in box[0]], [float(v) for v in box[1]],
-                            [[float(v) for v in p] for p in vps])
-            if seeable is not None and not self._seeable(inst, seeable):
-                self.unseeable.append(g.object_id)
-                continue
-            self.by_category.setdefault(g.category, []).append(inst)
+            self.by_category.setdefault(g.category, []).append(Instance(
+                g.object_id, [float(v) for v in box[0]], [float(v) for v in box[1]], [[float(v) for v in p] for p in vps]))
         self.categories = sorted(self.by_category)
+        self.renders: Dict[str, int] = {}
+        self.seeable: Dict[str, bool] = {c: True for c in self.categories}
+        if seeable is not None:
+            self.seeable = {c: self._seeable(c, seeable, headings) for c in self.categories}
 
-    def _seeable(self, inst: Instance, spec: NoiseSpec, n: int = 8) -> bool:
+    def _seeable(self, category: str, spec: NoiseSpec, n: int) -> bool:
+        """Item 1c for one category (stops at the first view point and heading that passes)."""
         robot = self.sampler.robot
-        vps = inst.view_points
-        for k in sorted({int(i) for i in np.linspace(0, len(vps) - 1, min(n, len(vps)))}):
-            p = np.asarray(vps[k], dtype=np.float64)
-            c = to_2d(inst.centre)
-            q = to_2d(p)
-            robot.place(p, math.atan2(c[1] - q[1], c[0] - q[0]))
-            obs = robot.observe()
-            if detect(obs["semantic"], obs["depth"], [inst.object_id], spec):
-                return True
+        insts = self.by_category[category]
+        ids = [inst.object_id for inst in insts]
+        self.renders[category] = 0
+        for inst in insts:
+            for vp in inst.view_points:
+                p = np.asarray(vp, dtype=np.float64)
+                for k in range(n):
+                    robot.place(p, 2.0 * math.pi * k / n)
+                    obs = robot.observe()
+                    self.renders[category] += 1
+                    if detect(obs["semantic"], obs["depth"], ids, spec):
+                        return True
         return False
+
+    def summary(self) -> Dict[str, Any]:
+        """Item 1c per category, for the home summary (drop rates per category)."""
+        return {c: {"instances": len(self.by_category[c]), "seeable": self.seeable[c],
+                    "renders": self.renders.get(c, 0)} for c in self.categories}
 
     def all_ids(self, category: str) -> List[int]:
         """Every semantic id of the category's goal instances (also those without a usable view point)."""
@@ -258,7 +269,7 @@ class DriveRunnerV2:
                         detours_left=var.detours, searching=task is not None)
         tstate = TeacherState()
         bumped = np.zeros(fmap.shape, dtype=bool)
-        visited_m = float(self.cfg.get("proposals", {}).get("frontier_ignore_visited_m", 0.0))  # P1; 0 = frozen rules
+        visited_m = self.teacher_spec.frontier_ignore_trajectory_m  # rules v2 1b (0 = p8_rules.md: no ring)
         visited = np.zeros(fmap.shape, dtype=bool) if visited_m > 0 else None
         self._fmap, self._bumped = fmap, bumped  # the current drive's map and bump cells (_bump_at)
         r.place(np.array(start.position), start.yaw)
@@ -687,8 +698,8 @@ class HomeGeneratorV2:
         self.robot = LimoSim(cfg["split"], home, self.spec, semantic=labelled, depth=True, gpu=gpu,
                              seed=drive_seed(cfg["seed"], home) % (2**31))
         self.sampler = DriveSampler(self.robot, cfg, np.random.default_rng(0), goals)
-        seeable = NoiseSpec.from_config(cfg["target_layer"]) if cfg.get("proposals", {}).get("seeable_targets") else None
-        self.tasks = HomeTasks(self.sampler, goals, seeable) if labelled else None
+        seeable = NoiseSpec.from_config(cfg["target_layer"]) if cfg["sampling"].get("seeable_filter") else None
+        self.tasks = HomeTasks(self.sampler, goals, seeable, cfg["sampling"]["visibility_headings"]) if labelled else None
         self.runner = DriveRunnerV2(self.robot, cfg)
         self.grids: Dict[Tuple[int, float], FloorGrid] = {}
 
@@ -723,16 +734,17 @@ class HomeGeneratorV2:
 
     def sample_search(self, var: Variations, rng: np.random.Generator, notes: Dict[str, Any]) -> Optional[Tuple[Start, SearchTask]]:
         """Block item 4: category uniform among those with a usable instance; start on the real floor, 3-15 m walking
-        to the nearest view point on the start storey, no instance visible in 8 headings."""
+        to the nearest view point on the start storey, no instance visible in 8 headings. Rules v2 item 1c: a drawn
+        category that fails the start filter is dropped (notes `dropped_categories`) and drawn again."""
         s = self.cfg["sampling"]
-        cats = self.tasks.categories
-        if not cats:
+        if not any(self.tasks.seeable.values()):
+            notes["no_seeable_category"] = True
             return None
-        cat = cats[int(rng.integers(len(cats)))]
+        cat = self._draw_category(rng, notes)
         lo, hi = s["search_geodesic_m"]
         for k in range(s["start_tries"]):
             if k and k % s["category_redraw_every"] == 0:
-                cat = cats[int(rng.integers(len(cats)))]
+                cat = self._draw_category(rng, notes)
             start = self._start(var, notes)
             insts = self.tasks.by_category[cat]
             vps = [vp for inst in insts for vp in inst.view_points if self.sampler.same_floor(start.position, vp)]
@@ -746,6 +758,15 @@ class HomeGeneratorV2:
                 continue
             return start, SearchTask(cat, insts, round(float(geo), 3), self.tasks.all_ids(cat))
         return None
+
+    def _draw_category(self, rng: np.random.Generator, notes: Dict[str, Any]) -> str:
+        """Uniform over the home's categories; one failing the start filter is logged and drawn again."""
+        cats = self.tasks.categories
+        while True:
+            cat = cats[int(rng.integers(len(cats)))]
+            if self.tasks.seeable[cat]:
+                return cat
+            notes.setdefault("dropped_categories", []).append(cat)
 
     # --- one drive -------------------------------------------------------------------------------------------------
     def drive(self, did: str, kind: str, out: Path, failed_dir: Optional[Path] = None,
@@ -781,6 +802,7 @@ class HomeGeneratorV2:
                 "start": asdict(start), "variations": asdict(var), "notes": notes,
                 "wall_recovery_realised": bool(start.wall_recovery), "camera": self.cfg["camera"],
                 "metric_waypoint_spacing": self.cfg["record"]["metric_waypoint_spacing"],
+                "frontier_ignore_trajectory_m": self.runner.teacher_spec.frontier_ignore_trajectory_m,
                 "frame_convention": "traj_data.pkl: X = -z, Y = -x of Habitat, yaw unchanged (mapmad_sim/frames.py)",
                 **stats, "jpg_bytes": sum(len(j) for j in rec.jpgs)}
         folder = out / did if kept else (failed_dir / did if failed_dir is not None else None)
@@ -825,6 +847,7 @@ def generate_home(cfg: Dict[str, Any], dataset_dir: Path, home: str, labelled: b
     tmp.rmdir()
     summary = {"home": home, "labelled": labelled, "seconds": round(time.time() - t0, 2),
                "navmesh_sha256": gen.robot.navmesh_sha256, "floor_checks": dict(gen.sampler.floor_checks),
+               "categories": gen.tasks.summary() if gen.tasks is not None else None,
                "drives": sum(s.get("kept", False) for s in summaries), "summaries": summaries}
     write_text_atomic(done, json.dumps(summary, indent=1, default=float) + "\n")
     return summary

@@ -7,7 +7,7 @@ import numpy as np
 
 from vint_train.mapmad.local_map import local_map
 from vint_train.mapmad.map_v2 import (LAYERS_V2, TargetFusion, far_window, frontier, frontier_cells, label_clusters,
-                                      layers_at, near_window, summarise, target_at)
+                                      layers_at, near_window, summarise, target_at, visited_mask)
 
 RES = 0.1
 ORIGIN = (-20.0, -20.0)  # 40 m x 40 m map: cell [i, j] centre = (-19.95 + 0.1 i, -19.95 + 0.1 j)
@@ -120,6 +120,25 @@ def test_fully_known_room_has_no_frontier():
     obstacle, explored = room(20)
     explored[:, :] = True
     assert not frontier(obstacle, explored).any()
+
+
+
+def test_trajectory_ring_drops_frontier_cells_near_the_past_path():
+    # rules v2 1b: a 2 x 6 strip of frontier cells; positions next to its left end hide those cells, then the
+    # remaining cells are clustered (a remainder < 4 cells drops out)
+    obstacle = np.zeros((10, 10), bool)
+    explored = np.ones((10, 10), bool)
+    explored[4:6, 2:8] = False  # unknown block: frontier ring around it
+    plain = frontier(obstacle, explored)
+    near = visited_mask((10, 10), (0.0, 0.0), 0.1, np.array([[0.35, 0.15]]), 0.25)
+    ring = frontier(obstacle, explored, visited=near)
+    assert not (ring & near).any() and (plain & near).any()
+    assert ring.sum() == (plain & ~near).sum()
+    explored[:, :] = True
+    explored[5, 5] = False  # one unknown cell: a 4-cell cluster; hiding cell (4, 5) leaves 3 -> the cluster drops
+    one = visited_mask((10, 10), (0.0, 0.0), 0.1, np.array([[0.45, 0.55]]), 0.05)
+    assert where(one) == [(4, 5)]
+    assert frontier(obstacle, explored).sum() == 4 and frontier(obstacle, explored, visited=one).sum() == 0
 
 
 # --- target fusion ----------------------------------------------------------------------------------------------
