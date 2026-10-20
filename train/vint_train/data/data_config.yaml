@@ -66,3 +66,8 @@ sacson:
 # (mapmad/configs/p2_datagen.yaml). 0.05 = 0.2 m/s / 4 Hz, fixed (Naz, 2026-10-10); measured mean 0.045 m/frame.
 habitat_mapmad:
   metric_waypoint_spacing: 0.05
+
+# MapMaD (Phase 8): search + exploration drives with the explorer teacher (mapmad/configs/p8_datagen_v3a.yaml);
+# same 4 Hz control step and <= 0.2 m/s as habitat_mapmad -> same spacing (Phase 8 block item 5).
+habitat_mapmad_v2:
+  metric_waypoint_spacing: 0.05

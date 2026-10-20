@@ -4,6 +4,7 @@
     python mapmad/scripts/make_p2_splits.py traj-names --dataset full    # after generation (also: --dataset pilot)
     python mapmad/scripts/make_p2_splits.py traj-names --dataset full --tiny 4   # format check: 4 + 2 drives
     python mapmad/scripts/make_p2_splits.py collisions --dataset full   # drives with any collision step
+    python mapmad/scripts/make_p2_splits.py traj-names --config mapmad/configs/p8_datagen_v3a.yaml   # Phase 8 data
 
 `homes`: val-drive homes (10 Phase 1 homes + 30 random unlabelled train homes), pilot homes (20, >= 10 labelled,
 none val-drive) and the train homes, each list with its sha256 (mapmad_sim/home_splits.py). Refuses to replace an
@@ -44,6 +45,12 @@ def cmd_homes(cfg: dict, force: bool) -> None:
     print(f"wrote {out}")
 
 
+def home_of(data: Path, drive: str) -> str:
+    """The drive's home (mapmad_meta.json; Phase 2 names are <home>_<n>, Phase 8 ids <prefix>-<home>-<kind>-<n>)."""
+    meta = json.loads((data / drive / "mapmad_meta.json").read_text())
+    return meta.get("home") or drive.rsplit("_", 1)[0]
+
+
 def tiny(parts: dict, data: Path, n: int) -> dict:
     """First n train and n // 2 test drives with >= 150 frames (NoMaD needs long enough trajectories)."""
     def long_enough(d: str) -> bool:
@@ -58,12 +65,13 @@ def cmd_traj_names(cfg: dict, dataset: str, n_tiny: int = 0) -> None:
     data = root / name
     splits = home_splits.load(config.CONFIG_DIR / cfg["homes"]["splits_file"])["homes"]
     drives = sorted(p.name for p in data.iterdir() if p.is_dir() and (p / "traj_data.pkl").exists())
+    homes = {d: home_of(data, d) for d in drives}
     if dataset == "full":
         held = set(splits["val_drive"])
     else:  # pilot: 2 of its homes as a tiny test split for the format check
-        held = set(sorted({d.rsplit("_", 1)[0] for d in drives})[:2])
-    parts = {"train": [d for d in drives if d.rsplit("_", 1)[0] not in held],
-             "test": [d for d in drives if d.rsplit("_", 1)[0] in held]}
+        held = set(sorted(set(homes.values()))[:2])
+    parts = {"train": [d for d in drives if homes[d] not in held],
+             "test": [d for d in drives if homes[d] in held]}
     if n_tiny:
         parts, name = tiny(parts, data, n_tiny), f"{name}_tiny"
     for part, names in parts.items():
@@ -78,7 +86,7 @@ def cmd_collisions(cfg: dict, dataset: str) -> None:
     root = config.paths()["mapmad_data"]
     name = cfg["datasets"][dataset]
     hits = []
-    for meta in sorted((root / name).glob("*_*/mapmad_meta.json")):
+    for meta in sorted((root / name).glob("*/mapmad_meta.json")):
         m = json.loads(meta.read_text())
         if m["collision_steps"] > 0:
             hits.append((m["drive_id"], m["collision_steps"]))
