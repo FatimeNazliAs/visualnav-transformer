@@ -171,7 +171,8 @@ Phase 10 (MapMaD v2: two map windows, two tokens; rules `/outputs/mapmad/p10_v2_
 - **Target-layer diagnostic** (report only): `target_groups.py` splits the search list by frame into target layer
   empty / target in view (simulator truth, >= 200 px at <= 4 m) / not in view and reports target_zeroed,
   target_shifted, clean vs maps and the learned map effect (maps - hidden minus its step-0 value), from existing
-  `score` outputs, CPU only.
+  `score` outputs, CPU only (subcommand `groups`); `make-seen-list` / `seen-report` / `train-share` = the frozen
+  "seen before, now out of view" list, its pre-set A/C decision (p10_rules.md v3 §9) and the training share.
 - **Checks:** `checks_g10.py` (G10 rows 1-2), `smoke_v2.py` (smoke checks + check sheet).
 - **Inference** (Phases 11-12): `inference_v2.MapMaDV2Inference(checkpoint, cfg, device, sha256).predict(frames, near,
   far, near_shown, far_shown, goal_image, seed)` -> waypoints (normalised and metres) + distance.

@@ -1,7 +1,7 @@
 # p10_rules.md — Phase 10 · MapMaD v2 model + training (rules frozen before the main run)
 
-Version 2, 2026-10-21 11:50 (amends G10 row 3; Naz's instruction). Version 1 (sha256 `3f3398b8…32df`) is kept
-unchanged as `p10_rules_v1.md` + `p10_rules_v1.sha256`. Sources: v2 plan v2.2 §8.5 / §5 G10 / §8 / §9; Phase 10
+Version 3, 2026-10-21 19:0x (adds §9, the target-layer decision rule; Naz's instruction after the gate). Version 2
+(sha256 `ee070c1a…8e69`) is kept as `p10_rules_v2.md`, version 1 (`3f3398b8…32df`) as `p10_rules_v1.md`. Sources: v2 plan v2.2 §8.5 / §5 G10 / §8 / §9; Phase 10
 confirmation block (Naz, 2026-10-21, items 1-11, no changes). sha256 of this file in `p10_rules.sha256`; a copy in
 `mapmad/configs/p10_rules.md`. A rule changed after launch gets a new version with its own sha256 BEFORE the result
 it judges (older versions archived as `p10_rules_v<N>.md`).
@@ -114,3 +114,21 @@ a crash (one resume, a second -> stop); offline checks > 5 h, pre-training repor
   the chain (own launcher, screen p10_twin).
 - A started run is never killed when another process appears; the event is logged. Every GPU event is logged.
 - Every GPU job is pinned with `docker exec -e CUDA_VISIBLE_DEVICES=<g>` (configs keep gpu_ids [0]).
+
+## 9. Target-layer decision (v3, pre-set by Naz after G10 passed; written before any score of this list)
+- List (frozen before scoring): `offline/lists/seen_list.json`, sha256
+  `bd44465c51a8842370e9beff4ca8e6dac01b6152983649ca7df6d9b2eb598c93`: EVERY frame t of the 272 held-out search drives
+  (551 held-out drives = test split minus collision drives) with t − 15 ≥ 0, t + 40 ≤ last frame, a simulator-truth
+  target detection (≥ 200 px at ≤ 4 m) at some frame < t and none at t ("seen before, now out of view"):
+  2,151 frames from 107 drives.
+- Scoring: `offline_eval score` on main `ema_19` (sha256 `6d2492f1…`), arms maps, target_zeroed, target_shifted (1 m,
+  direction seeded per sample id) (the zeroed arm is added automatically, report only); per-sample noise from the id;
+  CPU (GPU1 belongs to Phase 9 now; arms are paired within one run).
+- Statistic: target_zeroed − maps and target_shifted − maps, drive-level paired bootstrap, 10,000 resamples (seed 0),
+  95% percentile CI.
+- **Rule:** 95% CI lower bound of (target_zeroed − maps) > 0 → **A** (go to Phase 11 with this ema_19); else → **C**:
+  stop for Naz with a one-paragraph proposal of ONE training change (oversample seen-before-out-of-view frames, or
+  reduce the false-mark rate); no new run without Naz's OK. target_shifted is report only.
+- Report also: the share of training search samples (train-split search-drive index entries, collision drives
+  excluded) that are seen-before-out-of-view.
+

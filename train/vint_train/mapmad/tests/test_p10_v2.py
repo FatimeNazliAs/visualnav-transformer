@@ -326,3 +326,17 @@ def test_target_groups_split_and_learned_effect():
     assert rep["empty"]["target_zeroed"]["diff"] == pytest.approx(0.0)
     assert rep["all"]["learned_map_effect"]["diff"] == pytest.approx(-1.0)  # (1 - 3) - (2 - 3)
     assert "| in_view | 40 / 12 |" in markdown(rep)
+
+
+def test_seen_before_out_of_view_rule_and_decision():
+    from vint_train.mapmad.target_groups import decide, seen_frames, seen_out_of_view, seen_report
+    det = np.array([30, 31, 50])
+    assert not seen_out_of_view(det, 30) and not seen_out_of_view(det, 31) and seen_out_of_view(det, 32)
+    assert not seen_out_of_view(det, 50) and not seen_out_of_view(np.array([], int), 40)
+    assert seen_frames(det, 100) == [32, 33] + list(range(34, 50)) + list(range(51, 60))  # t <= 100 - 41
+    assert decide({"diff_ci_drive": [0.001, 0.02]}) == "A" and decide({"diff_ci_drive": [-0.001, 0.02]}) == "C"
+    drives = np.repeat([f"d{i}" for i in range(10)], 5)
+    maps = np.ones(50)
+    rep = seen_report({"drive": drives, "maps.gc_action_loss": maps, "target_zeroed.gc_action_loss": maps + 0.2,
+                       "target_shifted.gc_action_loss": maps})
+    assert rep["decision"] == "A" and rep["n_drives"] == 10
