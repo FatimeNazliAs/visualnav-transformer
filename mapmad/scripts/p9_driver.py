@@ -11,7 +11,7 @@ Steps (state in <p9>/driver/state.json; a finished step is never redone, so a re
    recogniser server on one GPU (naz_mapmad_recog) + client (naz_mapmad_habitat_p9) raw pass -> half-A threshold ->
    timing pass -> server stopped. A model failing twice is skipped with the reason (model_status.json);
 4. scoring (CPU): truth through the pipeline, every model scored, choice rule, tables, sheets;
-5. plug-in (GPU): truth parity on 2 dev drives, then R1 and R2 on the same drives.
+5. plug-in (GPU): truth parity on 2 dev drives (run right after step 2), then R1 and R2 on the same drives.
 GPU rule (v2 plan §8 + block item 9): a GPU is used only if p9_gpu_watch.py lists it as free (4 x 5-min checks
 without a Phase 10 or other user's process) and, after taking it, another GPU is still free or Phase 10 already
 holds a GPU; checked before every GPU step and re-checked every 5 min while one runs: if a Phase 10 / other process
@@ -326,9 +326,10 @@ def main() -> None:
     st.setdefault("come_back", os.environ.get("COME_BACK", "see the check-in"))
     commit = subprocess.run(["git", "-C", str(REPO), "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
     say(f"driver start (commit {commit}); done so far: {st['done']}")
-    steps = [("frames", step_frames), ("rules", step_rules)]
+    # truth parity first: a short GPU step that shows a plug-in problem before the long model runs
+    steps = [("frames", step_frames), ("rules", step_rules), ("plugin:truth", lambda s: step_plugin(s, "truth"))]
     steps += [(f"model:{k}", (lambda s, k=k: step_model(s, k))) for k in models_queue()]
-    steps += [("scoring", step_scoring), ("plugin:truth", lambda s: step_plugin(s, "truth"))]
+    steps += [("scoring", step_scoring)]
     for name, fn in steps:
         if name in st["done"]:
             continue

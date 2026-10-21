@@ -75,7 +75,8 @@ def frame_image(rgb: np.ndarray, dets, rec_layer: np.ndarray, truth_layer: np.nd
     r, c = ij[0] - win[0].start, ij[1] - win[1].start
     if 0 <= r < view.shape[0] and 0 <= c < view.shape[1]:
         view[r, c] = (255, 0, 0)
-    view = cv2.resize(view, (240 * view.shape[1] // max(view.shape[0], 1), 240), interpolation=cv2.INTER_NEAREST)
+    h = img.shape[0]
+    view = cv2.resize(view, (max(h * view.shape[1] // max(view.shape[0], 1), 1), h), interpolation=cv2.INTER_NEAREST)
     out = np.hstack([img, view])
     cv2.rectangle(out, (0, 0), (out.shape[1], 14), (0, 0, 0), -1)
     cv2.putText(out, text, (2, 10), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (255, 255, 255), 1)
