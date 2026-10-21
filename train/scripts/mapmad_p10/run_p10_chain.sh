@@ -22,6 +22,7 @@ main() {
     WHO=chain
     LOG="$P10/driver/chain.log"
     mkdir -p "$P10/driver" "$P10/launch"
+    exec 2>> "$LOG"  # bash errors (e.g. an unbound variable) land in the log, not only on the screen
     # shellcheck source=p10_lib.sh
     source "$REPO/train/scripts/mapmad_p10/p10_lib.sh"
     FINISHED=0

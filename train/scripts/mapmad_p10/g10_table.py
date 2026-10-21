@@ -29,6 +29,7 @@ def fmt_ci(r) -> str:
 def main() -> None:
     p10, label = sys.argv[1], sys.argv[2]
     off = os.path.join(p10, "offline", f"{label}_ema19")
+    os.makedirs(off, exist_ok=True)
     g12 = load(os.path.join(p10, "checks", "g10_rows_1_2_gpu.json"))
     search = load(os.path.join(off, "search", "compare.json"))
     explore = load(os.path.join(off, "explore", "compare.json"))

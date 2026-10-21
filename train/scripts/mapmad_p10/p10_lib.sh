@@ -112,7 +112,8 @@ finished_ok() {  # log run_dir -> FINISHED TRAINING and ema_19.pth
 }
 
 supervised_train() {  # label gpu config(container) accum -> RUN_DIR; one resume; returns 0 / stop reason in STOP_WHY
-    local label="$1" g="$2" cfg="$3" accum="$4" log="$P10/driver/train_${label}.log" d
+    local label="$1" g="$2" cfg="$3" accum="$4" log d  # one `local` expands all words first: log set below
+    log="$P10/driver/train_${label}.log"
     STOP_WHY=""
     say "train $label on GPU $g: python train.py -c $cfg (expandable_segments:True)"
     train_once "$g" "$cfg" "$log"
