@@ -52,3 +52,22 @@ def test_watcher_owner_marker():
     w = script("gpu_watch")
     assert w.owner_of(os.getpid()) in ("chain", "twin", "other")
     assert w.owner_of(10 ** 9) == "other"  # no such process: busy, never ours
+
+
+def test_run_c_verdict_table():
+    d = script("p10_c_decide")
+    ok = {k: {"pass": True} for k in ("row1", "row2", "row3", "row4", "seen", "guard")}
+    assert d.verdict(ok) == "C_IS_V2"
+    assert d.verdict({**ok, "seen": {"pass": False}}) == "RUN1_IS_V2"
+    assert d.verdict({**ok, "seen": {"pass": False}, "row3": {"pass": False}}) == "RUN1_IS_V2"
+    assert d.verdict({**ok, "row4": {"pass": False}}) == "STOP"
+    assert d.verdict({**ok, "guard": {"pass": False}}) == "STOP"
+    assert d.verdict({**ok, "row3": {"pass": False}}) == "STOP"  # seen passes but G10 fails: stop for Naz
+
+
+def test_run_c_decide_reads_missing_inputs_as_failed(tmp_path):
+    d = script("p10_c_decide")
+    os_path = tmp_path / "offline" / "c_ema19"
+    os_path.mkdir(parents=True)
+    c = d.checks(str(os_path))
+    assert not any(v["pass"] for v in c.values()) and d.verdict(c) == "STOP"

@@ -1,0 +1,7 @@
+# Phase 10 run C (p10_rules_v4.md, Naz 2026-10-21): mapmad_v2.yaml (same recipe, seed 1, 20 epochs, from nomad.pth)
+# with ONE change: seen-before-out-of-view oversampling p = 0.25 in search_map (dataset_v2 module docstring).
+base_config: mapmad_v2.yaml
+run_name: v2c_s1
+run_label: v2c_s1
+map:
+  seen_oversample: 0.25

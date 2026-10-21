@@ -6,6 +6,7 @@
 #
 #   bash train/scripts/mapmad_p10/launch_p10.sh            # chain + twin
 #   bash train/scripts/mapmad_p10/launch_p10.sh chain      # chain only
+#   bash train/scripts/mapmad_p10/launch_p10.sh c          # run C (p10_rules_v4.md): screens p10_c + p10_c_watch
 set -euo pipefail
 WHAT="${1:-all}"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -16,17 +17,23 @@ if ! screen -ls | grep -q '[.]p10_gpuwatch[[:space:]]'; then
     screen -dmS p10_gpuwatch python3 "$HERE/gpu_watch.py" "$P10/driver"
     echo "started screen p10_gpuwatch (free GPUs need 20 min of checks from now)"
 fi
-watch_cmd() {  # screen name, done file, stop file
+watch_cmd() {  # screen name, done file, stop file [, status owner (default: the name without p10_)]
+    local who="${4:-${1#p10_}}"
     echo "sleep 5; while screen -ls | grep -q '[.]$1[[:space:]]'; do sleep 30; done; \
 if [[ -f '$2' ]]; then msg='$1 ended: done'; elif [[ -f '$3' ]]; then msg='$1 ended: stop file present'; \
 else msg='$1 ended WITHOUT a done or stop file (kill -9?)'; echo \"\$msg\" > '$3'; \
-python3 '$HERE/p10_status.py' '$P10' '${1#p10_}' --set reason=\"\$msg\" --state STOPPED; fi; \
+python3 '$HERE/p10_status.py' '$P10' '$who' --set reason=\"\$msg\" --state STOPPED; fi; \
 echo \"[\$(date '+%Y-%m-%d %H:%M:%S')] \$msg\" >> '$P10/driver/watch.log'"
 }
 if [[ "$WHAT" == all || "$WHAT" == chain ]]; then
     screen -dmS p10_chain bash "$HERE/run_p10_chain.sh"
     screen -dmS p10_chain_watch bash -c "$(watch_cmd p10_chain "$P10/driver/CHAIN_DONE.txt" "$P10/STOP_reason.txt")"
     echo "started screens p10_chain + p10_chain_watch (log driver/chain.log, STATUS.md)"
+fi
+if [[ "$WHAT" == c ]]; then
+    screen -dmS p10_c bash "$HERE/run_p10_c.sh"
+    screen -dmS p10_c_watch bash -c "$(watch_cmd p10_c "$P10/driver/C_DONE.txt" "$P10/STOP_reason.txt" chain)"
+    echo "started screens p10_c + p10_c_watch (log driver/c.log, STATUS.md)"
 fi
 if [[ "$WHAT" == all || "$WHAT" == twin ]]; then
     screen -dmS p10_twin bash "$HERE/run_p10_twin.sh"

@@ -11,6 +11,10 @@ Habitat (`habitat_mapmad_v2`), modes drawn per sample with the draw's own Genera
 The sampler hands over a uniform sample i of the whole split. For a mode limited to one drive kind, i is kept if its
 drive is of that kind, else replaced by a uniform draw from that kind's samples -- so each mode's samples are uniform
 over its pool and the mode shares are exactly the drawn ones.
+Seen-before-out-of-view oversampling (Phase 10 run C, p10_rules_v4.md; `map.seen_oversample` = p, default 0 = off,
+training split only): a search_map sample is, with probability p, a uniform draw from the search samples whose frame
+is "seen before, now out of view" (target_groups.seen_out_of_view: a simulator-truth detection at an earlier frame,
+none at t); else the rule above. p = 0 draws no extra random number, so other runs sample exactly as before.
 GoStanford: maps hidden (all zero, both masks 1), photo shown/hidden 50/50 with NoMaD's own goal sampling.
 The distance loss counts only shown photos (train_loop.py).
 """
@@ -45,6 +49,27 @@ class MapMaDV2Dataset(MapMaDDataset):
         kinds = np.array([store.kind[d] == "search" for d, _, _ in self.index_to_data])
         self.pools = {"search": np.flatnonzero(kinds), "explore": np.flatnonzero(~kinds)}
         self.in_pool = {"search": kinds, "explore": ~kinds}
+        self.seen_p = float(map_cfg.get("seen_oversample", 0.0)) if train else 0.0
+        if self.seen_p > 0:
+            self.pools["seen"] = self._seen_pool(kinds)
+            print(f"seen-before-out-of-view oversampling p={self.seen_p}: {len(self.pools['seen'])} of "
+                  f"{int(kinds.sum())} search samples")
+
+    def _seen_pool(self, search: np.ndarray) -> np.ndarray:
+        """Indices of search samples whose frame is seen-before-out-of-view (module docstring)."""
+        from vint_train.mapmad.target_groups import detection_frames, seen_out_of_view
+
+        det: Dict[str, np.ndarray] = {}
+        out = []
+        for i in np.flatnonzero(search):
+            d, t, _ = self.index_to_data[i]
+            if d not in det:
+                det[d] = detection_frames(self.data_folder, d)
+            if seen_out_of_view(det[d], int(t)):
+                out.append(i)
+        if not out:
+            raise ValueError("seen_oversample > 0 but no seen-before-out-of-view sample in this split")
+        return np.asarray(out)
 
     def empty_map(self) -> torch.Tensor:
         return torch.zeros((N_WINDOWS, 4, self.map_size, self.map_size), dtype=torch.float32)
@@ -62,6 +87,9 @@ class MapMaDV2Dataset(MapMaDDataset):
 
     def pool_index(self, i: int, mode: M.Mode, rng: np.random.Generator) -> int:
         """Sample i if its drive suits the mode, else a uniform draw from the mode's pool (module docstring)."""
+        if self.seen_p > 0 and mode.name == "search_map" and rng.random() < self.seen_p:
+            pool = self.pools["seen"]
+            return int(pool[int(rng.integers(len(pool)))])
         kind = MODE_KIND.get(mode.name)
         if kind is None or self.in_pool[kind][i]:
             return int(i)

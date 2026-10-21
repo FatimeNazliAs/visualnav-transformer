@@ -340,3 +340,31 @@ def test_seen_before_out_of_view_rule_and_decision():
     rep = seen_report({"drive": drives, "maps.gc_action_loss": maps, "target_zeroed.gc_action_loss": maps + 0.2,
                        "target_shifted.gc_action_loss": maps})
     assert rep["decision"] == "A" and rep["n_drives"] == 10
+
+
+def test_guard_margin():
+    from vint_train.mapmad.target_groups import guard
+    drives = np.repeat([f"d{i}" for i in range(10)], 5)
+    ref = {"ids": np.arange(50), "drive": drives, "maps.gc_action_loss": np.ones(50)}
+    ok = {"ids": np.arange(50), "drive": drives, "maps.gc_action_loss": np.full(50, 1.03)}
+    bad = {"ids": np.arange(50), "drive": drives, "maps.gc_action_loss": np.full(50, 1.06)}
+    assert guard(ok, ref)["pass"] and not guard(bad, ref)["pass"]
+
+
+def test_seen_oversampling_draws_and_off_switch():
+    from vint_train.mapmad.dataset_v2 import MapMaDV2Dataset
+    ds = object.__new__(MapMaDV2Dataset)
+    search = np.zeros(1000, bool)
+    search[:500] = True
+    ds.pools = {"search": np.flatnonzero(search), "explore": np.flatnonzero(~search), "seen": np.arange(10)}
+    ds.in_pool = {"search": search, "explore": ~search}
+    mode = M.BY_NAME["search_map"]
+    ds.seen_p = 0.25
+    rng = np.random.default_rng(0)
+    draws = np.array([ds.pool_index(int(i), mode, rng) for i in rng.integers(0, 1000, 20000)])
+    assert abs((draws < 10).mean() - (0.25 + 0.75 * 10 / 500)) < 0.01 and search[draws].all()
+    ds.seen_p = 0.0  # off: the old rule, no extra random draw
+    a, b = np.random.default_rng(1), np.random.default_rng(1)
+    got = [ds.pool_index(i, mode, a) for i in range(600)]
+    kept = [i if search[i] else int(ds.pools["search"][int(b.integers(500))]) for i in range(600)]
+    assert got == kept

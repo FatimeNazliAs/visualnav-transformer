@@ -20,6 +20,9 @@ detection at some frame < t and none at t; `seen-report` scores target_zeroed an
     python -m vint_train.mapmad.target_groups make-seen-list --config config/mapmad_v2.yaml --out <seen_list.json>
     python -m vint_train.mapmad.target_groups seen-report --scores <scores.npz> --out <dir>
     python -m vint_train.mapmad.target_groups train-share --config config/mapmad_v2.yaml --out <json>
+    python -m vint_train.mapmad.target_groups guard --scores <run C search scores.npz> --reference <run 1 ...> --out <json>
+(`guard`, p10_rules_v4.md: maps loss of run C minus run 1 on the frozen 5,000 search samples, drive-level paired CI;
+pass = CI upper bound <= +0.05.)
 """
 
 import argparse
@@ -217,6 +220,29 @@ def cmd_train_share(args) -> None:
     print(out)
 
 
+GUARD_MARGIN = 0.05
+
+
+def guard(scores: Dict[str, np.ndarray], reference: Dict[str, np.ndarray]) -> Dict[str, Any]:
+    """maps(run C) - maps(run 1) on the same samples (drive-level paired CI); pass = CI upper bound <= GUARD_MARGIN."""
+    if not np.array_equal(scores["ids"], reference["ids"]):
+        raise SystemExit("guard: the two score files are not on the same samples")
+    row = paired_stats(np.asarray(scores["maps.gc_action_loss"], dtype=np.float64),
+                       np.asarray(reference["maps.gc_action_loss"], dtype=np.float64), np.asarray(scores["drive"]))
+    row["margin"] = GUARD_MARGIN
+    row["pass"] = bool(row["diff_ci_drive"][1] <= GUARD_MARGIN)
+    return row
+
+
+def cmd_guard(args) -> None:
+    row = guard(load_scores(args.scores), load_scores(args.reference))
+    row.update(scores=args.scores, reference=args.reference)
+    with open(args.out, "w") as f:
+        json.dump(row, f, indent=1)
+    print(f"guard: maps C {row['mean_a']:.4f} vs run 1 {row['mean_b']:.4f}: {row['diff']:+.4f} "
+          f"[{row['diff_ci_drive'][0]:+.4f}, {row['diff_ci_drive'][1]:+.4f}] -> {'PASS' if row['pass'] else 'FAIL'}")
+
+
 def cmd_groups(args) -> None:
     from vint_train.mapmad.dataset import build_mapmad_dataset
     from vint_train.mapmad.offline_eval import map_dataset_name
@@ -262,6 +288,10 @@ def main() -> None:
     p.add_argument("--config", required=True)
     p.add_argument("--out", required=True)
     p.set_defaults(fn=cmd_train_share)
+    p = sub.add_parser("guard")
+    for a in ("--scores", "--reference", "--out"):
+        p.add_argument(a, required=True)
+    p.set_defaults(fn=cmd_guard)
     args = ap.parse_args()
     args.fn(args)
 

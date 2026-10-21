@@ -1,0 +1,6 @@
+# Phase 10 twin of run C (report only, p10_rules_v4.md): mapmad_v2_seen.yaml with seed 2; runs only if run C
+# becomes v2 (run_p10_c.sh).
+base_config: mapmad_v2_seen.yaml
+run_name: v2c_s2
+run_label: v2c_s2
+seed: 2
