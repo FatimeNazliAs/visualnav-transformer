@@ -139,7 +139,8 @@ class _Owlv2(Recogniser):
         with self.torch.inference_mode():
             outputs = self.model(**inputs)
         side = max(h, w)
-        res = self.proc.post_process_object_detection(outputs, threshold=self.min_score, target_sizes=[(side, side)])[0]
+        res = self.proc.post_process_grounded_object_detection(outputs, threshold=self.min_score,
+                                                               target_sizes=[(side, side)])[0]
         dets = [RawDet(float(s), clip_box(b.cpu().numpy(), w, h)) for s, b in zip(res["scores"], res["boxes"])]
         return keep_top([d for d in dets if d.box[2] > d.box[0] and d.box[3] > d.box[1]], self.min_score, self.max_det)
 

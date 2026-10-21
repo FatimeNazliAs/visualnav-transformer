@@ -25,7 +25,7 @@ import yaml
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG = ROOT / "configs" / "p9_models.yaml"
 OUT = Path(os.environ.get("MAPMAD_OUTPUTS", "/outputs/mapmad")) / "p9_recognisers" / "photo_test" / "weights.json"
-HF_PATTERNS = ["*.json", "*.safetensors", "*.txt", "*.py", "*.model", "*.jinja", "*.tiktoken", "*.md", "LICENSE*"]
+HF_PATTERNS = ["*.json", "*.safetensors", "*.txt", "*.py", "*.model", "*.jinja", "*.tiktoken", "LICENSE*"]  # no *.md: httpx2 fails to decompress model cards
 
 
 def sha256(path: Path) -> str:

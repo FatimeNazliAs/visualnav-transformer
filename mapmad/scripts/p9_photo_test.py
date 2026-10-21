@@ -28,7 +28,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from mapmad_sim import config  # noqa: E402
 from mapmad_sim.photo_frames import write_json_atomic  # noqa: E402
-from mapmad_sim.recogniser import SidecarRecogniser  # noqa: E402
+from mapmad_sim.recogniser import SidecarRecogniser, connect  # noqa: E402
 from mapmad_bridge import protocol  # noqa: E402
 
 CHUNK = 250
@@ -155,16 +155,7 @@ def main() -> None:
     p.add_argument("--threshold", type=float)
     p.add_argument("--seed", type=int, default=20261021)
     a = p.parse_args()
-    deadline = time.time() + 1800  # the server may still be loading its model
-    while True:
-        try:
-            client = SidecarRecogniser(a.model, a.host, a.port, 0.0, 1.0, False, protocol.auth_key(), timeout_s=600)
-            break
-        except OSError:
-            if time.time() > deadline:
-                raise
-            time.sleep(5)
-    with client:
+    with connect(a.model, a.host, a.port, 0.0, 1.0, False, protocol.auth_key()) as client:
         if client.info["model"] != a.model:
             raise SystemExit(f"server holds {client.info['model']}, not {a.model}")
         cmd_raw(a, client) if a.step == "raw" else cmd_timing(a, client)

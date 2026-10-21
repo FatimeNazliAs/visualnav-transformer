@@ -31,11 +31,11 @@ REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / "mapmad" / "src"))
 sys.path.insert(0, str(REPO / "train"))  # numpy-only NoMaD-side modules (map_v2)
 from mapmad_bridge import protocol  # noqa: E402
-from mapmad_sim import config, home_splits, objectnav  # noqa: E402
+from mapmad_sim import config, objectnav  # noqa: E402
 from mapmad_sim.datagen_v2 import robot_spec  # noqa: E402
 from mapmad_sim.depth_map import FirstSeenMap, MapSpec  # noqa: E402
 from mapmad_sim.photo_frames import write_json_atomic  # noqa: E402
-from mapmad_sim.recogniser import SidecarRecogniser, TruthRecogniser, detection_cells, frame_scores  # noqa: E402
+from mapmad_sim.recogniser import TruthRecogniser, connect, detection_cells, frame_scores  # noqa: E402
 from mapmad_sim.robot import LimoSim  # noqa: E402
 from mapmad_sim.run_layout import read_config  # noqa: E402
 from mapmad_sim.target_layer import NoiseSpec, detect, frame_cells, max_into  # noqa: E402
@@ -176,8 +176,7 @@ def main() -> None:
         rec = None
     else:
         ch = json.loads((root / "photo_test" / "choice.json").read_text())["rows"][a.recogniser]
-        rec = SidecarRecogniser(a.recogniser, a.host, a.port, ch["threshold"], ch["p99"], ch["kind"] == "vlm",
-                                protocol.auth_key(), timeout_s=600)
+        rec = connect(a.recogniser, a.host, a.port, ch["threshold"], ch["p99"], ch["kind"] == "vlm", protocol.auth_key())
     results = []
     for drive in drives:
         r = rec

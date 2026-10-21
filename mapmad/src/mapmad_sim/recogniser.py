@@ -16,6 +16,7 @@ maximum over the detections covering it; then map_v2.TargetFusion fuses over vie
 """
 
 import socket
+import time
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Protocol, Sequence, Tuple
 
@@ -117,6 +118,19 @@ class SidecarRecogniser:
 
     def __exit__(self, *exc) -> None:
         self.close()
+
+
+def connect(name: str, host: str, port: int, threshold: float, p99: float, vlm: bool, key: str,
+            wait_s: float = 1800.0) -> SidecarRecogniser:
+    """SidecarRecogniser, retrying every 5 s while the server is still loading its model (up to wait_s)."""
+    deadline = time.time() + wait_s
+    while True:
+        try:
+            return SidecarRecogniser(name, host, port, threshold, p99, vlm, key, timeout_s=600)
+        except OSError:
+            if time.time() > deadline:
+                raise
+            time.sleep(5)
 
 
 def unpack(reply: Dict, shape: Tuple[int, int], score_of, min_score: float = 0.0) -> List[Detection]:
