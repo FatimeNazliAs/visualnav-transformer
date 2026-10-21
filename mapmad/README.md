@@ -340,3 +340,41 @@ docker exec naz_mapmad bash -c 'R=/outputs/mapmad/p8_search_data/format_check/ru
 - The teacher's frontier for a frame = `map_v2.layers_at` with the drive's `frontier_ignore_trajectory_m` (0 for
   option A = the plain frontier); with the ring (option C) the plain frontier on frames where `ring_fallback` is set.
 - `teacher_ms` (wall-clock ms per teacher step) is the only saved value that differs between two runs of one drive id.
+
+## Phase 9: recognisers (photo test + plug-in)
+
+A recogniser finds the named object in each picture and draws the map's "target seen here" layer; the network never
+sees the name. Phase 9 compares 9 local models + simulator truth on still frames of the 10 labelled Phase 1 homes and
+picks R1, R2 by the rule in `configs/p9_rules.md`. Code: `mapmad_sim/photo_labels.py` (counted / near-synonym labels),
+`photo_frames.py` (frames, items, halves), `photo_scoring.py` (pixel + map metrics, threshold, choice rule),
+`recogniser.py` (the plug-in: `Recogniser.detect(rgb, depth, category)`, truth, sidecar client, score mapping);
+`mapmad_recog/` (models + sidecar server, its own container). Configs `p9_frames.yaml`, `p9_models.yaml`.
+Outputs `/outputs/mapmad/p9_recognisers/` (`STATUS.md`, `frames/`, `photo_test/`, `ovon_test/`, `plugin/`, `sheets/`).
+
+```bash
+# containers: the Phase 9 worktree's own Habitat container + the recogniser sidecar (image from Dockerfile.recog,
+# packages from docker/requirements-recog.txt; weights in /mnt/shared_disk/nazli/model_cache = /model_cache)
+HABITAT_CONTAINER=naz_mapmad_habitat_p9 bash mapmad/docker/run_containers.sh habitat
+bash mapmad/scripts/p9_job.sh recog_build /mnt/shared_disk/nazli/nomad_outputs/mapmad/p9_recognisers/jobs/recog_build \
+    bash mapmad/docker/run_containers.sh recog-build
+bash mapmad/docker/run_containers.sh recog
+# downloads (CPU; SAM 3 is gated: ~/.cache/huggingface/token, mounted read-only, never printed) -> photo_test/weights.json
+bash mapmad/scripts/p9_job.sh download /mnt/shared_disk/nazli/nomad_outputs/mapmad/p9_recognisers/jobs/download \
+    docker exec -e HOME=/model_cache/home -e YOLO_OFFLINE=False -e CUDA_VISIBLE_DEVICES= naz_mapmad_recog \
+    python mapmad/scripts/p9_download.py
+# GPU watcher (Phase 10's processes count as busy; Phase 9 priority rule in p9_gpu_watch.usable_gpus)
+D=/mnt/shared_disk/nazli/nomad_outputs/mapmad/p9_recognisers/driver
+bash mapmad/scripts/p9_job.sh gpuwatch $D python3 mapmad/scripts/p9_gpu_watch.py $D --ours naz_mapmad_habitat_p9 naz_mapmad_recog
+# the whole GPU part, unattended and resumable (committed code only): frames -> rules freeze -> 9 models -> scoring
+# + choice -> plug-in (truth parity, R1, R2). The key only lives in the environment.
+MAPMAD_SIDECAR_KEY=$(openssl rand -hex 16) bash mapmad/scripts/p9_job.sh driver $D python3 mapmad/scripts/p9_driver.py
+# single steps (in naz_mapmad_habitat_p9, -w /app/visualnav-transformer):
+#   python mapmad/scripts/p9_build_frames.py candidates|select|render --gpu G
+#   python mapmad/scripts/p9_photo_test.py raw|timing --model M --port P [--threshold T]   (server: python -m mapmad_recog.server)
+#   python mapmad/scripts/p9_score.py tune|score|choose|sheets [--model M] [--fresh]
+#   python mapmad/scripts/p9_plugin_run.py --recogniser truth|M --gpu G [--port P]
+# tests (CPU): docker exec -w /app/visualnav-transformer/mapmad naz_mapmad_habitat_p9 python -m pytest tests/test_p9_*.py
+```
+- Every long job runs in `screen` through `p9_job.sh` (EXIT trap: `STOP_reason.txt` on any abnormal exit, `DONE.txt`
+  on a normal one). Claude Code itself may run in VS Code; it can be closed once the driver runs.
+- Unique ids: frames `p9f-<home>-<rnd|drv>-<n>`, items `p9q-<frame>-<category>` / `p9o-<frame>-<OVON name>`.

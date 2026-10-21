@@ -1,0 +1,28 @@
+# MapMaD Phase 9 recogniser sidecar (naz_mapmad_recog): the photo-test models and the recogniser server the Habitat
+# harness calls over mapmad-net. Python 3.11 + torch 2.6.0 built for CUDA 12.4 (cukurovaai's driver 550 = CUDA 12.4;
+# newer torch wheels need CUDA 13). Every other package comes from requirements-recog.txt (pinned).
+#
+# Build context = mapmad/docker:
+#   mapmad/docker/run_containers.sh recog-build
+# Weights are not in the image: they live in the model cache mounted at /model_cache (HF_HOME).
+FROM docker.io/pytorch/pytorch:2.6.0-cuda12.4-cudnn9-runtime
+
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends git libgl1 libglib2.0-0 \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements-recog.txt /opt/recog/requirements-recog.txt
+RUN pip install --no-cache-dir -r /opt/recog/requirements-recog.txt \
+    && python -c "import torch, transformers, ultralytics, rfdetr; assert torch.version.cuda == '12.4', torch.version.cuda; print('torch', torch.__version__, 'transformers', transformers.__version__, 'ultralytics', ultralytics.__version__)"
+
+# Ultralytics must never install or update packages at run time (all packages come from the requirements file).
+ENV HF_HOME=/model_cache/hf \
+    TORCH_HOME=/model_cache/torch \
+    YOLO_CONFIG_DIR=/tmp/ultralytics \
+    YOLO_AUTOINSTALL=False \
+    YOLO_OFFLINE=True \
+    HF_TOKEN_PATH=/hf_token/token \
+    PYTHONPATH=/app/visualnav-transformer/mapmad/src \
+    HOME=/tmp
+WORKDIR /app/visualnav-transformer
+CMD ["bash"]
