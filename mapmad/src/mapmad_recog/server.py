@@ -135,6 +135,10 @@ def main() -> None:
     p.add_argument("--device", default="cuda:0", help="cuda:0 = the GPU in CUDA_VISIBLE_DEVICES; cpu for smoke tests")
     a = p.parse_args()
     key = protocol.auth_key()
+    import os
+    import torch
+
+    torch.set_num_threads(int(os.environ.get("OMP_NUM_THREADS", "4")))  # the driver sets 4 (CPU oversubscription)
     service = RecogService(a.model, yaml.safe_load(a.config.read_text()), a.device)
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)

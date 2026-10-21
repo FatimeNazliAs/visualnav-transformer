@@ -9,12 +9,15 @@ Steps (state in <p9>/driver/state.json; a finished step is never redone, so a re
    mapping, weights sha256), its sha256 in p9_rules.md.sha256 -- before any model is scored;
 3. models, one at a time from the queue (p9_models.yaml order, SAM 3 last; its download is retried once first):
    recogniser server on one GPU (naz_mapmad_recog) + client (naz_mapmad_habitat_p9) raw pass -> half-A threshold ->
-   timing pass -> server stopped. A model failing twice is skipped with the reason (model_status.json);
+   timing pass -> server stopped. A model failing twice is skipped with the reason (model_status.json); a model
+   cut short while another process was on our GPU is not a failure: its folder goes to photo_test/_partial/ and it is
+   re-run from zero;
 4. scoring (CPU): truth through the pipeline, every model scored, choice rule, tables, sheets;
 5. plug-in (GPU): truth parity on 2 dev drives (run right after step 2), then R1 and R2 on the same drives.
 GPU rule (v2 plan §8 + block item 9): a GPU is used only if p9_gpu_watch.py lists it as free (4 x 5-min checks
 without a Phase 10 or other user's process) and, after taking it, another GPU is still free or Phase 10 already
-holds a GPU; checked before every GPU step and re-checked every 5 min while one runs: if a Phase 10 / other process
+holds a GPU; checked before every GPU step (the watcher's file, then a live nvidia-smi check of that GPU right
+before taking it) and re-checked every 5 min while one runs: if a Phase 10 / other process
 appears on our GPU, the current model finishes and no new work starts there (the next step waits for a usable GPU).
 One GPU at a time. Budget: > 12 h of GPU holding (1.5 x 8 h) -> STOP. Every GPU event goes to the log.
 Refuses uncommitted code under mapmad/ (§0.8).
@@ -32,12 +35,13 @@ from typing import Any, Dict, List, Optional
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[1]
 sys.path.insert(0, str(HERE))
-from p9_gpu_watch import usable_gpus  # noqa: E402
+from p9_gpu_watch import classify, container_ids, usable_gpus  # noqa: E402
 
 HAB, REC = "naz_mapmad_habitat_p9", "naz_mapmad_recog"
 CHECK_S = int(os.environ.get("CHECK_S", 300))
 BUDGET_H = 12.0
 PORT0 = 5560
+SERVER_THREADS = 4  # CPU threads per recogniser server (13:13-15:38 slowdown: oversubscription)
 
 
 def outputs_host() -> Path:
@@ -114,12 +118,21 @@ def gpu_state() -> Dict[str, Any]:
     return json.loads((DRV / "gpu_free.json").read_text())
 
 
+def live_busy(g: int) -> bool:
+    """True if GPU g holds a Phase 10 or another user's process right now (nvidia-smi, not the watcher's file)."""
+    c = classify(container_ids([HAB, REC])).get(g, {"phase10": 0, "other": 0})
+    return bool(c["phase10"] or c["other"])
+
+
 def acquire(st: Dict[str, Any], what: str) -> int:
     """Wait until a GPU may be taken (module docstring); log the event."""
     waited = False
     while True:
         s = gpu_state()
         usable = usable_gpus(s, [])
+        if usable and live_busy(usable[0]):  # the watcher's file can be 5 min old
+            say(f"GPU event: GPU {usable[0]} listed free but busy now (live check): not taken")
+            usable = []
         if usable:
             g = usable[0]
             if waited:
@@ -139,6 +152,7 @@ class Hold:
 
     def __init__(self, st: Dict[str, Any], g: int, what: str) -> None:
         self.st, self.g, self.what = st, g, what
+        self.contended = False  # another process was seen on our GPU while we held it
 
     def __enter__(self) -> "Hold":
         self.t0 = time.time()
@@ -153,7 +167,8 @@ class Hold:
 
     def check(self) -> None:
         s = gpu_state()
-        if self.g in s["phase10"] or self.g in s["other"]:
+        if self.g in s["phase10"] or self.g in s["other"] or live_busy(self.g):
+            self.contended = True
             say(f"GPU event: another process on our GPU {self.g} (phase10={s['phase10']} other={s['other']}): "
                 f"finishing {self.what}, no new work there")
 
@@ -227,7 +242,8 @@ def server(key: str, g: int, port: int) -> None:
     log = f"/outputs/mapmad/p9_recognisers/photo_test/{key}/server.log"
     (P9 / "photo_test" / key).mkdir(parents=True, exist_ok=True)
     run(["docker", "exec", "-d", "-e", f"CUDA_VISIBLE_DEVICES={g}", "-e", "MAPMAD_SIDECAR_KEY", "-e", "HOME=/model_cache/home",
-         "-e", "HF_HUB_OFFLINE=1", "-e", "PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True", REC, "bash", "-c",
+         "-e", "HF_HUB_OFFLINE=1", "-e", "PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True",
+         "-e", f"OMP_NUM_THREADS={SERVER_THREADS}", "-e", f"MKL_NUM_THREADS={SERVER_THREADS}", REC, "bash", "-c",
          f"python -m mapmad_recog.server --model {key} --port {port} >> {log} 2>&1"])
 
 
@@ -253,7 +269,9 @@ def step_model(st: Dict[str, Any], key: str) -> None:
         say(f"{key}: skipped ({reason})")
         return
     folder = P9 / "photo_test" / key
-    for attempt in (1, 2):
+    attempt = 0
+    while attempt < 2:
+        attempt += 1
         g = acquire(st, f"model {key}")
         port = PORT0 + g
         with Hold(st, g, f"9.4 photo test: {key} (attempt {attempt})") as h:
@@ -272,6 +290,15 @@ def step_model(st: Dict[str, Any], key: str) -> None:
                                          "--host", REC, "--port", str(port), "--threshold", str(t)], folder / "client.log")
             finally:
                 stop_server(key, port)
+        if c != 0:
+            h.check()  # a crash can come sooner than the next 5-min check (e.g. out of memory next to a new job)
+        if h.contended:  # cut short or timed next to another job: re-run from zero, not an attempt
+            dest = P9 / "photo_test" / "_partial" / f"{key}__{time.strftime('%Y%m%d-%H%M%S')}"
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            os.replace(folder, dest)
+            say(f"{key}: another process shared GPU {g} during the run (exit {c}): moved to {dest}, re-run from zero")
+            attempt -= 1
+            continue
         if c == 0:
             set_model_status(key, {"status": "ran", "gpu": g, "attempts": attempt})
             say(f"{key}: ran (GPU {g}, attempt {attempt})")
