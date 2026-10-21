@@ -246,7 +246,7 @@ class _Vlm(Recogniser):
         from transformers import AutoModelForImageTextToText, AutoProcessor
 
         self.key, self.torch = key, torch
-        remote = key == "molmo2"
+        remote = False  # Molmo2's own remote code targets transformers 4.57; transformers 5.20 has it natively
         self.proc = AutoProcessor.from_pretrained(self.spec["hf"], revision=self.spec["revision"], trust_remote_code=remote)
         self.model = AutoModelForImageTextToText.from_pretrained(
             self.spec["hf"], revision=self.spec["revision"], trust_remote_code=remote, dtype=torch.bfloat16,
