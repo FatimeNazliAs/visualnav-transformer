@@ -58,9 +58,7 @@ def now() -> str:
 
 def say(msg: str) -> None:
     line = f"[{now()}] {msg}"
-    print(line, flush=True)
-    with open(DRV / "driver.log", "a") as f:
-        f.write(line + "\n")
+    print(line, flush=True)  # p9_job.sh writes stdout to driver/driver.log
     with open(LOG, "a") as f:
         f.write(f"- [driver {now()}] {msg}\n")
 
