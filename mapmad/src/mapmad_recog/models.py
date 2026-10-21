@@ -7,6 +7,13 @@
 most `max_det`, score >= `min_score`. Box-only models get their masks from MobileSAM afterwards (MaskMaker), never
 here. VLMs return score 1.0 (one operating point). Prompts and the VLM questions are fixed in VLM_PROMPTS
 (copied into p9_rules.md).
+
+Text reuse (timing rule, Naz 2026-10-21; not a scoring change): as in driving, where the category is fixed for an
+episode, a recogniser may encode a category's text once and reuse it. `reuse_text` switches it on or off per model:
+YOLOE caches its text embeddings per prompt, YOLO-World memoises its CLIP encoding inside ultralytics' set_classes,
+Grounding DINO / LLMDet / OWLv2 / SAM 3 memoise their text encoder's output per input (TEXT_ENCODERS). The VLMs
+encode the question together with the picture (nothing to reuse), RF-DETR and MobileSAM have no text. The server
+checks at start that detections are identical with reuse on and off (`text_reuse_check`), else it switches reuse off.
 """
 
 import json
@@ -24,6 +31,8 @@ VLM_PROMPTS = {
     "molmo2": "Point to every {name} in the image. If there is no {name} in the image, say that there is none.",
 }
 # RF-DETR has a fixed COCO list: the asked word -> its COCO class name
+TEXT_ENCODERS = {"grounding_dino": "model.text_backbone", "llmdet": "model.text_backbone",
+                 "owlv2": "owlv2.text_model", "sam3": None}  # None: found by name at load (gated, not inspectable)
 COCO_NAME = {"chair": "chair", "couch": "couch", "bed": "bed", "toilet": "toilet", "tv": "tv",
              "potted plant": "potted plant"}
 
@@ -46,12 +55,67 @@ def clip_box(box: Any, w: int, h: int) -> np.ndarray:
     return np.array([np.clip(b[0], 0, w), np.clip(b[1], 0, h), np.clip(b[2], 0, w), np.clip(b[3], 0, h)])
 
 
+def tensor_key(value: Any) -> Any:
+    """Hashable key of a forward call's inputs (tensors by dtype, shape and bytes)."""
+    if hasattr(value, "detach") and hasattr(value, "shape"):
+        return ("t", str(value.dtype), tuple(value.shape), value.detach().cpu().numpy().tobytes())
+    if isinstance(value, (list, tuple)):
+        return tuple(tensor_key(v) for v in value)
+    if isinstance(value, dict):
+        return tuple(sorted((k, tensor_key(v)) for k, v in value.items()))
+    return repr(value)
+
+
+def memo_forward(module: Any, owner: "Recogniser") -> None:
+    """Reuse a text encoder's output for repeated identical inputs while owner.reuse_text is on."""
+    orig = module.forward
+    cache: Dict[Any, Any] = {}
+
+    def forward(*args: Any, **kwargs: Any) -> Any:
+        if not owner.reuse_text:
+            return orig(*args, **kwargs)
+        key = (tensor_key(args), tensor_key(kwargs))
+        if key not in cache:
+            cache[key] = orig(*args, **kwargs)
+        return cache[key]
+
+    module.forward = forward
+    owner.text_caches.append(cache)
+
+
+def find_module(model: Any, path: Optional[str]) -> Optional[Any]:
+    """`a.b` below model, or (path None) the first module named text_encoder / text_model / text_backbone."""
+    if path:
+        for part in path.split("."):
+            model = getattr(model, part)
+        return model
+    for name, mod in model.named_modules():
+        if name.split(".")[-1] in ("text_encoder", "text_model", "text_backbone") and name.count(".") <= 2:
+            return mod
+    return None
+
+
 class Recogniser:
-    """Base: holds the spec, the device and the raw-pass limits."""
+    """Base: holds the spec, the device, the raw-pass limits and the text-reuse switch."""
 
     def __init__(self, spec: Dict[str, Any], cache: Path, device: str, min_score: float, max_det: int) -> None:
         self.spec, self.cache, self.device = spec, cache, device
         self.min_score, self.max_det = min_score, max_det
+        self.reuse_text = True
+        self.text_caches: List[Dict[Any, Any]] = []
+        self.text_reuse = "none"  # what reuse means for this model (logged by the server)
+
+    def clear_text_caches(self) -> None:
+        for c in self.text_caches:
+            c.clear()
+
+    def memo_text_encoder(self, key: str, model: Any) -> None:
+        mod = find_module(model, TEXT_ENCODERS.get(key))
+        if mod is None:
+            self.text_reuse = "none (no text encoder found)"
+            return
+        memo_forward(mod, self)
+        self.text_reuse = f"text encoder output memoised ({type(mod).__name__})"
 
     def detect(self, rgb: np.ndarray, prompt: str) -> List[RawDet]:
         raise NotImplementedError
@@ -70,6 +134,8 @@ class _Ultralytics(Recogniser):
         self.model = (YOLOE if self.yoloe else YOLO)(str(folder / self.spec["ultralytics"]))
         self.current: Optional[str] = None
         self.pe: Dict[str, Any] = {}
+        self.text_caches.append(self.pe)
+        self.text_reuse = "text embeddings cached per prompt" if self.yoloe else "CLIP encoding memoised per prompt"
         if not self.yoloe:  # YOLO-World: set_classes reloads CLIP from disk on every call (~1.3 s); in driving the
             self._memoise_text_pe()  # class is fixed per episode, so the text encoding is memoised per prompt
 
@@ -81,18 +147,21 @@ class _Ultralytics(Recogniser):
         cache: Dict[tuple, Any] = {}
 
         def memo(text, batch=80, cache_clip_model=False, **kw):
+            if not self.reuse_text:
+                return orig(text, batch=batch, cache_clip_model=cache_clip_model, **kw)
             key = tuple(text)
             if key not in cache:
                 cache[key] = orig(text, batch=batch, cache_clip_model=True, **kw)
             return cache[key]
 
         world.get_text_pe = memo
+        self.text_caches.append(cache)
 
     def _set(self, prompt: str) -> None:
-        if prompt == self.current:
+        if prompt == self.current and self.reuse_text:
             return
         if self.yoloe:
-            if prompt not in self.pe:
+            if prompt not in self.pe or not self.reuse_text:
                 self.pe[prompt] = self.model.get_text_pe([prompt])
             self.model.set_classes([prompt], self.pe[prompt])
         else:
@@ -126,6 +195,7 @@ class _GroundingDino(Recogniser):
         self.proc = AutoProcessor.from_pretrained(self.spec["hf"], revision=self.spec["revision"])
         self.model = AutoModelForZeroShotObjectDetection.from_pretrained(
             self.spec["hf"], revision=self.spec["revision"]).to(self.device).eval()
+        self.memo_text_encoder("llmdet" if "llmdet" in self.spec["hf"] else "grounding_dino", self.model)
 
     def detect(self, rgb: np.ndarray, prompt: str) -> List[RawDet]:
         h, w = rgb.shape[:2]
@@ -149,6 +219,7 @@ class _Owlv2(Recogniser):
         self.torch = torch
         self.proc = Owlv2Processor.from_pretrained(self.spec["hf"], revision=self.spec["revision"])
         self.model = Owlv2ForObjectDetection.from_pretrained(self.spec["hf"], revision=self.spec["revision"]).to(self.device).eval()
+        self.memo_text_encoder("owlv2", self.model)
 
     def detect(self, rgb: np.ndarray, prompt: str) -> List[RawDet]:
         h, w = rgb.shape[:2]
@@ -197,6 +268,7 @@ class _Sam3(Recogniser):
         self.torch = torch
         self.proc = Sam3Processor.from_pretrained(self.spec["hf"], revision=self.spec["revision"])
         self.model = Sam3Model.from_pretrained(self.spec["hf"], revision=self.spec["revision"]).to(self.device).eval()
+        self.memo_text_encoder("sam3", self.model)
 
     def detect(self, rgb: np.ndarray, prompt: str) -> List[RawDet]:
         h, w = rgb.shape[:2]
@@ -304,6 +376,39 @@ class MaskMaker:
         r = self.model.predict(rgb[..., ::-1], bboxes=[b.tolist() for b in boxes], device=self.device, verbose=False)[0]
         data = r.masks.data.cpu().numpy() > 0.5
         return [m if m.shape == (h, w) else np.zeros((h, w), bool) for m in data]
+
+
+def text_reuse_check(model: Recogniser, images: List[np.ndarray], prompts: List[str]) -> Dict[str, Any]:
+    """Detections with text reuse off and on (alternating prompts, so each prompt's text is reused) must be identical
+    (scores, boxes, masks, points); otherwise reuse is switched off. Returns the record the server writes."""
+    def run() -> List[List[RawDet]]:
+        return [model.detect(img, p) for img in images for p in prompts]
+
+    def same(a: List[List[RawDet]], b: List[List[RawDet]]) -> bool:
+        for x, y in zip(a, b):
+            if len(x) != len(y):
+                return False
+            for d, e in zip(x, y):
+                for f in ("box", "mask", "point"):
+                    u, v = getattr(d, f), getattr(e, f)
+                    if (u is None) != (v is None) or (u is not None and not np.array_equal(u, v)):
+                        return False
+                if d.score != e.score:
+                    return False
+        return True
+
+    if model.text_reuse.startswith("none"):
+        return {"reuse": False, "reason": model.text_reuse, "identical": None}
+    model.reuse_text = False
+    off = run()
+    model.reuse_text = True
+    model.clear_text_caches()
+    on = run()
+    ok = same(off, on)
+    model.reuse_text = ok
+    model.clear_text_caches()
+    return {"reuse": ok, "how": model.text_reuse, "identical": ok, "calls": len(off),
+            "detections": sum(len(x) for x in off)}
 
 
 def build(key: str, spec: Dict[str, Any], cache: Path, device: str, min_score: float, max_det: int) -> Recogniser:

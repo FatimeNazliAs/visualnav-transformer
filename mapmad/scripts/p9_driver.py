@@ -318,6 +318,38 @@ def step_model(st: Dict[str, Any], key: str) -> None:
     set_model_status(key, {"status": "skipped", "reason": "failed twice: " + " | ".join(tail)[-400:]})
 
 
+def step_retime(st: Dict[str, Any], key: str) -> None:
+    """Text-reuse timing rule: only the model's timing pass again (raw outputs, threshold and scores untouched); the
+    old timing.json is kept in photo_test/_partial/."""
+    folder = P9 / "photo_test" / key
+    t = json.loads((folder / "threshold.json").read_text())["threshold"]
+    while True:
+        if (folder / "timing.json").exists():
+            dest = P9 / "photo_test" / "_partial" / f"{key}_timing__{time.strftime('%Y%m%d-%H%M%S')}.json"
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            os.replace(folder / "timing.json", dest)
+            say(f"{key}: previous timing.json -> {dest}")
+        g = acquire(st, f"timing pass {key}")
+        port = PORT0 + g
+        with Hold(st, g, f"text-reuse retime: {key}") as h:
+            server(key, g, port)
+            try:
+                c = run_held(h, ["docker", "exec", "-w", "/app/visualnav-transformer", "-e", "MAPMAD_SIDECAR_KEY", HAB,
+                                 "python", "mapmad/scripts/p9_photo_test.py", "timing", "--model", key, "--host", REC,
+                                 "--port", str(port), "--threshold", str(t)], folder / "client.log")
+            finally:
+                stop_server(key, port)
+        if c != 0:
+            h.check()
+        if h.contended:
+            say(f"{key}: retime shared GPU {g}: re-run")
+            continue
+        if c != 0:
+            raise RuntimeError(f"{key}: timing pass failed (exit {c})")
+        say(f"{key}: retimed: {json.loads((folder / 'timing.json').read_text())['median_ms']:.1f} ms median")
+        return
+
+
 EDGES = (0.01, 0.99)
 
 
@@ -410,6 +442,9 @@ def main() -> None:
     # truth parity first: a short GPU step that shows a plug-in problem before the long model runs
     steps = [("frames", step_frames), ("rules", step_rules), ("plugin:truth", lambda s: step_plugin(s, "truth"))]
     steps += [(f"model:{k}", (lambda s, k=k: step_model(s, k))) for k in models_queue()]
+    # text-reuse timing rule (Naz 2026-10-21): YOLOE's timing pass again under the same rule (right after its model)
+    k = next(i for i, (n, _) in enumerate(steps) if n == "model:yoloe")
+    steps.insert(k + 1, ("retime:yoloe", lambda s: step_retime(s, "yoloe")))
     steps += [("edges", step_edges), ("scoring", step_scoring)]
     for name, fn in steps:
         if name in st["done"]:

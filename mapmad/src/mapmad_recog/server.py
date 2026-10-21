@@ -28,7 +28,7 @@ import numpy as np
 import yaml
 
 from mapmad_bridge import protocol
-from mapmad_recog.models import MaskMaker, RawDet, build
+from mapmad_recog.models import MaskMaker, RawDet, build, text_reuse_check
 
 CONFIG = Path(__file__).resolve().parents[2] / "configs" / "p9_models.yaml"
 
@@ -65,11 +65,32 @@ class RecogService:
             ms = cfg["mobile_sam"]
             weights = next((cache / "hf").glob(f"hub/models--{ms['hf'].replace('/', '--')}/snapshots/{ms['revision']}/{ms['file']}"))
             self.sam = MaskMaker(weights, device)
+        self.text_reuse = self.check_text_reuse()
+
+    def check_text_reuse(self) -> Dict[str, Any]:
+        """Timing rule (text reuse): identical detections with reuse on and off on 2 fixed frames x alternating
+        prompts, else off; written to photo_test/<model>/text_reuse.json and the server log."""
+        import json
+
+        import cv2
+
+        img_dir = Path("/outputs/mapmad/p9_recognisers/frames/img")
+        files = sorted(img_dir.glob("*_rgb.png"))[:2]
+        images = [np.ascontiguousarray(cv2.imread(str(f))[..., ::-1]) for f in files]
+        rec = text_reuse_check(self.model, images, ["chair", "tv", "chair", "potted plant", "tv"]) if images else \
+            {"reuse": self.model.reuse_text, "reason": "no frames to check"}
+        rec.update({"model": self.key, "frames": [f.name for f in files]})
+        out = img_dir.parents[1] / "photo_test" / self.key / "text_reuse.json"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps(rec, indent=1) + "\n")
+        print(f"text reuse: {rec}", flush=True)
+        return rec
 
     def handle(self, msg: Dict[str, Any]) -> Dict[str, Any]:
         cmd = msg["cmd"]
         if cmd == "hello":
-            return {"model": self.key, **{k: self.spec[k] for k in ("name", "family", "kind", "output")}}
+            return {"model": self.key, **{k: self.spec[k] for k in ("name", "family", "kind", "output")},
+                    "text_reuse": bool(self.text_reuse.get("reuse"))}
         if cmd == "detect":
             return self.detect(msg)
         cuda = self.torch.cuda.is_available()
