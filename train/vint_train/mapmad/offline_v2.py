@@ -9,10 +9,12 @@ teacher's heading change over the 8 waypoints (frames t -> t + 40 at spacing 5) 
 turn class of the forward/turn report.
 
 `compare_v2(scores, samples)`:
-- row3 (G10, primary): maps (noisy layer) - hidden, drive-level paired bootstrap 95% CI (10,000), pass = CI high < 0;
-  R = (hidden - maps) / hidden;
-- report only: every other arm vs maps and vs hidden; per category; forward/turn class (and the forward / sideways
-  parts of the loss); attention share per map token (near, far) per arm.
+- row3 (G10, primary; p10_rules.md v2): maps (noisy layer) - zeroed (both map tokens shown, all four layers zeroed),
+  drive-level paired bootstrap 95% CI (10,000), pass = CI high < 0; R = (zeroed - maps) / zeroed. Without a zeroed
+  arm (exploration list, in-training subset) row3 is primary - hidden and never passes on the search list;
+- maps_vs_hidden (report only, the rules v1 row 3): primary - hidden, shown next to its step-0 baseline;
+- report only: every other arm vs maps and vs hidden; per category and forward/turn class (and the forward /
+  sideways parts of the loss) of primary - hidden; attention share per map token (near, far) per arm.
 """
 
 import math
@@ -20,6 +22,7 @@ from typing import Any, Dict, List
 
 import numpy as np
 
+from vint_train.mapmad.offline_scoring import ROW3_CONTROL
 from vint_train.mapmad.offline_stats import paired_stats
 
 TURN_DEG = 30.0
@@ -50,10 +53,12 @@ def compare_v2(scores: Dict[str, np.ndarray], samples: List[Dict[str, Any]]) -> 
     loss = {a: scores[f"{a}.gc_action_loss"] for a in arms}
     out: Dict[str, Any] = {"means": {a: float(v.mean()) for a, v in loss.items()}, "arms": arms}
     primary = "maps" if "maps" in loss else "explore_maps"
+    control = ROW3_CONTROL if primary == "maps" and ROW3_CONTROL in loss else "hidden"
     a, b = loss[primary], loss["hidden"]
-    out["row3"] = paired_stats(a, b, drives)
-    out["row3"]["arm"] = primary
-    out["row3"]["pass"] = bool(out["row3"]["diff"] < 0 and out["row3"]["diff_ci_drive"][1] < 0)
+    out["row3"] = dict(paired_stats(a, loss[control], drives), arm=primary, control=control)
+    out["row3"]["pass"] = bool(control == ROW3_CONTROL and out["row3"]["diff"] < 0
+                               and out["row3"]["diff_ci_drive"][1] < 0)
+    out["maps_vs_hidden"] = dict(paired_stats(a, b, drives), arm=primary, control="hidden")
     out["vs_maps"] = {x: paired_stats(loss[x], a, drives) for x in arms if x not in (primary, "hidden")}
     out["vs_hidden"] = {x: paired_stats(loss[x], b, drives) for x in arms if x not in (primary, "hidden")}
     cats = np.array([s["category"] for s in samples])

@@ -1,8 +1,18 @@
 # p10_rules.md — Phase 10 · MapMaD v2 model + training (rules frozen before the main run)
 
-Version 1, 2026-10-21. Sources: v2 plan v2.2 §8.5 / §5 G10 / §8 / §9; Phase 10 confirmation block (Naz, 2026-10-21,
-items 1-11, no changes). sha256 of this file in `p10_rules.sha256`; a copy in `mapmad/configs/p10_rules.md`. A rule
-changed after launch gets a new version (`p10_rules_v2.md`) with its own sha256 BEFORE the run it judges.
+Version 2, 2026-10-21 11:50 (amends G10 row 3; Naz's instruction). Version 1 (sha256 `3f3398b8…32df`) is kept
+unchanged as `p10_rules_v1.md` + `p10_rules_v1.sha256`. Sources: v2 plan v2.2 §8.5 / §5 G10 / §8 / §9; Phase 10
+confirmation block (Naz, 2026-10-21, items 1-11, no changes). sha256 of this file in `p10_rules.sha256`; a copy in
+`mapmad/configs/p10_rules.md`. A rule changed after launch gets a new version with its own sha256 BEFORE the result
+it judges (older versions archived as `p10_rules_v<N>.md`).
+
+**Amendment v2 (pre-registered, 2026-10-21 11:50):** made during the main run's epoch 0, before any judged result
+exists (no ema_19, no offline score of any trained checkpoint). G10 row 3 becomes maps − zeroed (§4, §5); the v1
+row 3 (maps − hidden) becomes report only, printed next to its step-0 baseline. Why: maps − hidden is already
+negative for the untrained v2 (two extra tokens + mean pooling, no map content), so it cannot show map use; maps −
+zeroed keeps the token count and pooling the same and changes only the map content. The training run, its recipe
+and every other rule are unchanged; the chain is not restarted (the zeroed arm is added by `offline_eval score`
+whenever `maps` is scored, so it is computed on ema_19 and on the step-0 model).
 
 ## 1. Recipe (block item 1) — `train/config/mapmad_v2.yaml` (layered on `mapmad_p4_C.yaml`)
 - Start: official `nomad.pth` (sha256 `70f79b8262527e20e56ced64a3e3d7ef91855bc9e7c3fa348d78edcb83c6a333`), strict load;
@@ -50,9 +60,10 @@ The test split (`test/traj_names.txt` sha256 `b32d66e6…3c`) and `collision_dri
 ## 4. Offline checks (block items 5-6) — on `ema_19` of the main run (and of the twin, report only)
 - Scoring: `offline_eval score` (full 10-step diffusion, every sample's noise from its own id, deterministic
   kernels); loss = `gc_action_loss` (MSE of the 8 waypoints, normalised units).
-- **Primary (G10 row 3):** search list, arm `maps` (noisy layer, both windows) minus arm `hidden` (photo + maps
-  hidden = NoMaD explore), drive-level paired bootstrap, 10,000 resamples (seed 0), 95% percentile CI.
-- Report only: clean layer; near only; far only; target zeroed; frontier zeroed; target shifted 1 m (direction
+- **Primary (G10 row 3, v2):** search list (the same 5,000 samples), arm `maps` (noisy layer, both windows) minus arm
+  `zeroed` (both map tokens shown, all four map layers zeroed, same mode and noise), drive-level paired bootstrap,
+  10,000 resamples (seed 0), 95% percentile CI. Scored on ema_19 and on the step-0 model.
+- Report only: maps − hidden (photo + maps hidden = NoMaD explore; the v1 row 3) next to its step-0 baseline; clean layer; near only; far only; target zeroed; frontier zeroed; target shifted 1 m (direction
   seeded per sample id); exploration list explore_maps vs hidden; per category; forward/turn split (turn =
   |teacher heading change over the 8 waypoints| > 30 deg) and the forward / sideways parts of the loss; attention
   share per map token (near, far), with the untrained model's (step-0) shares as the baseline.
@@ -66,13 +77,13 @@ The test split (`test/traj_names.txt` sha256 `b32d66e6…3c`) and `collision_dri
 |---|---|---|
 | 1 | Switch off | NoMaD forward pass byte-identical to the reference saved before any Phase 10 change (checked on the step-0 model; done in Part 1: pass on GPU1 and CPU) |
 | 2 | Maps hidden | step-0 v2 output = official NoMaD, allclose atol 1e-6 rtol 0; token count 7; all nomad.pth keys load (done in Part 1: max diff 0.0) |
-| 3 | Offline map effect | drive-level paired 95% CI of (maps − hidden) < 0 (upper end < 0) on the search list, noisy layer |
+| 3 | Offline map effect | drive-level paired 95% CI of (maps − zeroed) < 0 (upper end < 0) on the search list (5,000 samples), noisy layer; zeroed = both map tokens shown, all map layers zeroed (v2) |
 | 4 | GoStanford no-harm | mean(ema_19) ≤ mean(official) + 0.10 (paired, full test set) |
 | 5 | Runs | `ema_19` of the main run (seed 1) fixed in advance; twin (seed 2) report only |
-Report next to row 3 (no pass/fail): the same difference for the untrained v2 (step 0). Part 1 found it is already
-negative there (mini test, 40 samples: −1.03) because showing the maps adds two tokens and switches to plain mean
-pooling, so row 3 alone does not show map use; the report-only arms (zeroed layers, near/far only, target shifted)
-and the step-0 baseline do. Row 3 stays as the plan defines it (rule unchanged; flagged to Naz).
+Report next to row 3 (no pass/fail): maps − zeroed for the untrained v2 (step 0; the zero-init encoders make it
+exactly 0), and maps − hidden for ema_19 next to its step-0 value. v1 history: Part 1 found maps − hidden already
+negative at step 0 (mini test, 40 samples: −1.03) because showing the maps adds two tokens and switches to plain
+mean pooling; hence amendment v2.
 Row 3 or 4 fails -> recorded as failed, stop for a decision with Naz (map alignment first: rotation sign, frame index,
 far summary, target rebuild; then one change at a time). The twin never holds the gate (pending -> addendum).
 

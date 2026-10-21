@@ -3,10 +3,10 @@
 
     python3 g10_table.py <p10 dir> <label: main|twin>
 
-Reads checks/g10_rows_1_2_gpu.json (rows 1-2, Part 1), offline/<label>_ema19/search/compare.json (row 3),
-offline/<label>_ema19/gostanford/gostanford.json (row 4) and offline/<label>_ema19/ema_19.sha256 (row 5); writes
-offline/<label>_ema19/g10_table_draft.{md,json}. A missing input leaves its row "pending". Report-only lines: the
-exploration list, the pre-training (step-0) numbers, attention per map token.
+Reads checks/g10_rows_1_2_gpu.json (rows 1-2, Part 1), offline/<label>_ema19/search/compare.json (row 3 = maps -
+zeroed, rules v2), offline/<label>_ema19/gostanford/gostanford.json (row 4) and offline/<label>_ema19/ema_19.sha256
+(row 5); writes offline/<label>_ema19/g10_table_draft.{md,json}. A missing input leaves its row "pending". Report-only lines: the
+exploration list, maps - hidden, the pre-training (step-0) numbers, attention per map token.
 """
 
 import json
@@ -46,12 +46,14 @@ def main() -> None:
         rows.append((2, "Maps hidden", "allclose 1e-6; 7 tokens; all keys load",
                      f"max diff {r2['max_abs_diff']:.1e}; {r2['masks']['new_tokens']} tokens; "
                      f"{len(r2['load_report']['new_keys'])} new keys", r2["pass"]))
-    if search:
+    rule3 = "drive CI of (maps - zeroed) < 0"  # p10_rules.md v2 (maps - hidden is report only)
+    if search and search["row3"].get("control") == "zeroed":
         r = search["row3"]
-        rows.append((3, "Offline map effect", "drive CI of (maps - hidden) < 0",
-                     f"maps {r['mean_a']:.3f} vs hidden {r['mean_b']:.3f}: {fmt_ci(r)}; R {r['R']:.3f}", r["pass"]))
+        rows.append((3, "Offline map effect", rule3,
+                     f"maps {r['mean_a']:.3f} vs zeroed {r['mean_b']:.3f}: {fmt_ci(r)}; R {r['R']:.3f}", r["pass"]))
     else:
-        rows.append((3, "Offline map effect", "drive CI of (maps - hidden) < 0", "pending", None))
+        rows.append((3, "Offline map effect", rule3, "zeroed arm missing" if search else "pending",
+                     False if search else None))
     if gs:
         rows.append((4, "GoStanford no-harm", "<= official + 0.10",
                      f"official {gs['official']:.3f} -> v2 {gs['mapmad']:.3f}, {gs['diff']:+.3f} "
@@ -74,12 +76,18 @@ def main() -> None:
              if "diff" in v}))
     if explore:
         md.append(f"Exploration list: explore_maps - hidden {fmt_ci(explore['row3'])}")
+    if search and "maps_vs_hidden" in search:
+        md.append(f"Report only (rules v1 row 3): maps - hidden {fmt_ci(search['maps_vs_hidden'])}; "
+                  f"R {search['maps_vs_hidden']['R']:.3f}")
     if pre:
-        md.append(f"Step-0 baseline for row 3 (untrained v2, zero map encoders: two extra tokens + mean pooling, no map "
-                  f"content used): maps - hidden {fmt_ci(pre['row3'])}; attention {json.dumps(pre['attention_share'])}")
-        if search:
-            md.append(f"Row 3 effect beyond step 0: trained diff {search['row3']['diff']:+.3f} vs step-0 diff "
-                      f"{pre['row3']['diff']:+.3f}")
+        mvh = pre.get("maps_vs_hidden", pre["row3"])
+        md.append(f"Step-0 baseline (untrained v2, zero-init map encoders): maps - hidden {fmt_ci(mvh)} (two extra "
+                  f"tokens + mean pooling, no map content used); attention {json.dumps(pre['attention_share'])}")
+        if pre["row3"].get("control") == "zeroed":
+            md.append(f"Step-0 baseline for row 3: maps - zeroed {fmt_ci(pre['row3'])}")
+        if search and "maps_vs_hidden" in search:
+            md.append(f"maps - hidden beyond step 0: trained {search['maps_vs_hidden']['diff']:+.3f} vs step-0 "
+                      f"{mvh['diff']:+.3f}")
     with open(os.path.join(off, "g10_table_draft.md"), "w") as f:
         f.write("\n".join(md) + "\n")
     with open(os.path.join(off, "g10_table_draft.json"), "w") as f:

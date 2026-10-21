@@ -55,7 +55,7 @@ from vint_train.mapmad.config import git_commit, load_config, loader_timeout  # 
 from vint_train.mapmad.dataset import build_mapmad_dataset, read_drive_list  # noqa: E402
 from vint_train.mapmad.offline_list import (AHEAD_FRAMES, BACK_FRAMES, LIST_SEED, N_SAMPLES,  # noqa: E402
                                             canonical_sha256, load_list, make_list)
-from vint_train.mapmad.offline_scoring import (ARMS, ARMS_V2, NOISE_SEED, GoStanfordPhotoSamples,  # noqa: E402
+from vint_train.mapmad.offline_scoring import (ARMS, ARMS_V2, NOISE_SEED, GoStanfordPhotoSamples, with_row3_control,  # noqa: E402
                                                score_arm, score_gostanford)
 from vint_train.mapmad.offline_stats import N_BOOT, compare  # noqa: E402
 from vint_train.mapmad.reference_forward import enforce_determinism  # noqa: E402
@@ -144,6 +144,8 @@ def cmd_score(args) -> None:
     v2 = int(cfg["map"].get("tokens", 1)) == 2
     ds = build_mapmad_dataset(cfg, map_dataset_name(cfg), "test", train=False)
     arms = args.arms.split(",") if args.arms else list(ARMS_V2 if v2 else ARMS)
+    if v2:
+        arms = with_row3_control(arms)  # G10 row 3 (rules v2) = maps - zeroed, also when only maps,hidden is asked
     os.makedirs(args.out, exist_ok=True)
     scores = {}
     for arm in arms:
@@ -173,10 +175,11 @@ def cmd_compare(args) -> None:
         os.makedirs(args.out, exist_ok=True)
         with open(os.path.join(args.out, "compare.json"), "w") as f:
             json.dump(res, f, indent=1)
-        r = res["row3"]
-        print(f"{r['arm']} {r['mean_a']:.4f} vs hidden {r['mean_b']:.4f}: diff {r['diff']:+.4f} CI(drive) "
-              f"[{r['diff_ci_drive'][0]:+.4f}, {r['diff_ci_drive'][1]:+.4f}] R {r['R']:+.3f} -> "
-              f"{'PASS' if r['pass'] else 'FAIL'}")
+        for key in ("row3", "maps_vs_hidden"):
+            r = res[key]
+            print(f"{key}: {r['arm']} {r['mean_a']:.4f} vs {r['control']} {r['mean_b']:.4f}: diff {r['diff']:+.4f} "
+                  f"CI(drive) [{r['diff_ci_drive'][0]:+.4f}, {r['diff_ci_drive'][1]:+.4f}] R {r['R']:+.3f}"
+                  + (f" -> {'PASS' if r['pass'] else 'FAIL'}" if key == "row3" else " (report only)"))
         print(json.dumps({"means": res["means"], "attention_share": res["attention_share"]}, indent=1))
         return
     res = compare(scores)

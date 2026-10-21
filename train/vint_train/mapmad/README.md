@@ -164,9 +164,10 @@ Phase 10 (MapMaD v2: two map windows, two tokens; rules `/outputs/mapmad/p10_v2_
 - **Training:** `train_loop.py` `grad_accum_steps` (memory fallback), attention share per map token;
   `training_checks.py` `dataset` / `arms` keys + `make-offline-subset` + a v2 report per check.
 - **Offline:** `offline_eval make-lists-v2` (search 5,000 / exploration 2,000 frozen lists), `score` (v2 arms
-  `offline_scoring.ARMS_V2`: maps, hidden, clean, near_only, far_only, target_zeroed, frontier_zeroed,
-  target_shifted; `--init-official` = the untrained model), `compare` (`offline_v2.compare_v2`: G10 row 3, per
-  category, forward/turn, attention per token); `gostanford` as Phase 4.
+  `offline_scoring.ARMS_V2`: maps, zeroed (both tokens shown, all layers zeroed), hidden, clean, near_only,
+  far_only, target_zeroed, frontier_zeroed, target_shifted; `zeroed` is always added when `maps` is scored;
+  `--init-official` = the untrained model), `compare` (`offline_v2.compare_v2`: G10 row 3 = maps - zeroed (rules
+  v2), maps - hidden report only, per category, forward/turn, attention per token); `gostanford` as Phase 4.
 - **Checks:** `checks_g10.py` (G10 rows 1-2), `smoke_v2.py` (smoke checks + check sheet).
 - **Inference** (Phases 11-12): `inference_v2.MapMaDV2Inference(checkpoint, cfg, device, sha256).predict(frames, near,
   far, near_shown, far_shown, goal_image, seed)` -> waypoints (normalised and metres) + distance.

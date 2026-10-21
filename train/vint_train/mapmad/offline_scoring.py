@@ -27,14 +27,27 @@ ARMS = ("map_goal", "map_hidden", "wrong_heat", "photo", "photo_map", "explore_m
 ARM_MODE = {"map_goal": "map_goal", "map_hidden": "explore", "wrong_heat": "map_goal", "photo": "photo",
             "photo_map": "photo_map", "explore_map": "explore_map"}
 
-# v2 (Phase 10 block item 5): arm -> (mode, map options). On the search list: maps (primary, noisy layer) vs hidden;
-# report-only variants. On the exploration list: explore_maps vs hidden.
+# v2 (Phase 10 block item 5; p10_rules.md v2): arm -> (mode, map options). On the search list: maps (primary, noisy
+# layer) vs zeroed (G10 row 3: both map tokens shown, all four layers zeroed); maps vs hidden and the other variants
+# are report only. On the exploration list: explore_maps vs hidden.
 SHIFT_M = 1.0
-ARMS_V2 = ("maps", "hidden", "clean", "near_only", "far_only", "target_zeroed", "frontier_zeroed", "target_shifted")
+ROW3_CONTROL = "zeroed"
+ARMS_V2 = ("maps", ROW3_CONTROL, "hidden", "clean", "near_only", "far_only", "target_zeroed", "frontier_zeroed",
+           "target_shifted")
 ARMS_V2_EXPLORE = ("explore_maps", "hidden")
-ARM_MODE_V2 = {"maps": "search_map", "hidden": "explore", "clean": "search_map", "near_only": "search_map",
-               "far_only": "search_map", "target_zeroed": "search_map", "frontier_zeroed": "search_map",
-               "target_shifted": "search_map", "explore_maps": "explore_map", "photo": "photo"}
+ARM_MODE_V2 = {"maps": "search_map", ROW3_CONTROL: "search_map", "hidden": "explore", "clean": "search_map",
+               "near_only": "search_map", "far_only": "search_map", "target_zeroed": "search_map",
+               "frontier_zeroed": "search_map", "target_shifted": "search_map", "explore_maps": "explore_map",
+               "photo": "photo"}
+
+
+def with_row3_control(arms: List[str]) -> List[str]:
+    """v2 arms to score: `arms` plus the row-3 control arm right after `maps` when `maps` is scored without it (the
+    chain's pre-training report asks for maps,hidden only; rules v2 need maps - zeroed on the step-0 model too)."""
+    if "maps" not in arms or ROW3_CONTROL in arms:
+        return list(arms)
+    k = arms.index("maps") + 1
+    return list(arms[:k]) + [ROW3_CONTROL] + list(arms[k:])
 
 
 def shift_of(sample_id: int, metres: float = SHIFT_M) -> Tuple[float, float]:
@@ -46,9 +59,11 @@ def shift_of(sample_id: int, metres: float = SHIFT_M) -> Tuple[float, float]:
 def arm_options(arm: str, sample_id: int):
     """MapOptions of a v2 arm for one sample."""
     from vint_train.mapmad.map_sample_v2 import MapOptions
+    from vint_train.mapmad.map_v2 import LAYERS_V2
 
     return {"clean": MapOptions(target_key="clean"), "near_only": MapOptions(show=(True, False)),
-            "far_only": MapOptions(show=(False, True)), "target_zeroed": MapOptions(zero_layers=("target",)),
+            "far_only": MapOptions(show=(False, True)), ROW3_CONTROL: MapOptions(zero_layers=LAYERS_V2),
+            "target_zeroed": MapOptions(zero_layers=("target",)),
             "frontier_zeroed": MapOptions(zero_layers=("frontier",)),
             "target_shifted": MapOptions(target_shift_m=shift_of(sample_id))}.get(arm, MapOptions())
 

@@ -188,6 +188,15 @@ def test_target_shift_is_seeded_and_one_metre():
     assert a == b and math.isclose(math.hypot(*a), 1.0) and shift_of(18) != a
     assert arm_options("near_only", 1).show == (True, False) and arm_options("maps", 1).show == (True, True)
     assert arm_options("frontier_zeroed", 1).zero_layers == ("frontier",)
+    assert arm_options("zeroed", 1).zero_layers == ("obstacle", "explored", "frontier", "target")
+    assert arm_options("zeroed", 1).show == (True, True)
+
+
+def test_row3_control_arm_is_always_scored_with_maps():
+    from vint_train.mapmad.offline_scoring import ARMS_V2, with_row3_control
+    assert with_row3_control(["maps", "hidden"]) == ["maps", "zeroed", "hidden"]
+    assert with_row3_control(["explore_maps", "hidden"]) == ["explore_maps", "hidden"]
+    assert with_row3_control(list(ARMS_V2)) == list(ARMS_V2)
 
 
 def test_compare_v2_row3_and_reports():
@@ -197,14 +206,17 @@ def test_compare_v2_row3_and_reports():
     drives = np.repeat([f"d{i}" for i in range(40)], 10)
     hidden = 1.0 + rng.random(n)
     scores = {"drive": drives, "hidden.gc_action_loss": hidden, "maps.gc_action_loss": hidden - 0.5,
-              "near_only.gc_action_loss": hidden - 0.2}
-    for arm in ("hidden", "maps", "near_only"):
+              "zeroed.gc_action_loss": hidden - 0.4, "near_only.gc_action_loss": hidden - 0.2}
+    for arm in ("hidden", "maps", "zeroed", "near_only"):
         scores[f"{arm}.attn_share"] = np.full((n, 2), np.nan) if arm == "hidden" else np.full((n, 2), 0.2)
         scores[f"{arm}.loss_forward"] = scores[f"{arm}.gc_action_loss"]
         scores[f"{arm}.loss_sideways"] = scores[f"{arm}.gc_action_loss"]
     samples = [{"category": "bed" if i % 2 else "chair", "yaw_change_deg": 50.0 if i % 4 == 0 else 0.0} for i in range(n)]
     res = compare_v2(scores, samples)
-    assert res["row3"]["pass"] and res["row3"]["diff"] == pytest.approx(-0.5)
+    assert res["row3"]["pass"] and res["row3"]["control"] == "zeroed" and res["row3"]["diff"] == pytest.approx(-0.1)
+    assert res["maps_vs_hidden"]["diff"] == pytest.approx(-0.5) and res["maps_vs_hidden"]["control"] == "hidden"
+    no_zeroed = {k: v for k, v in scores.items() if not k.startswith("zeroed.")}
+    assert not compare_v2(no_zeroed, samples)["row3"]["pass"]  # maps - hidden alone never passes row 3 (rules v2)
     assert set(res["per_category"]) == {"bed", "chair"} and res["forward_turn"]["turn"]["share"] == pytest.approx(0.25)
     assert res["attention_share"]["maps"] == {"near": 0.2, "far": 0.2}
     assert res["vs_maps"]["near_only"]["diff"] == pytest.approx(0.3)
