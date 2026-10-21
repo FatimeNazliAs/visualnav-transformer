@@ -168,6 +168,10 @@ Phase 10 (MapMaD v2: two map windows, two tokens; rules `/outputs/mapmad/p10_v2_
   far_only, target_zeroed, frontier_zeroed, target_shifted; `zeroed` is always added when `maps` is scored;
   `--init-official` = the untrained model), `compare` (`offline_v2.compare_v2`: G10 row 3 = maps - zeroed (rules
   v2), maps - hidden report only, per category, forward/turn, attention per token); `gostanford` as Phase 4.
+- **Target-layer diagnostic** (report only): `target_groups.py` splits the search list by frame into target layer
+  empty / target in view (simulator truth, >= 200 px at <= 4 m) / not in view and reports target_zeroed,
+  target_shifted, clean vs maps and the learned map effect (maps - hidden minus its step-0 value), from existing
+  `score` outputs, CPU only.
 - **Checks:** `checks_g10.py` (G10 rows 1-2), `smoke_v2.py` (smoke checks + check sheet).
 - **Inference** (Phases 11-12): `inference_v2.MapMaDV2Inference(checkpoint, cfg, device, sha256).predict(frames, near,
   far, near_shown, far_shown, goal_image, seed)` -> waypoints (normalised and metres) + distance.

@@ -306,3 +306,23 @@ def test_v1_checkpoint_still_loads_and_runs():
                     input_goal_mask=torch.ones(2, dtype=torch.long), map_img=torch.rand(2, 3, 64, 64),
                     input_map_mask=torch.zeros(2, dtype=torch.long))
     assert out.shape == (2, 256) and torch.isfinite(out).all()
+
+
+def test_target_groups_split_and_learned_effect():
+    from vint_train.mapmad.target_groups import group_report, markdown, target_group
+    assert [target_group(False, True), target_group(True, True), target_group(True, False)] == \
+        ["empty", "in_view", "not_in_view"]
+    n = 120
+    drives = np.repeat([f"d{i}" for i in range(12)], 10)
+    groups = np.array(["empty", "in_view", "not_in_view"] * 40)
+    maps = np.full(n, 1.0)
+    scores = {"drive": drives, "maps.gc_action_loss": maps, "hidden.gc_action_loss": maps + 2.0,
+              "target_zeroed.gc_action_loss": maps + np.where(groups == "in_view", 0.5, 0.0),
+              "target_shifted.gc_action_loss": maps + 0.1, "clean.gc_action_loss": maps - 0.1}
+    pre = {"maps.gc_action_loss": maps + 1.0, "hidden.gc_action_loss": maps + 2.0}
+    rep = group_report(scores, pre, groups)
+    assert rep["in_view"]["n_samples"] == 40 and rep["in_view"]["n_drives"] == 12
+    assert rep["in_view"]["target_zeroed"]["diff"] == pytest.approx(0.5)
+    assert rep["empty"]["target_zeroed"]["diff"] == pytest.approx(0.0)
+    assert rep["all"]["learned_map_effect"]["diff"] == pytest.approx(-1.0)  # (1 - 3) - (2 - 3)
+    assert "| in_view | 40 / 12 |" in markdown(rep)
