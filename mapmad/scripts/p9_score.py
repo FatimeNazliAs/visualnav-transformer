@@ -58,10 +58,10 @@ def load_items(kind: str) -> List[Dict[str, Any]]:
     return items
 
 
-def label_all(key: str, items: List[Dict[str, Any]], tabs: Dict[str, pl.LabelTable]) -> List[ps.Det]:
+def label_all(key: str, items: List[Dict[str, Any]], tabs: Dict[str, pl.LabelTable], raw_dir: str = "raw") -> List[ps.Det]:
     fr = root() / "frames"
     frames = {f["frame_id"]: f for f in json.loads((fr / "frames.json").read_text())}
-    raw = ps.load_raw(root() / "photo_test" / key / "raw", (240, 320))
+    raw = ps.load_raw(root() / "photo_test" / key / raw_dir, (240, 320))
     missing = [i["item_id"] for i in items if i["item_id"] not in raw]
     if missing:
         raise SystemExit(f"{key}: {len(missing)} items without raw output, e.g. {missing[:3]}")
@@ -132,6 +132,24 @@ def cmd_tune(key: str, fresh: bool) -> None:
     t, f1_a = ps.tune(labels(key, items, tabs, fresh), a, kind in ("vlm", "truth"))
     ps.write_json(root() / "photo_test" / key / "threshold.json", {"threshold": t, "f1_half_a": f1_a})
     print(f"{key}: threshold {t} (half-A F1 {f1_a:.4f})")
+
+
+def cmd_edge(key: str) -> None:
+    """p9_rules_v2.md A3, report only: half-B map F1 / H / R at 0.01, 0.005, 0.001 from the raw_edge pass (score >= 0.001)
+    -> photo_test/<model>/edge.json. Never used by the choice rule."""
+    kind = model_info(key)["kind"]
+    tabs = tables()
+    items = [i for i in load_items(kind) if i["set"] == "six"]
+    dets = label_all(key, items, tabs, "raw_edge")
+    inf = infos(items, tabs)
+    b = [inf[i["item_id"]] for i in items if i["half"] == "B"]
+    t = json.loads((root() / "photo_test" / key / "threshold.json").read_text())["threshold"]
+    out = {"model": key, "tuned_threshold": t, "report_only": True, "rule": "p9_rules_v2.md A3",
+           "half_b": {f"{x:g}": {k: v for k, v in ps.metrics(dets, b, x, with_ap=False).items()
+                                 if k in ("F1", "H", "R", "precision", "recall", "fa_per_free", "kept")}
+                      for x in (0.01, 0.005, 0.001)}}
+    ps.write_json(root() / "photo_test" / key / "edge.json", out)
+    print(f"{key}: edge report " + ", ".join(f"F1@{x}={v['F1']:.4f}" for x, v in out["half_b"].items()))
 
 
 def cmd_score(key: str, fresh: bool = False) -> None:
@@ -242,7 +260,8 @@ def write_tables(cfg: Dict[str, Any], rows: Dict[str, Dict[str, Any]]) -> None:
             continue
         s = json.loads(p.read_text())
         b, lat = s["half_b"], s["latency"]
-        out.append(f"| {s['name']} | {s['family']} | {s['threshold']:.2f} | {fmt(b['F1'])} | {fmt(b['H'])} | {fmt(b['R'])} | "
+        edge = " (edge: A3)" if s["kind"] not in ("vlm", "truth") and s["threshold"] in (0.01, 0.99) else ""
+        out.append(f"| {s['name']} | {s['family']} | {s['threshold']:.2f}{edge} | {fmt(b['F1'])} | {fmt(b['H'])} | {fmt(b['R'])} | "
                    f"{fmt(b['ap50'])} | {fmt(b['precision'])} | {fmt(b['recall'])} | {fmt(b['fa_per_free'])} | "
                    f"{fmt(lat['median_s'])} | {fmt(lat['p95_s'])} | {fmt(lat['peak_vram_mb'], 0)} | {fmt(s['phase12_cost_h'], 1)} |")
     out += ["", "## Per category (map F1 at the model's threshold)", "",
@@ -318,12 +337,14 @@ def annotate(img: np.ndarray, text: str) -> np.ndarray:
 
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("step", choices=["tune", "score", "choose", "sheets"])
+    p.add_argument("step", choices=["tune", "score", "choose", "sheets", "edge"])
     p.add_argument("--model")
     p.add_argument("--fresh", action="store_true", help="recompute the labels from the raw outputs")
     a = p.parse_args()
     if a.step == "tune":
         cmd_tune(a.model, a.fresh)
+    elif a.step == "edge":
+        cmd_edge(a.model)
     elif a.step == "score":
         cmd_score(a.model, a.fresh)
     elif a.step == "choose":

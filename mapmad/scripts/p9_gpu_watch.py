@@ -7,9 +7,8 @@ Every CHECK_S seconds (default 300) it lists the compute processes on each GPU a
 A GPU is "free" after FREE_CHECKS (4) consecutive checks with no phase10 / other process (20 min). Writes
 <dir>/gpu_free.json atomically:
     {"time", "streak": {gpu: n}, "free": [...], "phase10": [...], "other": [...], "ours": [...]}
-and logs every change to <dir>/gpu_watch.log. Who may take which GPU is decided by `usable_gpus` (Phase 9 priority:
-Phase 10 main run > Phase 9 > Phase 10 twin run; Phase 9 takes a GPU only if afterwards another GPU is still free or
-Phase 10 already has a GPU).
+and logs every change to <dir>/gpu_watch.log. Who may take which GPU is decided by `usable_gpus` (p9_rules_v2.md A1:
+any free GPU, unless the flag file P10_WANTS_GPU exists).
 
     python3 mapmad/scripts/p9_gpu_watch.py <dir> --ours naz_mapmad_habitat_p9 naz_mapmad_recog
 """
@@ -78,19 +77,14 @@ def classify(ours: Set[str]) -> Dict[int, Dict[str, int]]:
     return out
 
 
-def usable_gpus(state: Dict, using: Sequence[int]) -> List[int]:
-    """GPUs Phase 9 may start new work on now (block item 9): free by the 20-min rule, not already ours, and after
-    taking it another GPU is still free or Phase 10 already holds a GPU."""
-    free = [int(g) for g in state["free"]]
-    phase10_running = bool(state["phase10"])
-    out = []
-    for g in free:
-        if g in using:
-            continue
-        others_free = [h for h in free if h != g and h not in using]
-        if others_free or phase10_running:
-            out.append(g)
-    return out
+def usable_gpus(state: Dict, using: Sequence[int], p10_wants_gpu: bool = False) -> List[int]:
+    """GPUs Phase 9 may start new work on now (p9_rules_v2.md A1): free by the 20-min rule and not already ours,
+    unless Phase 10 asked for a GPU (P10_WANTS_GPU) -> none. (v1 allowed it only if another GPU stayed free or Phase 10
+    held a GPU; A1 adds "Phase 10 holds no GPU", so together every free GPU qualifies.) The caller still checks the
+    chosen GPU live with nvidia-smi."""
+    if p10_wants_gpu:
+        return []
+    return [int(g) for g in state["free"] if int(g) not in using]
 
 
 def main() -> None:

@@ -14,9 +14,9 @@ Steps (state in <p9>/driver/state.json; a finished step is never redone, so a re
    re-run from zero;
 4. scoring (CPU): truth through the pipeline, every model scored, choice rule, tables, sheets;
 5. plug-in (GPU): truth parity on 2 dev drives (run right after step 2), then R1 and R2 on the same drives.
-GPU rule (v2 plan §8 + block item 9): a GPU is used only if p9_gpu_watch.py lists it as free (4 x 5-min checks
-without a Phase 10 or other user's process) and, after taking it, another GPU is still free or Phase 10 already
-holds a GPU; checked before every GPU step (the watcher's file, then a live nvidia-smi check of that GPU right
+GPU rule (p9_rules_v2.md A1): a GPU is used only if p9_gpu_watch.py lists it as free (4 x 5-min checks without a
+Phase 10 or other user's process) and the flag file <outputs>/mapmad/P10_WANTS_GPU does not exist (while it exists:
+no new model starts, a running one finishes, then the GPU is released); checked before every GPU step (the watcher's file, then a live nvidia-smi check of that GPU right
 before taking it) and re-checked every 5 min while one runs: if a Phase 10 / other process
 appears on our GPU, the current model finishes and no new work starts there (the next step waits for a usable GPU).
 One GPU at a time. Budget: > 12 h of GPU holding (1.5 x 8 h) -> STOP. Every GPU event goes to the log.
@@ -52,6 +52,7 @@ def outputs_host() -> Path:
 
 P9 = outputs_host()
 DRV = P9 / "driver"
+P10_WANTS_GPU = P9.parent / "P10_WANTS_GPU"  # p9_rules_v2.md A1 (created by Naz or Phase 10)
 STATE = DRV / "state.json"
 LOG = P9 / "phase9_log.md"
 
@@ -129,7 +130,10 @@ def acquire(st: Dict[str, Any], what: str) -> int:
     waited = False
     while True:
         s = gpu_state()
-        usable = usable_gpus(s, [])
+        wants = P10_WANTS_GPU.exists()
+        usable = usable_gpus(s, [], wants)
+        if wants and not waited:
+            say(f"GPU event: {P10_WANTS_GPU} exists: Phase 10 wants a GPU, no new Phase 9 work")
         if usable and live_busy(usable[0]):  # the watcher's file can be 5 min old
             say(f"GPU event: GPU {usable[0]} listed free but busy now (live check): not taken")
             usable = []
@@ -166,6 +170,8 @@ class Hold:
             raise SystemExit(f"STOP: GPU budget exceeded ({self.st['gpu_hours']:.2f} h > {BUDGET_H} h)")
 
     def check(self) -> None:
+        if P10_WANTS_GPU.exists():
+            say(f"GPU event: {P10_WANTS_GPU} exists: finishing {self.what} on GPU {self.g}, then releasing it")
         s = gpu_state()
         if self.g in s["phase10"] or self.g in s["other"] or live_busy(self.g):
             self.contended = True
@@ -223,7 +229,7 @@ def step_rules(st: Dict[str, Any]) -> None:
 def models_queue() -> List[str]:
     import re
     text = (REPO / "mapmad" / "configs" / "p9_models.yaml").read_text()
-    order = re.search(r"download_order: \[([^\]]*)\]", text).group(1)
+    order = re.search(r"run_order: \[([^\]]*)\]", text).group(1)  # p9_rules_v2.md A2
     return [m.strip() for m in order.split(",")]
 
 
@@ -260,6 +266,8 @@ def weights_ok(key: str) -> Optional[str]:
 
 def step_model(st: Dict[str, Any], key: str) -> None:
     if key == "sam3":  # gated: retry the download once before scoring it (block / Naz 2026-10-21)
+        ok = run(["docker", "exec", REC, "test", "-r", "/hf_token/token"], check=False) == 0
+        say(f"sam3: HF token file {'readable' if ok else 'NOT readable'} in {REC} (contents never read here)")
         run(["docker", "exec", "-e", "HOME=/model_cache/home", "-e", "YOLO_OFFLINE=False", "-e", "CUDA_VISIBLE_DEVICES=",
              REC, "python", "mapmad/scripts/p9_download.py", "--only", "sam3", "--tries", "1"], DRV / "download_retry.log",
             check=False)
@@ -269,7 +277,9 @@ def step_model(st: Dict[str, Any], key: str) -> None:
         say(f"{key}: skipped ({reason})")
         return
     folder = P9 / "photo_test" / key
-    attempt = 0
+    attempt = int(st.get("prior_failed_attempts", {}).get(key, 0))  # p9_rules_v2.md A1 (yolo_world: 1)
+    if attempt:
+        say(f"{key}: {attempt} failed attempt(s) before this launch count")
     while attempt < 2:
         attempt += 1
         g = acquire(st, f"model {key}")
@@ -306,6 +316,50 @@ def step_model(st: Dict[str, Any], key: str) -> None:
         say(f"{key}: attempt {attempt} failed (exit {c}; see {folder}/client.log, server.log)")
     tail = (folder / "server.log").read_text().strip().splitlines()[-3:] if (folder / "server.log").exists() else []
     set_model_status(key, {"status": "skipped", "reason": "failed twice: " + " | ".join(tail)[-400:]})
+
+
+EDGES = (0.01, 0.99)
+
+
+def step_edges(st: Dict[str, Any]) -> None:
+    """p9_rules_v2.md A3 (report only): a model whose threshold is on a grid edge gets one extra raw pass with score
+    >= 0.001 (raw_edge/), scored at 0.01 / 0.005 / 0.001 -> photo_test/<model>/edge.json."""
+    for key, v in model_status().items():
+        folder = P9 / "photo_test" / key
+        if v["status"] != "ran" or not (folder / "threshold.json").exists() or (folder / "edge.json").exists():
+            continue
+        if json.loads((folder / "raw" / "stats.json").read_text())["info"]["kind"] == "vlm":
+            continue
+        t = json.loads((folder / "threshold.json").read_text())["threshold"]
+        if t not in EDGES:
+            continue
+        say(f"{key}: threshold {t} on a grid edge -> extra report-only raw pass at score >= 0.001 (A3)")
+        while True:
+            g = acquire(st, f"edge pass {key}")
+            port = PORT0 + g
+            with Hold(st, g, f"A3 edge pass: {key}") as h:
+                server(key, g, port)
+                try:
+                    c = run_held(h, ["docker", "exec", "-w", "/app/visualnav-transformer", "-e", "MAPMAD_SIDECAR_KEY",
+                                     HAB, "python", "mapmad/scripts/p9_photo_test.py", "raw", "--model", key, "--host",
+                                     REC, "--port", str(port), "--min-score", "0.001", "--raw-dir", "raw_edge"],
+                                 folder / "client_edge.log")
+                finally:
+                    stop_server(key, port)
+            if c != 0:
+                h.check()
+            if h.contended:
+                dest = P9 / "photo_test" / "_partial" / f"{key}_raw_edge__{time.strftime('%Y%m%d-%H%M%S')}"
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                if (folder / "raw_edge").exists():
+                    os.replace(folder / "raw_edge", dest)
+                say(f"{key}: edge pass shared GPU {g}: moved to {dest}, re-run")
+                continue
+            break
+        if c == 0:
+            hab("mapmad/scripts/p9_score.py", "edge", "--model", key, log=folder / "score.log")
+        else:
+            say(f"{key}: edge pass failed (exit {c}); reported as missing (report only)")
 
 
 def step_scoring(st: Dict[str, Any]) -> None:
@@ -356,7 +410,7 @@ def main() -> None:
     # truth parity first: a short GPU step that shows a plug-in problem before the long model runs
     steps = [("frames", step_frames), ("rules", step_rules), ("plugin:truth", lambda s: step_plugin(s, "truth"))]
     steps += [(f"model:{k}", (lambda s, k=k: step_model(s, k))) for k in models_queue()]
-    steps += [("scoring", step_scoring)]
+    steps += [("edges", step_edges), ("scoring", step_scoring)]
     for name, fn in steps:
         if name in st["done"]:
             continue

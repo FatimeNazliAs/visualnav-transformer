@@ -100,7 +100,7 @@ def save_chunk(folder: Path, k: int, rows: List[Dict[str, Any]], hw: int) -> Non
 
 
 def cmd_raw(a: argparse.Namespace, client: SidecarRecogniser) -> None:
-    folder = out_root() / "photo_test" / a.model / "raw"
+    folder = out_root() / "photo_test" / a.model / a.raw_dir
     folder.mkdir(parents=True, exist_ok=True)
     items = load_items(client.info["kind"])
     imgs = Images()
@@ -153,6 +153,7 @@ def main() -> None:
     p.add_argument("--port", type=int, required=True)
     p.add_argument("--min-score", type=float, default=0.01)
     p.add_argument("--threshold", type=float)
+    p.add_argument("--raw-dir", default="raw", help="raw_edge: p9_rules_v2.md A3 extra pass (score >= 0.001)")
     p.add_argument("--seed", type=int, default=20261021)
     a = p.parse_args()
     with connect(a.model, a.host, a.port, 0.0, 1.0, False, protocol.auth_key()) as client:
