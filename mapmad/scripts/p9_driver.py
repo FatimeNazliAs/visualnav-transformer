@@ -431,6 +431,13 @@ def main() -> None:
     say("DONE")
 
 
+def cleanup_ours() -> None:
+    """Stop our own processes inside our two containers. Killing a host-side `docker exec` does not stop the process in
+    the container (18:42: a yolo_world server and client outlived the driver). Matches only our scripts."""
+    for container, pattern in ((HAB, "mapmad/scripts/p9_"), (REC, "mapmad_recog.server")):
+        subprocess.run(["docker", "exec", container, "pkill", "-f", pattern], capture_output=True, check=False)
+
+
 if __name__ == "__main__":
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))  # finally blocks stop our servers
     signal.signal(signal.SIGHUP, lambda *_: sys.exit(129))
@@ -438,6 +445,8 @@ if __name__ == "__main__":
         main()
     except BaseException as exc:
         if not (isinstance(exc, SystemExit) and exc.code in (0, None)):
+            signal.signal(signal.SIGHUP, signal.SIG_IGN)  # a closing screen must not cut the clean-up short
+            cleanup_ours()
             st = load_state()
             status(st, f"STOPPED: {type(exc).__name__}: {exc}", "released", str(exc)[:300])
             say(f"STOPPED: {type(exc).__name__}: {exc}")

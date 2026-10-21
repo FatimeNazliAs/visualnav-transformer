@@ -70,6 +70,23 @@ class _Ultralytics(Recogniser):
         self.model = (YOLOE if self.yoloe else YOLO)(str(folder / self.spec["ultralytics"]))
         self.current: Optional[str] = None
         self.pe: Dict[str, Any] = {}
+        if not self.yoloe:  # YOLO-World: set_classes reloads CLIP from disk on every call (~1.3 s); in driving the
+            self._memoise_text_pe()  # class is fixed per episode, so the text encoding is memoised per prompt
+
+    def _memoise_text_pe(self) -> None:
+        """Keep ultralytics' own set_classes path; only its CLIP text encoding is computed once per prompt list
+        (identical features, checked: same detections over alternating prompts)."""
+        world = self.model.model
+        orig = world.get_text_pe
+        cache: Dict[tuple, Any] = {}
+
+        def memo(text, batch=80, cache_clip_model=False, **kw):
+            key = tuple(text)
+            if key not in cache:
+                cache[key] = orig(text, batch=batch, cache_clip_model=True, **kw)
+            return cache[key]
+
+        world.get_text_pe = memo
 
     def _set(self, prompt: str) -> None:
         if prompt == self.current:
