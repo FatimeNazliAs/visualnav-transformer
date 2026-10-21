@@ -43,7 +43,7 @@ import torch
 from torch.utils.data import DataLoader, Subset
 
 from vint_train.mapmad.closed_loop.metrics import bootstrap_ci
-from vint_train.mapmad.config import git_commit, load_config
+from vint_train.mapmad.config import git_commit, load_config, loader_timeout
 from vint_train.mapmad.dataset import build_mapmad_dataset
 from vint_train.mapmad.check_trace import append_trace, read_trace
 from vint_train.mapmad.offline_list import N_SAMPLES, canonical_sha256, load_list
@@ -205,8 +205,9 @@ class TrainingChecks:
         return os.path.exists(path) and any(r["epoch"] == epoch_1based for r in read_trace(path))
 
     def _gs_scores(self, model, map_input: bool) -> np.ndarray:
-        loader = DataLoader(self.gs_set, batch_size=self.c.get("batch_size", 100), shuffle=False,
-                            num_workers=self.c.get("workers", 4))
+        workers = self.c.get("workers", 4)
+        loader = DataLoader(self.gs_set, batch_size=self.c.get("batch_size", 100), shuffle=False, num_workers=workers,
+                            timeout=loader_timeout(workers))
         return score_gostanford(model, loader, self.cfg, self.device, map_input)
 
     def reference(self) -> np.ndarray:

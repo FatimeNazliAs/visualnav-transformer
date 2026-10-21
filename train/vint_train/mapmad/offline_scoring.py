@@ -15,6 +15,7 @@ from torch.utils.data import DataLoader, Dataset
 
 from vint_train.mapmad import modes as M
 from vint_train.mapmad.attention import attention_shares
+from vint_train.mapmad.config import loader_timeout
 from vint_train.mapmad.diffusion import reverse_diffusion
 from vint_train.mapmad.offline_list import LIST_SEED
 from vint_train.mapmad.reference_forward import IMAGENET, make_noise_scheduler
@@ -124,7 +125,8 @@ def score_arm(model, ds, samples, arm: str, cfg, device, batch_size: int, worker
     (N, 2) near/far; NaN where hidden), action mask."""
     scheduler = make_noise_scheduler(cfg)
     scheduler.set_timesteps(cfg["num_diffusion_iters"])
-    loader = DataLoader(ArmSamples(ds, samples, arm), batch_size=batch_size, shuffle=False, num_workers=workers)
+    loader = DataLoader(ArmSamples(ds, samples, arm), batch_size=batch_size, shuffle=False, num_workers=workers,
+                        timeout=loader_timeout(workers))
     enc = model.vision_encoder
     n_map = enc.n_map_tokens
     res = {"gc_action_loss": [], "cos_sim": [], "attn_share": [], "action_mask": [], "loss_forward": [],

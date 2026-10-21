@@ -12,6 +12,12 @@ from typing import Any, Dict
 import yaml
 
 REPLACE_KEY = "_replace"
+LOADER_TIMEOUT_S = 900  # Phase 10: a DataLoader batch slower than this = a dead worker -> error instead of a hang
+
+
+def loader_timeout(workers: int) -> int:
+    """DataLoader `timeout` (only allowed with worker processes)."""
+    return LOADER_TIMEOUT_S if workers > 0 else 0
 
 
 def git_commit() -> str:

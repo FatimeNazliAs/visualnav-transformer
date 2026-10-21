@@ -22,9 +22,11 @@ main() {
     source "$REPO/train/scripts/mapmad_p10/p10_lib.sh"
     FINISHED=0
     BG_PID=""
+    rm -f "$P10/driver/STOP_twin_reason.txt"
     on_exit() {
         local code=$?
         [[ -n "${BG_PID:-}" ]] && kill "$BG_PID" 2>/dev/null
+        for pat in "launch/twin.yaml" "twin_ema19"; do kill_inside "$pat"; done  # our own processes only
         if [[ $FINISHED -ne 1 ]]; then
             { echo "time: $(date '+%F %T')"; echo "exit code: $code"; echo "reason: ${WHY:-unexpected exit}";
               echo "last log line: $(tail -n 1 "$LOG" 2>/dev/null)"; } > "$P10/driver/STOP_twin_reason.txt"

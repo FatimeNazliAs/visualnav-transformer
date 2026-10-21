@@ -51,7 +51,7 @@ import torch  # noqa: E402
 from torch.utils.data import DataLoader  # noqa: E402
 
 from vint_train.mapmad.closed_loop.metrics import bootstrap_ci  # noqa: E402
-from vint_train.mapmad.config import git_commit, load_config  # noqa: E402
+from vint_train.mapmad.config import git_commit, load_config, loader_timeout  # noqa: E402
 from vint_train.mapmad.dataset import build_mapmad_dataset, read_drive_list  # noqa: E402
 from vint_train.mapmad.offline_list import (AHEAD_FRAMES, BACK_FRAMES, LIST_SEED, N_SAMPLES,  # noqa: E402
                                             canonical_sha256, load_list, make_list)
@@ -198,7 +198,8 @@ def cmd_gostanford(args) -> None:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     ds = test_dataset("go_stanford", cfg, cfg)
     samples = GoStanfordPhotoSamples(ds, args.n)
-    loader = DataLoader(samples, batch_size=args.batch_size, shuffle=False, num_workers=args.workers)
+    loader = DataLoader(samples, batch_size=args.batch_size, shuffle=False, num_workers=args.workers,
+                        timeout=loader_timeout(args.workers))
     official = score_gostanford(load_checkpoint(cfg, args.official, device, map_input=False), loader, cfg, device, False)
     mapmad = score_gostanford(load_checkpoint(cfg, args.checkpoint, device, map_input=True), loader, cfg, device, True)
     diff = bootstrap_ci(mapmad - official, n_boot=N_BOOT)

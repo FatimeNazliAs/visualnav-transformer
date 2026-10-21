@@ -38,6 +38,8 @@ main() {
     on_exit() {
         local code=$?
         [[ -n "${BG_PID:-}" ]] && kill "$BG_PID" 2>/dev/null
+        for pat in "config/mapmad_v2_smoke.yaml" "launch/timing_" "launch/main.yaml" "main_ema19" "offline/pretrain" \
+                   "frontier_cache build" "smoke_v2"; do kill_inside "$pat"; done  # our own processes only
         if [[ $FINISHED -ne 1 ]]; then
             { echo "time: $(date '+%F %T')"; echo "exit code: $code"; echo "last log line: $(tail -n 1 "$LOG" 2>/dev/null)"; } > "$P10/STOP_reason.txt"
             status reason="driver exit $code" --state STOPPED
@@ -91,7 +93,8 @@ main() {
     say "GPU event: GPU $G taken by the chain (free for the chain per gpu_free.json + instant check)"
     STEP="2 smoke"
     status step="$STEP" gpu="$G" --state RUNNING
-    run_bg dx "$G" "python train.py -c config/mapmad_v2_smoke.yaml" > "$P10/driver/smoke.log" 2>&1
+    run_limit 1800 "config/mapmad_v2_smoke.yaml" dx "$G" "python train.py -c config/mapmad_v2_smoke.yaml" \
+        > "$P10/driver/smoke.log" 2>&1
     code=$?
     [[ $code -eq 0 ]] && tr '\r' '\n' < "$P10/driver/smoke.log" | grep -a -q "FINISHED TRAINING" \
         || stop "smoke fails (train.py exit $code, driver/smoke.log)"
@@ -111,7 +114,8 @@ main() {
         ( while true; do echo "$(date +%s),$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits -i "$G")"; sleep 5; done ) \
             > "$P10/driver/timing_${k}_mem.csv" &
         local memlog=$!
-        run_bg dx "$G" "python train.py -c $C/launch/timing_$k.yaml" > "$P10/driver/timing_$k.log" 2>&1
+        run_limit 3600 "launch/timing_$k.yaml" dx "$G" "python train.py -c $C/launch/timing_$k.yaml" \
+            > "$P10/driver/timing_$k.log" 2>&1
         kill "$memlog" 2>/dev/null
         dec="$(python3 "$SCRIPTS/p10_timing.py" "$(ls -td "$P10"/timing_DRY/timing_${k}_2* 2>/dev/null | head -1)" \
             "$P10/driver/timing_${k}_mem.csv" "$P10/driver/timing_$k.log" --accum "$accum" $raised)"

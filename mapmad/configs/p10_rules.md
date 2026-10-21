@@ -90,6 +90,10 @@ Smoke fails (training error, no FINISHED TRAINING, or a smoke_v2 check) · NaN l
 after the fallback · checkpoint sha256 not written · estimate > 10.5 h · frontier-cache mismatch (build: any checked
 frame differs from the teacher's count; check: cache != shared function; Habitat parity: any difference) · cache
 > 4.5 h or > 90 GB · any unexpected exit of the driver (EXIT trap, exit code + last log line).
+Hangs (added 2026-10-21 11:3x, before any judged run, after the first smoke hung on a DataLoader worker that died while
+importing torch): every DataLoader has a 900 s batch timeout (a dead worker -> an error); smoke > 30 min and a timing
+run > 60 min -> killed = smoke fails / timing failed (stop); a training run whose log is silent > 60 min -> killed =
+a crash (one resume, a second -> stop); offline checks > 5 h, pre-training report > 3 h -> killed, stop.
 
 ## 8. GPU rule (v2 plan §8 + block item 9)
 - Free = no process of anyone else for 4 consecutive 5-min checks (`gpu_watch.py`; Phase 9's processes count as busy;

@@ -11,6 +11,7 @@ from typing import Any, Dict, Tuple
 import numpy as np
 from torch.utils.data import DataLoader, Subset
 
+from vint_train.mapmad.config import loader_timeout
 from vint_train.mapmad.dataset import build_mapmad_dataset
 from vint_train.mapmad.sampler import EpochSampler, KeyedConcatDataset, dataset_weights
 
@@ -39,11 +40,11 @@ def build_mapmad_loaders(config: Dict[str, Any]) -> Tuple[DataLoader, EpochSampl
             sub = eval_subset(ds, int(config.get("eval_samples", 2048)), config["seed"])
             tests[f"{name}_test"] = DataLoader(sub, batch_size=config.get("eval_batch_size", config["batch_size"]),
                                                shuffle=False, num_workers=min(4, config["num_workers"]),
-                                               drop_last=False)
+                                               drop_last=False, timeout=loader_timeout(min(4, config["num_workers"])))
             print(f"[mapmad] test {name}: {len(ds)} samples, eval subset {len(sub)}", flush=True)
     sampler = EpochSampler([len(d) for d in train_sets], dataset_weights(names, config["dataset_weights"]),
                            config["epoch_samples"], config["seed"])
     loader = DataLoader(KeyedConcatDataset(train_sets), batch_size=config["batch_size"], sampler=sampler,
                         num_workers=config["num_workers"], drop_last=False,
-                        persistent_workers=config["num_workers"] > 0)
+                        persistent_workers=config["num_workers"] > 0, timeout=loader_timeout(config["num_workers"]))
     return loader, sampler, tests

@@ -61,15 +61,46 @@ overlay() {  # file base(container path) key: value ... -> a launch overlay conf
       echo "gpu_ids: [0]"; for kv in "$@"; do echo "$kv"; done; } > "$file"
 }
 
-monitor_while() {  # pid -> refresh STATUS.md every 60 s while it runs
-    while kill -0 "$1" 2>/dev/null; do status; pause 60; done
+kill_inside() {  # pattern -> kill the matching processes INSIDE naz_mapmad (killing the host docker exec does not)
+    docker exec naz_mapmad pkill -f -- "$1" 2>/dev/null
+    return 0
+}
+
+STALL_S="${STALL_S:-3600}"  # a training log that does not change for this long = a hung run (Phase 10 lesson)
+
+monitor_while() {  # pid log pattern -> refresh STATUS.md every 60 s; a log silent for STALL_S -> kill (= a crash)
+    local pid="$1" log="$2" pattern="$3"
+    while kill -0 "$pid" 2>/dev/null; do
+        status
+        if [[ -f "$log" ]] && (( $(date +%s) - $(stat -c %Y "$log") > STALL_S )); then
+            say "HANG: $log silent for > $STALL_S s -> killing '$pattern' (counts as a crash)"
+            kill_inside "$pattern"
+            return 0
+        fi
+        pause 60
+    done
+}
+
+run_limit() {  # seconds pattern command... -> like run_bg, but killed (inside the container too) after `seconds`
+    local limit="$1" pattern="$2" t0=$SECONDS; shift 2
+    "$@" &
+    BG_PID=$!
+    while kill -0 "$BG_PID" 2>/dev/null; do
+        if (( SECONDS - t0 > limit )); then
+            say "TIME LIMIT: '$pattern' ran > $limit s -> killed"
+            kill_inside "$pattern"; kill "$BG_PID" 2>/dev/null; wait "$BG_PID" 2>/dev/null
+            return 124
+        fi
+        pause 20
+    done
+    wait "$BG_PID"
 }
 
 train_once() {  # gpu config(container) log resume_arg -> train.py exit code
     local g="$1" cfg="$2" log="$3" resume="${4:-}"
     dx "$g" "python train.py -c $cfg $resume" > "$log" 2>&1 &
     BG_PID=$!
-    monitor_while "$BG_PID" &
+    monitor_while "$BG_PID" "$log" "train.py -c $cfg" &
     local mon=$!
     wait "$BG_PID"; local code=$?
     kill "$mon" 2>/dev/null
@@ -104,7 +135,7 @@ offline_eval() {  # gpu label ckpt(container) -> offline/<label>_ema19/{search,e
     local g="$1" label="$2" ckpt="$3" o="$C/offline/${2}_ema19" lists="$C/offline/lists" cfg="config/mapmad_v2.yaml"
     local olog="$P10/driver/offline_${label}.log"
     say "offline checks of $label ema_19 on GPU $g -> offline/${label}_ema19"
-    run_bg dx "$g" "python -m vint_train.mapmad.offline_eval gostanford --config $cfg --checkpoint $ckpt \
+    run_limit 18000 "${label}_ema19" dx "$g" "python -m vint_train.mapmad.offline_eval gostanford --config $cfg --checkpoint $ckpt \
         --official /outputs/mapmad/weights/official/nomad.pth --out $o/gostanford && \
         python -m vint_train.mapmad.training_checks gostanford-report --scores $o/gostanford/gostanford_scores.npz \
         --subset /outputs/mapmad/p4_train/subsets/gostanford_subset.json --out $o/gostanford/gostanford_report.json && \
@@ -118,7 +149,7 @@ offline_eval() {  # gpu label ckpt(container) -> offline/<label>_ema19/{search,e
 pretrain_report() {  # gpu -> offline/pretrain/{search,explore} (untrained v2 = official + fresh encoders)
     local g="$1" o="$C/offline/pretrain" lists="$C/offline/lists" cfg="config/mapmad_v2.yaml"
     say "pre-training report (untrained v2) on GPU $g -> offline/pretrain"
-    run_bg dx "$g" "python -m vint_train.mapmad.offline_eval score --config $cfg --init-official --list $lists/search_list.json \
+    run_limit 10800 "offline/pretrain" dx "$g" "python -m vint_train.mapmad.offline_eval score --config $cfg --init-official --list $lists/search_list.json \
         --arms maps,hidden --out $o/search && python -m vint_train.mapmad.offline_eval compare --scores $o/search/scores.npz --out $o/search && \
         python -m vint_train.mapmad.offline_eval score --config $cfg --init-official --list $lists/explore_list.json \
         --arms explore_maps,hidden --out $o/explore && \
