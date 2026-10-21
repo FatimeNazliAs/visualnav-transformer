@@ -124,13 +124,14 @@ def main(config):
         )
     elif config["model_type"] == "nomad":
         if config["vision_encoder"] == "nomad_vint":
+            from vint_train.mapmad.config import map_model_kwargs  # MapMaD: map_input (+ v2 map tokens/layers)
             vision_encoder = NoMaD_ViNT(
                 obs_encoding_size=config["encoding_size"],
                 context_size=config["context_size"],
                 mha_num_attention_heads=config["mha_num_attention_heads"],
                 mha_num_attention_layers=config["mha_num_attention_layers"],
                 mha_ff_dim_factor=config["mha_ff_dim_factor"],
-                map_input=config.get("map_input", False),
+                **map_model_kwargs(config),
             )
             vision_encoder = replace_bn_with_gn(vision_encoder)
         elif config["vision_encoder"] == "vib": 

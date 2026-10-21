@@ -1,0 +1,23 @@
+# Phase 10 smoke (chain step 2): 1 tiny epoch of mapmad_v2.yaml on the Phase 10 tiny split (search + exploration
+# drives), checks after the epoch on the first 100 subset samples. A DRY folder: never results.
+base_config: mapmad_v2.yaml
+project_name: smoke_DRY
+run_name: smoke
+run_label: smoke
+epochs: 1
+batch_size: 32
+num_workers: 4
+epoch_samples: 640            # 20 steps
+eval_samples: 128
+print_log_freq: 5
+step_log_freq: 5
+training_checks:
+  every: 1
+  limit: 100
+datasets:
+  habitat_mapmad_v2:
+    train: /mapmad_data/splits/habitat_mapmad_v2_p10tiny/train/
+    test: /mapmad_data/splits/habitat_mapmad_v2_p10tiny/test/
+  go_stanford:
+    train: /mapmad_data/splits/go_stanford_tiny/train/
+    test: /mapmad_data/splits/go_stanford_tiny/test/

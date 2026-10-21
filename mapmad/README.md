@@ -337,6 +337,14 @@ docker exec -w /app/visualnav-transformer/train -e PYTHONPATH=/app/visualnav-tra
 docker exec naz_mapmad bash -c 'R=/outputs/mapmad/p8_search_data/format_check/run && mkdir -p $R && cd $R && ln -sfn \
     /app/visualnav-transformer/train/config config && python /app/visualnav-transformer/train/train.py -c config/mapmad_v2_format_check.yaml'
 ```
-- The teacher's frontier for a frame = `map_v2.layers_at` with the drive's `frontier_ignore_trajectory_m` (0 for
-  option A = the plain frontier); with the ring (option C) the plain frontier on frames where `ring_fallback` is set.
+- The teacher's frontier for a frame (option A) = `map_v2.teacher_frontier_at`: the plain frontier with the cells
+  bumped before that frame (`mapmad_frames.npz` `bump_events`) counted as obstacles, as `explorer._Planner` does
+  (Phase 10 finding: `map_v2.layers_at`'s frontier leaves the bumped cells out and differs on ~2.5% of frames).
+
+## Phase 10: MapMaD v2 training (NoMaD side; rules /outputs/mapmad/p10_v2_train/p10_rules.md)
+
+Training, checks and drivers are on the NoMaD side (`train/vint_train/mapmad/README.md`, `train/scripts/mapmad_p10/`).
+Habitat side: `explorer.teacher_frontier` (the frontier the live teacher clusters at one step) and the parity check
+`scripts/p10_frontier_parity.py` (live teacher = `map_v2.teacher_frontier_at` = the per-drive cache on the frames
+`frontier_cache check` picked; chain step 1), tests `tests/test_p10_frontier.py`.
 - `teacher_ms` (wall-clock ms per teacher step) is the only saved value that differs between two runs of one drive id.

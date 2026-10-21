@@ -55,8 +55,8 @@ from vint_train.mapmad.config import git_commit, load_config  # noqa: E402
 from vint_train.mapmad.dataset import build_mapmad_dataset, read_drive_list  # noqa: E402
 from vint_train.mapmad.offline_list import (AHEAD_FRAMES, BACK_FRAMES, LIST_SEED, N_SAMPLES,  # noqa: E402
                                             canonical_sha256, load_list, make_list)
-from vint_train.mapmad.offline_scoring import (ARMS, NOISE_SEED, GoStanfordPhotoSamples, score_arm,  # noqa: E402
-                                               score_gostanford)
+from vint_train.mapmad.offline_scoring import (ARMS, ARMS_V2, NOISE_SEED, GoStanfordPhotoSamples,  # noqa: E402
+                                               score_arm, score_gostanford)
 from vint_train.mapmad.offline_stats import N_BOOT, compare  # noqa: E402
 from vint_train.mapmad.reference_forward import enforce_determinism  # noqa: E402
 from vint_train.mapmad.weights import load_checkpoint  # noqa: E402
@@ -83,15 +83,67 @@ def cmd_make_list(args) -> None:
           f"sha256 {body['sha256']}")
 
 
+def map_dataset_name(cfg) -> str:
+    """The Habitat dataset of a config: habitat_mapmad_v2 for v2 (map.tokens 2), else habitat_mapmad."""
+    return "habitat_mapmad_v2" if int(cfg["map"].get("tokens", 1)) == 2 else "habitat_mapmad"
+
+
+def drive_length(data_folder: str, drive: str) -> int:
+    import pickle
+
+    with open(os.path.join(data_folder, drive, "traj_data.pkl"), "rb") as f:
+        return len(pickle.load(f)["position"])
+
+
+def cmd_make_lists_v2(args) -> None:
+    """v2 frozen lists (offline_v2 module docstring): search_list.json (5,000) and explore_list.json (2,000)."""
+    from vint_train.mapmad.offline_v2 import N_EXPLORE, N_SEARCH, v2_fields
+    from vint_train.mapmad.map_sample_v2 import DriveStoreV2
+
+    cfg = load_config(args.config)
+    d = cfg["datasets"]["habitat_mapmad_v2"]
+    excluded = read_drive_list(d.get("exclude_drives"))
+    names = [x.strip() for x in open(os.path.join(d["test"], "traj_names.txt")) if x.strip()]
+    drives = [x for x in names if x not in excluded]
+    kinds = DriveStoreV2(d["data_folder"], drives, cfg["map"]["frontier_cache"]).kind
+    split_sha = hashlib.sha256(open(os.path.join(d["test"], "traj_names.txt"), "rb").read()).hexdigest()
+    os.makedirs(args.out_dir, exist_ok=True)
+    for kind, n, name in (("search", N_SEARCH, "search_list.json"), ("explore", N_EXPLORE, "explore_list.json")):
+        out = os.path.join(args.out_dir, name)
+        if os.path.exists(out):
+            print(f"{out} exists (frozen): kept")
+            continue
+        pool = [x for x in drives if kinds[x] == kind]
+        short = []
+        if kind == "explore":  # exploration drives that ended early (no frontier left) can be too short for a share
+            need = -(-n // len(pool)) + BACK_FRAMES + AHEAD_FRAMES
+            short = [x for x in pool if drive_length(d["data_folder"], x) < need]
+            pool = [x for x in pool if x not in set(short)]
+        samples = make_list(d["data_folder"], pool, n, fields=v2_fields)
+        body = {"samples": samples, "kind": kind, "n_drives": len(pool), "n_too_short": len(short),
+                "n_excluded": len(names) - len(drives),
+                "seed": LIST_SEED, "rule": f"t - {BACK_FRAMES} >= 0 and t + {AHEAD_FRAMES} <= last frame",
+                "test_traj_names_sha256": split_sha, "sha256": canonical_sha256(samples)}
+        with open(out, "w") as f:
+            json.dump(body, f)
+        print(f"{name}: {len(samples)} samples from {len(pool)} {kind} drives; sha256 {body['sha256']}")
+
+
 def cmd_score(args) -> None:
     enforce_determinism()
     cfg = load_config(args.config)
     body = load_list(args.list)
     samples = body["samples"][:args.limit] if args.limit else body["samples"]
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = load_checkpoint(cfg, args.checkpoint, device, map_input=True)
-    ds = build_mapmad_dataset(cfg, "habitat_mapmad", "test", train=False)
-    arms = args.arms.split(",") if args.arms else list(ARMS)
+    if args.init_official:  # the untrained model: official nomad.pth + fresh map encoders (pre-training report)
+        from vint_train.mapmad.weights import build_with_official
+        torch.manual_seed(int(cfg["seed"]))
+        model = build_with_official(cfg, cfg["init_weights"], device)[0]
+    else:
+        model = load_checkpoint(cfg, args.checkpoint, device, map_input=True)
+    v2 = int(cfg["map"].get("tokens", 1)) == 2
+    ds = build_mapmad_dataset(cfg, map_dataset_name(cfg), "test", train=False)
+    arms = args.arms.split(",") if args.arms else list(ARMS_V2 if v2 else ARMS)
     os.makedirs(args.out, exist_ok=True)
     scores = {}
     for arm in arms:
@@ -99,8 +151,9 @@ def cmd_score(args) -> None:
             scores[f"{arm}.{k}"] = v
     np.savez(os.path.join(args.out, "scores.npz"), ids=np.array([s["id"] for s in samples]),
              drive=np.array([s["drive"] for s in samples]), type=np.array([s["type"] for s in samples]), **scores)
-    manifest = {"checkpoint": args.checkpoint, "config": args.config, "list": args.list, "list_sha256": body["sha256"],
-                "waypoint_spacing": cfg["datasets"]["habitat_mapmad"].get("waypoint_spacing", 1), "arms": arms,
+    manifest = {"checkpoint": args.checkpoint, "init_official": bool(args.init_official), "config": args.config,
+                "list": args.list, "list_sha256": body["sha256"],
+                "waypoint_spacing": cfg["datasets"][map_dataset_name(cfg)].get("waypoint_spacing", 1), "arms": arms,
                 "batch_size": args.batch_size, "noise_seed": NOISE_SEED, "limit": args.limit, "git_commit": git_commit()}
     with open(os.path.join(args.out, "manifest.json"), "w") as f:
         json.dump(manifest, f, indent=1)
@@ -110,6 +163,22 @@ def cmd_score(args) -> None:
 def cmd_compare(args) -> None:
     with np.load(args.scores) as z:
         scores = {k: z[k] for k in z.files}
+    if "hidden.gc_action_loss" in scores:  # v2: the list (from the score's manifest) gives categories / motion
+        from vint_train.mapmad.offline_v2 import compare_v2
+        with open(os.path.join(os.path.dirname(os.path.abspath(args.scores)), "manifest.json")) as f:
+            manifest = json.load(f)
+        samples = load_list(manifest["list"])["samples"][:manifest["limit"] or None]
+        res = compare_v2(scores, samples)
+        res["manifest"] = manifest
+        os.makedirs(args.out, exist_ok=True)
+        with open(os.path.join(args.out, "compare.json"), "w") as f:
+            json.dump(res, f, indent=1)
+        r = res["row3"]
+        print(f"{r['arm']} {r['mean_a']:.4f} vs hidden {r['mean_b']:.4f}: diff {r['diff']:+.4f} CI(drive) "
+              f"[{r['diff_ci_drive'][0]:+.4f}, {r['diff_ci_drive'][1]:+.4f}] R {r['R']:+.3f} -> "
+              f"{'PASS' if r['pass'] else 'FAIL'}")
+        print(json.dumps({"means": res["means"], "attention_share": res["attention_share"]}, indent=1))
+        return
     res = compare(scores)
     os.makedirs(args.out, exist_ok=True)
     with open(os.path.join(args.out, "compare.json"), "w") as f:
@@ -150,9 +219,14 @@ def main(argv: Optional[List[str]] = None) -> None:
     p = sub.add_parser("make-list")
     p.add_argument("--config", required=True)
     p.add_argument("--out", required=True)
+    p = sub.add_parser("make-lists-v2")
+    p.add_argument("--config", required=True)
+    p.add_argument("--out-dir", required=True)
     p = sub.add_parser("score")
     p.add_argument("--config", required=True)
-    p.add_argument("--checkpoint", required=True)
+    p.add_argument("--checkpoint", default=None)
+    p.add_argument("--init-official", action="store_true",
+                   help="score the untrained model (official nomad.pth + fresh map encoders) instead of a checkpoint")
     p.add_argument("--list", required=True)
     p.add_argument("--out", required=True)
     p.add_argument("--arms", default=None, help=f"comma list, default all: {','.join(ARMS)}")
@@ -171,7 +245,8 @@ def main(argv: Optional[List[str]] = None) -> None:
     p.add_argument("--batch-size", type=int, default=100)
     p.add_argument("--workers", type=int, default=8)
     args = parser.parse_args(argv)
-    {"make-list": cmd_make_list, "score": cmd_score, "compare": cmd_compare, "gostanford": cmd_gostanford}[args.cmd](args)
+    {"make-list": cmd_make_list, "make-lists-v2": cmd_make_lists_v2, "score": cmd_score, "compare": cmd_compare,
+     "gostanford": cmd_gostanford}[args.cmd](args)
 
 
 if __name__ == "__main__":

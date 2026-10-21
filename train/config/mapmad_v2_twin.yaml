@@ -1,0 +1,6 @@
+# Phase 10 twin (report only, p10_rules.md): mapmad_v2.yaml with seed 2, on the second GPU when the priority rule
+# allows it (run_p10_twin.sh). Its ema_19 never judges a gate row.
+base_config: mapmad_v2.yaml
+run_name: v2_s2
+run_label: v2_s2
+seed: 2

@@ -100,6 +100,44 @@ def frontier(obstacle: np.ndarray, explored: np.ndarray, min_cluster: int = 4,
     return frontier_clusters(obstacle, explored, min_cluster, visited) > 0
 
 
+def bumped_cells(shape: Sequence[int], origin: Sequence[float], res: float, bump_events: np.ndarray,
+                 t: int) -> np.ndarray:
+    """Cells the drive loop marked as bumped BEFORE frame t (bool). bump_events = mapmad_frames.npz's (frame, x, y)
+    rows; an event logged at frame k (a collision or a safety step after the teacher's decision at k) first reaches
+    the teacher at frame k + 1. Cell = floor((xy - origin) / res), as depth_map.FirstSeenMap.cells; outside = dropped."""
+    out = np.zeros((int(shape[0]), int(shape[1])), dtype=bool)
+    ev = np.asarray(bump_events, dtype=np.float64).reshape(-1, 3)
+    ev = ev[ev[:, 0] < t]
+    if len(ev) == 0:
+        return out
+    i = np.floor((ev[:, 1] - origin[0]) / res).astype(np.int64)
+    j = np.floor((ev[:, 2] - origin[1]) / res).astype(np.int64)
+    ok = (i >= 0) & (i < out.shape[0]) & (j >= 0) & (j < out.shape[1])
+    out[i[ok], j[ok]] = True
+    return out
+
+
+def teacher_frontier_clusters(drive_map: Dict[str, np.ndarray], bump_events: np.ndarray, t: int,
+                              min_cluster: int = 4) -> np.ndarray:
+    """THE teacher's frontier at frame t (Phase 10 block item 3, architecture review P8 candidate 1), as cluster
+    labels on the whole storey map: what explorer.teacher_step computed at frame t of a Phase 8 drive with option A
+    (p8_datagen_v3a.yaml, no trajectory ring) = frontier_clusters(obstacle at t | bumped before t, explored at t).
+    The teacher works on a planning window (bounding box of the known cells + 1 m), which never changes the frontier:
+    every known cell and its neighbours lie inside it. Bumped cells are a planning-only obstacle: they are never in the
+    network's obstacle layer, only here. The Habitat side checks it against the live teacher code
+    (mapmad/scripts/p10_frontier_parity.py); the per-drive cache (frontier_cache.py) stores its changes."""
+    obstacle = known_at(drive_map["obstacle_first_seen"], t)
+    explored = known_at(drive_map["explored_first_seen"], t)
+    bumped = bumped_cells(obstacle.shape, drive_map["origin"], float(drive_map["resolution"]), bump_events, t)
+    return frontier_clusters(obstacle | bumped, explored, min_cluster)
+
+
+def teacher_frontier_at(drive_map: Dict[str, np.ndarray], bump_events: np.ndarray, t: int,
+                        min_cluster: int = 4) -> np.ndarray:
+    """Layer 2 as the network sees it (bool): the teacher's frontier at frame t (teacher_frontier_clusters)."""
+    return teacher_frontier_clusters(drive_map, bump_events, t, min_cluster) > 0
+
+
 def visited_mask(shape: Sequence[int], origin: Sequence[float], res: float, positions: np.ndarray,
                  radius_m: float) -> np.ndarray:
     """Cells whose centre lies within radius_m of any of the (X, Y) positions (the trajectory ring, frontier_cells)."""

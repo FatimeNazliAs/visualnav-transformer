@@ -20,6 +20,7 @@ Habitat (`has_maps`):
 - the sample index is cached per waypoint spacing (`..._ws{s}_mapmad.pkl`; the LMDB image cache is shared).
 """
 
+import os
 from typing import Any, Dict, Optional, Sequence, Tuple
 
 import numpy as np
@@ -33,6 +34,11 @@ from vint_train.mapmad.map_sample import DriveStore, MapSampleBuilder
 MAP_DATASETS = ("habitat_mapmad",)
 
 
+def pose_at(traj: Dict[str, np.ndarray], t: int) -> Tuple[float, float, float]:
+    """(x, y, yaw) of frame t from traj_data.pkl."""
+    return float(traj["position"][t][0]), float(traj["position"][t][1]), float(traj["yaw"][t])
+
+
 def read_drive_list(path: Optional[str]) -> set:
     """Drive names from a text file, one per line (empty set for None)."""
     if not path:
@@ -44,10 +50,14 @@ def read_drive_list(path: Optional[str]) -> set:
 class MapMaDDataset(ViNT_Dataset):
     """ViNT_Dataset with a map input and MapMaD's modes; `train` switches heat perturbation on."""
 
+    map_datasets = MAP_DATASETS
+
     def __init__(self, *, map_cfg: Dict[str, Any], habitat_modes: Dict[str, float], goal_mask_prob: float,
-                 seed: int, train: bool, exclude_drives: Optional[str] = None, **vint_kwargs) -> None:
-        self.has_maps = vint_kwargs["dataset_name"] in MAP_DATASETS
+                 seed: int, train: bool, exclude_drives: Optional[str] = None, index_dir: Optional[str] = None,
+                 **vint_kwargs) -> None:
+        self.has_maps = vint_kwargs["dataset_name"] in self.map_datasets
         self.map_size = int(map_cfg.get("size", 64))
+        self.index_dir = index_dir
         super().__init__(**vint_kwargs)
         excluded = read_drive_list(exclude_drives)
         if excluded:
@@ -56,17 +66,36 @@ class MapMaDDataset(ViNT_Dataset):
             self.goals_index = [g for g in self.goals_index if g[0] not in excluded]
         self.n_excluded = len(excluded)
         self.seed, self.train, self.goal_mask_prob = int(seed), bool(train), float(goal_mask_prob)
-        self.mode_p = M.habitat_mode_table(habitat_modes)
-        self.builder: Optional[MapSampleBuilder] = None
+        self._init_modes(habitat_modes)
+        self.builder = None
         if self.has_maps:
-            store = DriveStore(self.data_folder, self.traj_names, int(map_cfg.get("map_cache_size", 256)))
-            builder_cfg = dict(map_cfg, perturb_prob=map_cfg.get("perturb_prob", 0.0) if train else 0.0)
-            self.builder = MapSampleBuilder(store, **builder_cfg)
+            self._init_maps(map_cfg, train)
+
+    def _init_modes(self, habitat_modes: Dict[str, float]) -> None:
+        self.mode_p = M.habitat_mode_table(habitat_modes)
+
+    def _init_maps(self, map_cfg: Dict[str, Any], train: bool) -> None:
+        store = DriveStore(self.data_folder, self.traj_names, int(map_cfg.get("map_cache_size", 256)))
+        builder_cfg = dict(map_cfg, perturb_prob=map_cfg.get("perturb_prob", 0.0) if train else 0.0)
+        self.builder = MapSampleBuilder(store, **builder_cfg)
+
+    def empty_map(self) -> torch.Tensor:
+        """The all-zero map of a sample whose map is hidden."""
+        return torch.zeros((3, self.map_size, self.map_size), dtype=torch.float32)
 
     # --- index ---------------------------------------------------------------------------------------------
     def _index_path(self) -> str:
+        """v1: next to the split (`..._ws{s}_mapmad.pkl`); with `index_dir` (Phase 10: the Phase 8 split folders stay
+        read-only) the same name in that folder, prefixed with the split's last two path parts."""
         path = super()._index_path()
-        return path[:-len(".pkl")] + f"_ws{self.waypoint_spacing}_mapmad.pkl" if self.has_maps else path
+        if not self.has_maps:
+            return path
+        name = os.path.basename(path)[:-len(".pkl")] + f"_ws{self.waypoint_spacing}_mapmad.pkl"
+        if self.index_dir is None:
+            return os.path.join(os.path.dirname(path), name)
+        parts = os.path.normpath(self.data_split_folder).split(os.sep)[-2:]
+        os.makedirs(self.index_dir, exist_ok=True)
+        return os.path.join(self.index_dir, "_".join(parts) + "_" + name)
 
     def rng(self, key: int) -> np.random.Generator:
         """The Generator of one draw."""
@@ -85,10 +114,13 @@ class MapMaDDataset(ViNT_Dataset):
         mode = M.draw_habitat_mode(self.mode_p, rng)
         return self.habitat_sample(drive, t, mode, rng)
 
+    def map_mask_tensor(self, mode: M.Mode) -> torch.Tensor:
+        """The sample's map mask (v1: one value; v2 overrides with one per window)."""
+        return torch.tensor(mode.map_mask)
+
     def _gostanford(self, i: int, mode: M.Mode) -> Tuple[torch.Tensor, ...]:
         base = super().__getitem__(i)
-        empty = torch.zeros((3, self.map_size, self.map_size), dtype=torch.float32)
-        return base + (empty, torch.tensor(mode.goal_mask), torch.tensor(mode.map_mask), torch.tensor(mode.id))
+        return base + (self.empty_map(), torch.tensor(mode.goal_mask), self.map_mask_tensor(mode), torch.tensor(mode.id))
 
     def max_goal_offset(self, drive: str, t: int) -> int:
         """K = the farthest photo goal in waypoints: min(max_dist_cat, (len - 1 - t) // s)."""
@@ -104,6 +136,22 @@ class MapMaDDataset(ViNT_Dataset):
         about the robot (offline control arm). perturbation: "draw" = drawn by the builder (training only),
         None = none, or one of map_sample.PERTURBATIONS.
         """
+        traj = self._get_trajectory(drive)
+        base = self.photo_part(drive, t, mode, rng, goal_offset)
+        map_img = np.zeros((3, self.map_size, self.map_size), dtype=np.float32)
+        if mode.map_mask == 0:
+            pert = self.builder.draw_perturbation(rng) if (perturbation == "draw" and mode.heat_on) else (
+                None if perturbation == "draw" else perturbation)
+            map_img = self.builder.build(drive, t, pose_at(traj, t), mode.heat_on, pert, rng)
+            if wrong_heat:
+                map_img[2] = rotate_180(map_img[2])
+        return base + (torch.from_numpy(map_img), torch.tensor(mode.goal_mask), torch.tensor(mode.map_mask),
+                       torch.tensor(mode.id))
+
+    def photo_part(self, drive: str, t: int, mode: M.Mode, rng: np.random.Generator,
+                   goal_offset: Optional[int] = None) -> Tuple[torch.Tensor, ...]:
+        """NoMaD's 7-tuple of a Habitat sample in `mode`: (obs, goal, actions, distance, goal_pos, dataset_index,
+        action_mask) -- the photo-goal rules of the module docstring; draws from rng only when the photo is shown."""
         s = self.waypoint_spacing
         traj = self._get_trajectory(drive)
         context = [self._load_image(drive, ct) for ct in self._context_times(t)]
@@ -126,37 +174,28 @@ class MapMaDDataset(ViNT_Dataset):
             goal_image = context[-1]
             action_mask = True
         actions, goal_pos = self._compute_actions(traj, t, goal_time if goal_drive == drive else t)
-        actions_torch = torch.as_tensor(actions, dtype=torch.float32)
-
-        map_img = np.zeros((3, self.map_size, self.map_size), dtype=np.float32)
-        if mode.map_mask == 0:
-            pose = (float(traj["position"][t][0]), float(traj["position"][t][1]), float(traj["yaw"][t]))
-            pert = self.builder.draw_perturbation(rng) if (perturbation == "draw" and mode.heat_on) else (
-                None if perturbation == "draw" else perturbation)
-            map_img = self.builder.build(drive, t, pose, mode.heat_on, pert, rng)
-            if wrong_heat:
-                map_img[2] = rotate_180(map_img[2])
         return (
             torch.as_tensor(obs_image, dtype=torch.float32),
             torch.as_tensor(goal_image, dtype=torch.float32),
-            actions_torch,
+            torch.as_tensor(actions, dtype=torch.float32),
             torch.as_tensor(distance, dtype=torch.int64),
             torch.as_tensor(goal_pos, dtype=torch.float32),
             torch.as_tensor(self.dataset_index, dtype=torch.int64),
             torch.as_tensor(action_mask, dtype=torch.float32),
-            torch.from_numpy(map_img),
-            torch.tensor(mode.goal_mask),
-            torch.tensor(mode.map_mask),
-            torch.tensor(mode.id),
         )
 
 
 def build_mapmad_dataset(config: Dict[str, Any], dataset_name: str, split: str, train: bool) -> MapMaDDataset:
-    """A MapMaDDataset from a train config (the same arguments train.py gives ViNT_Dataset, plus the map block)."""
+    """A MapMaDDataset (v2: MapMaDV2Dataset when `map.tokens` is 2) from a train config (the same arguments train.py
+    gives ViNT_Dataset, plus the map block)."""
     d = config["datasets"][dataset_name]
-    return MapMaDDataset(
+    cls = MapMaDDataset
+    if int(config["map"].get("tokens", 1)) == 2:
+        from vint_train.mapmad.dataset_v2 import MapMaDV2Dataset
+        cls = MapMaDV2Dataset
+    return cls(
         map_cfg=config["map"], habitat_modes=config["habitat_modes"], goal_mask_prob=config["goal_mask_prob"],
-        seed=config["seed"], train=train, exclude_drives=d.get("exclude_drives"),
+        seed=config["seed"], train=train, exclude_drives=d.get("exclude_drives"), index_dir=d.get("index_dir"),
         data_folder=d["data_folder"], data_split_folder=d[split], dataset_name=dataset_name,
         image_size=config["image_size"], waypoint_spacing=d.get("waypoint_spacing", 1),
         min_dist_cat=config["distance"]["min_dist_cat"], max_dist_cat=config["distance"]["max_dist_cat"],

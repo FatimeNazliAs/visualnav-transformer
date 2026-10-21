@@ -25,6 +25,10 @@ Phase 4 additions, each behind its own config key (Phase 3 configs do not set th
   needed to resume (model, EMA weights + step, optimizer, RNG states, epoch); no per-epoch raw weights;
 - `resume_from` (train.py `--resume <run>/latest.pth`) -- continue that run in its folder up to `epochs`;
 - env `MAPMAD_EXIT_AFTER_EPOCH=<e>` -- stop after epoch e (0-based) as if crashed; only for the resume test.
+
+Phase 10 (v2, `map.tokens: 2`): the batch's map is [B, 2, 4, 64, 64] with a mask per window; the step log's map
+attention share is [near, far] on the search_map samples; `grad_accum_steps: A` (memory fallback, block item 7)
+makes one optimizer step per A loader batches (lr schedule and EMA per optimizer step).
 """
 
 import json
@@ -42,7 +46,7 @@ import tqdm
 import wandb
 from diffusers.training_utils import EMAModel
 
-from vint_train.mapmad.attention import attention_share
+from vint_train.mapmad.attention import attention_shares
 from vint_train.mapmad.modes import BY_NAME, MODES
 from vint_train.mapmad.run_state import (checkpoint_style, load_resume_state, save_epoch, unwrap,
                                        write_run_info)
@@ -51,6 +55,7 @@ from vint_train.visualizing.visualize_utils import from_numpy
 
 MODE_NAMES = {m.id: m.name for m in MODES}
 MAP_GOAL_ID = BY_NAME["map_goal"].id
+SEARCH_MAP_ID = BY_NAME["search_map"].id
 
 
 def normalized_deltas(actions: torch.Tensor, device: torch.device) -> torch.Tensor:
@@ -89,21 +94,24 @@ class ModeMeter:
 
 
 @torch.no_grad()
-def batch_map_attention(model: nn.Module, b: Dict[str, torch.Tensor]) -> Tuple[Optional[float], int]:
-    """(mean map attention share, count) over the batch's map-goal samples, dropout off; (None, 0) if none.
-    Same definition as offline_eval's attention share."""
-    sel = b["mode"] == MAP_GOAL_ID
+def batch_map_attention(model: nn.Module, b: Dict[str, torch.Tensor]) -> Tuple[Optional[Any], int]:
+    """(mean map attention share, count) over the batch's map-goal samples (v2: search_map), dropout off; (None, 0)
+    if none. Same definition as offline_eval's attention share. v1: one float; v2: [near, far]."""
+    net = unwrap(model)
+    enc = net.vision_encoder
+    n_map = enc.n_map_tokens
+    sel = b["mode"] == (SEARCH_MAP_ID if n_map == 2 else MAP_GOAL_ID)
     n = int(sel.sum())
     if n == 0:
         return None, 0
-    net = unwrap(model)
-    enc, was_training = net.vision_encoder, net.training
+    was_training = net.training
     net.eval()
     tokens, padding = enc.map_tokens(enc._encode_images(b["obs"][sel], b["goal"][sel]), b["goal_mask"][sel],
                                      b["map"][sel], b["map_mask"][sel])
-    _, share = attention_share(enc.sa_encoder, tokens, padding)
+    _, share = attention_shares(enc.sa_encoder, tokens, padding, n_map)
     net.train(was_training)
-    return float(share.mean()), n
+    means = share.mean(dim=0).tolist()
+    return (means[0] if n_map == 1 else means), n
 
 
 class StepLog:
@@ -139,12 +147,17 @@ def train_mapmad_epoch(model, ema_model, optimizer, loader, transform, device, n
                        alpha: float, print_log_freq: int, wandb_log_freq: int, use_wandb: bool,
                        max_steps: Optional[int] = None,
                        lr_hook: Optional[Callable[[int, int], Dict[str, float]]] = None,
-                       step_log: Optional[StepLog] = None) -> Dict[str, Any]:
+                       step_log: Optional[StepLog] = None, accum: int = 1) -> Dict[str, Any]:
     """One epoch; returns mean losses, per-mode diffusion losses and step timing.
-    lr_hook(epoch, step) sets the lr before each optimizer step; step_log writes the per-N-steps records."""
+    lr_hook(epoch, step) sets the lr before each optimizer step; step_log writes the per-N-steps records.
+    accum > 1 (Phase 10 memory fallback, `grad_accum_steps`): one optimizer step per `accum` loader batches, each
+    batch's loss divided by accum (the epoch's last step may hold fewer batches); `steps` counts optimizer steps,
+    the loss means are per loader batch. accum = 1 is the Phase 3/4 loop exactly."""
     model.train()
     meter, totals = ModeMeter(), defaultdict(float)
-    wait_s, step_s, steps = [], [], 0
+    wait_s, step_s, steps, batches = [], [], 0, 0
+    n_batches = len(loader)
+    lrs = None
     t_ready = time.perf_counter()
     for data in tqdm.tqdm(loader, desc=f"MapMaD epoch {epoch}", leave=False, dynamic_ncols=True):
         t_data = time.perf_counter()
@@ -166,19 +179,30 @@ def train_mapmad_epoch(model, ema_model, optimizer, loader, transform, device, n
         loss_cpu = loss.item()
         if not math.isfinite(loss_cpu):
             raise RuntimeError(f"Training diverged: non-finite loss ({loss_cpu}) at epoch {epoch}, step {steps}")
-        lrs = lr_hook(epoch, steps) if lr_hook is not None else None
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
-        ema_model.step(model)
+        if batches % accum == 0:
+            lrs = lr_hook(epoch, steps) if lr_hook is not None else None
+            optimizer.zero_grad()
+        (loss / accum if accum > 1 else loss).backward()
+        batches += 1
+        stepped = batches % accum == 0 or batches == n_batches
+        if stepped:
+            optimizer.step()
+            ema_model.step(model)
 
         meter.add(per_sample.detach(), am, b["mode"])
         totals["diffusion_loss"] += float(diffusion_loss)
         totals["dist_loss"] += float(dist_loss)
         totals["total_loss"] += loss_cpu
-        steps += 1
         if step_log is not None:
             step_log.add(per_sample.detach(), am, b["mode"], float(diffusion_loss), float(dist_loss))
+        if not stepped:
+            t_done = time.perf_counter()
+            wait_s.append(t_data - t_ready)
+            step_s.append(t_done - t_data)
+            t_ready = t_done
+            continue
+        steps += 1
+        if step_log is not None:
             if step_log.due(steps):
                 share, n_share = batch_map_attention(model, b)
                 step_log.write(epoch, steps, lrs if lrs is not None else
@@ -192,16 +216,18 @@ def train_mapmad_epoch(model, ema_model, optimizer, loader, transform, device, n
                        **{f"train_mode/{k}": v for k, v in meter.means().items()}})
         if print_log_freq and steps % print_log_freq == 0:
             modes = " ".join(f"{k}={v:.4f}" for k, v in meter.means().items())
-            print(f"(epoch {epoch}) (step {steps}/{len(loader)}) loss {totals['total_loss'] / steps:.4f} | {modes}",
-                  flush=True)
+            print(f"(epoch {epoch}) (step {steps}/{-(-n_batches // accum)}) loss {totals['total_loss'] / batches:.4f} "
+                  f"| {modes}", flush=True)
         if max_steps is not None and steps >= max_steps:
             break
     skip = min(10, max(len(wait_s) - 1, 0))  # first steps include worker start-up
-    return {"epoch": epoch, "steps": steps, **{k: v / max(steps, 1) for k, v in totals.items()},
+    return {"epoch": epoch, "steps": steps, "batches": batches, **{k: v / max(batches, 1) for k, v in totals.items()},
             "train_mode_diffusion_loss": meter.means(),
             "timing": {"data_wait_s": float(np.mean(wait_s[skip:])) if wait_s else None,
                        "compute_s": float(np.mean(step_s[skip:])) if step_s else None,
-                       "first_steps_skipped": skip}}
+                       "first_steps_skipped": skip, "per": "loader batch",
+                       "max_memory_reserved_gib": (torch.cuda.max_memory_reserved() / 2 ** 30
+                                                   if torch.cuda.is_available() else None)}}
 
 
 @torch.no_grad()
@@ -235,16 +261,18 @@ def train_eval_loop_mapmad(model, optimizer, lr_scheduler, noise_scheduler, trai
         print(f"[mapmad] resumed from {resume_from}: next epoch {current_epoch}", flush=True)
     write_run_info(folder, config, optimizer, load_report, current_epoch if resume_from else None)
 
+    accum = int(config.get("grad_accum_steps", 1))
+    steps_per_epoch = -(-len(train_loader) // accum)  # optimizer steps
     schedule = None
     if config.get("lr_schedule") == "warmup_cosine":
         from vint_train.mapmad.lr_schedule import WarmupCosine
         if lr_scheduler is not None:
             raise ValueError("lr_schedule warmup_cosine needs `scheduler: null` (no torch scheduler)")
-        schedule = WarmupCosine(optimizer, len(train_loader), config["epochs"],
+        schedule = WarmupCosine(optimizer, steps_per_epoch, config["epochs"],
                                 float(config.get("warmup_start_ratio", 0.01)))
     elif config.get("lr_schedule") is not None:
         raise ValueError(f"unknown lr_schedule {config['lr_schedule']}")
-    step_log = (StepLog(os.path.join(folder, "metrics.jsonl"), config["step_log_freq"], len(train_loader))
+    step_log = (StepLog(os.path.join(folder, "metrics.jsonl"), config["step_log_freq"], steps_per_epoch)
                 if config.get("step_log_freq") else None)
     checks = None
     if config.get("training_checks"):
@@ -268,7 +296,8 @@ def train_eval_loop_mapmad(model, optimizer, lr_scheduler, noise_scheduler, trai
         record = train_mapmad_epoch(model, ema_model, optimizer, train_loader, transform, device, noise_scheduler, epoch,
                                     float(config["alpha"]), config["print_log_freq"], config["wandb_log_freq"],
                                     use_wandb, config.get("max_steps_per_epoch"),
-                                    lr_hook=schedule.apply if schedule is not None else None, step_log=step_log)
+                                    lr_hook=schedule.apply if schedule is not None else None, step_log=step_log,
+                                    accum=accum)
         record.update({"lr": lr, "train_seconds": time.time() - t0})
         if schedule is not None:
             record["lr_groups_last_step"] = schedule.lrs()

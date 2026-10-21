@@ -1,0 +1,101 @@
+# p10_rules.md — Phase 10 · MapMaD v2 model + training (rules frozen before the main run)
+
+Version 1, 2026-10-21. Sources: v2 plan v2.2 §8.5 / §5 G10 / §8 / §9; Phase 10 confirmation block (Naz, 2026-10-21,
+items 1-11, no changes). sha256 of this file in `p10_rules.sha256`; a copy in `mapmad/configs/p10_rules.md`. A rule
+changed after launch gets a new version (`p10_rules_v2.md`) with its own sha256 BEFORE the run it judges.
+
+## 1. Recipe (block item 1) — `train/config/mapmad_v2.yaml` (layered on `mapmad_p4_C.yaml`)
+- Start: official `nomad.pth` (sha256 `70f79b8262527e20e56ced64a3e3d7ef91855bc9e7c3fa348d78edcb83c6a333`), strict load;
+  only `vision_encoder.map_encoder.{near,far}.*` (36 tensors, 1,532,736 weights) are new.
+- 50/50 Habitat (`habitat_mapmad_v2`, 9,257 train / 551 test drives after `exclude_drives`) / GoStanford by sampling
+  weight; `waypoint_spacing` 5 (0.25 m between waypoints); 20 epochs x 200,000 samples (782 optimizer steps of 256).
+- Two AdamW groups: pretrained weights 1e-5, both map encoders 1e-4; warm-up per optimizer step in epoch 1
+  (x 0.01 -> x 1), then cosine per epoch (Phase 4 `lr_schedule.py`); EMA as Phase 4; `ema_e.pth` per epoch + one
+  resumable `latest.pth`; `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`, `CUBLAS_WORKSPACE_CONFIG=:4096:8`.
+- Main run: **seed 1**. **Checkpoint `ema_19.pth` of the main run is fixed in advance** (no selection of any kind).
+- Per-epoch test loss on a fixed 1,000-sample subset per test set (`eval_samples: 1000`): curves only, never used to
+  choose anything. In-training checks every 2 epochs (step-0 sanity, map effect on the 1,007-sample subset,
+  GoStanford 1,000-item subset, attention share per map token, forward/turn split, per-category loss): report only,
+  EXCEPT the step-0 sanity (maps hidden must equal the official model; else the run stops = a bug).
+- Supervisor: one automatic resume from `latest.pth` after a crash; a second crash stops.
+
+## 2. Map input (block items 2-4)
+- Near 64 x 64 @ 10 cm + far 64 x 64 @ 40 cm (far = 4 x 4 summary: obstacle any, explored mean, frontier any,
+  target max), robot-centred, forward = up, Phase 8's `map_v2.near_window` / `far_window` at frame t.
+- Target layer: rebuilt at frame t from the sparse **noisy** updates (training input); clean only in a check arm.
+- Frontier: the teacher's plain frontier at frame t, ONE shared function `map_v2.teacher_frontier_at` =
+  frontier_clusters(obstacle_t | cells bumped before t, explored_t), clusters >= 4. Bumped cells (collisions and
+  safety steps, `mapmad_frames.npz` `bump_events`, active from the frame after they were logged) are what the live
+  teacher used; they never enter the obstacle layer. Read through the per-drive cache (`frontier_cache.py`).
+  Part 1 result: 9,808 drives, 5,298,431 checked frames, 0 differ from the teacher's logged cluster count
+  (without the bump cells 103 of 4,075 sampled frames differed).
+- Modes (seeded per sample): search_map 45% (photo hidden, both maps, noisy target; search drives) · explore_map 20%
+  (photo hidden, both maps, target empty; exploration drives) · explore 20% (photo + maps hidden; all drives) ·
+  photo 15% (photo 0-20 waypoints ahead, maps hidden; all drives). GoStanford: maps hidden, photo 50/50. Distance loss
+  only with the photo shown. No near-/far-only training mode.
+- Model: two v1-design encoders (separate weights, 4 -> 32 -> 64 -> 128 -> 128, GroupNorm, flatten -> 256, last
+  Linear zero-init); tokens [4 frames, goal, near, far] = 7; sine positional table 5 -> 7 rows (rows 0-4 = the
+  checkpoint's). Both maps hidden -> the first 5 tokens only, NoMaD's own pooling (= NoMaD's computation, exactly).
+  `map_input: false` -> byte-identical NoMaD; v1 (one token) unchanged.
+
+## 3. Frozen sample lists (block item 5) — `/outputs/mapmad/p10_v2_train/offline/lists/`
+| File | Content | sha256 (of the samples) |
+|---|---|---|
+| `search_list.json` | 5,000 samples, 272 held-out search drives (18-19 each), t-15 >= 0, t+40 <= last | `aa9ec40678d0748afbd2174e540847e730e0a515c2d104938c16e90c689d88bb` |
+| `explore_list.json` | 2,000 samples, 249 held-out exploration drives (30 too short dropped) | `da883ed257e102ddc4a4141511254023d75b04b23f056710b03d3ccfd952ecf6` |
+| `offline_subset.json` | in-training map-effect subset: 1,007 samples / 55 whole drives of search_list | `25c64fb9669e145b4d93e69910abf62c6fd8e9ac871868a587915d8dd3a9ca3c` (subset body sha256, checked at load) |
+| Phase 4 `gostanford_subset.json` | in-training GoStanford subset (reused; harness items checked by sha256) | as frozen in Phase 4 |
+The test split (`test/traj_names.txt` sha256 `b32d66e6…3c`) and `collision_drives.txt` (`40442cf5…af17`) are Phase 8's.
+
+## 4. Offline checks (block items 5-6) — on `ema_19` of the main run (and of the twin, report only)
+- Scoring: `offline_eval score` (full 10-step diffusion, every sample's noise from its own id, deterministic
+  kernels); loss = `gc_action_loss` (MSE of the 8 waypoints, normalised units).
+- **Primary (G10 row 3):** search list, arm `maps` (noisy layer, both windows) minus arm `hidden` (photo + maps
+  hidden = NoMaD explore), drive-level paired bootstrap, 10,000 resamples (seed 0), 95% percentile CI.
+- Report only: clean layer; near only; far only; target zeroed; frontier zeroed; target shifted 1 m (direction
+  seeded per sample id); exploration list explore_maps vs hidden; per category; forward/turn split (turn =
+  |teacher heading change over the 8 waypoints| > 30 deg) and the forward / sideways parts of the loss; attention
+  share per map token (near, far), with the untrained model's (step-0) shares as the baseline.
+- Pre-training report (report only, no reweighting): the untrained v2 (official weights + fresh encoders; its maps-
+  hidden arm = the official NoMaD) on both lists: forward/turn split and per-category loss; v2 after training the same.
+- GoStanford no-harm (G10 row 4): Phase 4 harness, full GoStanford test set, `ema_19` (maps hidden, photo shown) vs
+  the official `nomad.pth`, same items and noise (paired).
+
+## 5. Gate G10
+| # | Check | Pass |
+|---|---|---|
+| 1 | Switch off | NoMaD forward pass byte-identical to the reference saved before any Phase 10 change (checked on the step-0 model; done in Part 1: pass on GPU1 and CPU) |
+| 2 | Maps hidden | step-0 v2 output = official NoMaD, allclose atol 1e-6 rtol 0; token count 7; all nomad.pth keys load (done in Part 1: max diff 0.0) |
+| 3 | Offline map effect | drive-level paired 95% CI of (maps − hidden) < 0 (upper end < 0) on the search list, noisy layer |
+| 4 | GoStanford no-harm | mean(ema_19) ≤ mean(official) + 0.10 (paired, full test set) |
+| 5 | Runs | `ema_19` of the main run (seed 1) fixed in advance; twin (seed 2) report only |
+Report next to row 3 (no pass/fail): the same difference for the untrained v2 (step 0). Part 1 found it is already
+negative there (mini test, 40 samples: −1.03) because showing the maps adds two tokens and switches to plain mean
+pooling, so row 3 alone does not show map use; the report-only arms (zeroed layers, near/far only, target shifted)
+and the step-0 baseline do. Row 3 stays as the plan defines it (rule unchanged; flagged to Naz).
+Row 3 or 4 fails -> recorded as failed, stop for a decision with Naz (map alignment first: rotation sign, frame index,
+far summary, target rebuild; then one change at a time). The twin never holds the gate (pending -> addendum).
+
+## 6. Memory / speed fallbacks (block item 7) — chain step 3 (timing, 200 optimizer steps, DRY folder)
+1. Peak GPU memory > 23.5 GiB (24,064 MiB, nvidia-smi, sampled every 5 s) or out-of-memory -> `batch_size 128 +
+   grad_accum_steps 2` (effective 256; logged deviation; the model has GroupNorm only, so no batch statistics change),
+   timing again; no stop. Out-of-memory after that -> automatic stop.
+2. Loader wait > 15% of the step time -> `num_workers` 12 -> 20, timing again once (logged).
+3. Estimate = 20 x (optimizer steps per epoch x seconds per step + 0.5 min eval) + 11 checks x 1 min; > 10.5 h ->
+   automatic budget stop. (Budget 7 h per run; stop > 1.5x.)
+The main run uses the setting the timing step ended with (launch overlay `launch/main.yaml`, saved with the run).
+
+## 7. Automatic stops (block item 8) -> `STOP_reason.txt`, `STATUS.md` -> STOPPED, fix nothing
+Smoke fails (training error, no FINISHED TRAINING, or a smoke_v2 check) · NaN loss · a second crash · out-of-memory
+after the fallback · checkpoint sha256 not written · estimate > 10.5 h · frontier-cache mismatch (build: any checked
+frame differs from the teacher's count; check: cache != shared function; Habitat parity: any difference) · cache
+> 4.5 h or > 90 GB · any unexpected exit of the driver (EXIT trap, exit code + last log line).
+
+## 8. GPU rule (v2 plan §8 + block item 9)
+- Free = no process of anyone else for 4 consecutive 5-min checks (`gpu_watch.py`; Phase 9's processes count as busy;
+  our own processes are marked MAPMAD_P10_OWNER=chain|twin). Never start on or share a GPU that holds another process.
+- Priority: Phase 10 main > Phase 9 > Phase 10 twin. Main run on the first GPU that is free for the chain. Twin only
+  when a second GPU is free for it AND Phase 9's STATUS.md shows photo test done / AT GATE / STOPPED; never started by
+  the chain (own launcher, screen p10_twin).
+- A started run is never killed when another process appears; the event is logged. Every GPU event is logged.
+- Every GPU job is pinned with `docker exec -e CUDA_VISIBLE_DEVICES=<g>` (configs keep gpu_ids [0]).

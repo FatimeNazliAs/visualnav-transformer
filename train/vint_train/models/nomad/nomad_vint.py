@@ -16,18 +16,23 @@ class NoMaD_ViNT(nn.Module):
         mha_num_attention_layers: Optional[int] = 2,
         mha_ff_dim_factor: Optional[int] = 4,
         map_input: bool = False,
+        map_tokens: int = 1,
+        map_channels: int = 3,
     ) -> None:
         """
         NoMaD ViNT Encoder class
 
         map_input (MapMaD): False = the original NoMaD. True adds a map encoder whose token is appended last
         (slot context_size + 2) with its own mask (see vint_train/mapmad/README.md).
+        map_tokens = 2 (MapMaD v2): two map encoders (near, far; map_channels layers each), two tokens last, one mask
+        per window.
         """
         super().__init__()
         self.obs_encoding_size = obs_encoding_size
         self.goal_encoding_size = obs_encoding_size
         self.context_size = context_size
         self.map_input = map_input
+        self.n_map_tokens = map_tokens if map_input else 0
 
         # Initialize the observation encoder
         if obs_encoder.split("-")[0] == "efficientnet":
@@ -55,7 +60,7 @@ class NoMaD_ViNT(nn.Module):
             self.compress_goal_enc = nn.Identity()
 
         # Initialize positional encoding and self-attention layers
-        self.positional_encoding = PositionalEncoding(self.obs_encoding_size, max_seq_len=self.context_size + (3 if map_input else 2))
+        self.positional_encoding = PositionalEncoding(self.obs_encoding_size, max_seq_len=self.context_size + 2 + self.n_map_tokens)
         self.sa_layer = nn.TransformerEncoderLayer(
             d_model=self.obs_encoding_size, 
             nhead=mha_num_attention_heads, 
@@ -73,7 +78,11 @@ class NoMaD_ViNT(nn.Module):
         self.all_masks = torch.cat([self.no_mask, self.goal_mask], dim=0)
         self.avg_pool_mask = torch.cat([1 - self.no_mask.float(), (1 - self.goal_mask.float()) * ((self.context_size + 2)/(self.context_size + 1))], dim=0)
 
-        if map_input:
+        if map_input and map_tokens == 2:
+            from vint_train.mapmad.map_encoder import MapEncoder
+            self.map_encoder = nn.ModuleDict({w: MapEncoder(in_channels=map_channels, out_dim=self.obs_encoding_size)
+                                              for w in ("near", "far")})
+        elif map_input:
             from vint_train.mapmad.map_encoder import MapEncoder
             self.map_encoder = MapEncoder(out_dim=self.obs_encoding_size)
             # Key padding masks for [obs x (context_size + 1), goal, map], row = goal_mask + 2 * map_mask
@@ -92,6 +101,8 @@ class NoMaD_ViNT(nn.Module):
             goal_mask = input_goal_mask.to(device)
 
         obs_encoding = self._encode_images(obs_img, goal_img)
+        if self.n_map_tokens == 2:
+            return self._attend_with_maps(obs_encoding, goal_mask, map_img, input_map_mask)
         if self.map_input:
             return self._attend_with_map(obs_encoding, goal_mask, map_img, input_map_mask)
 
@@ -154,8 +165,16 @@ class NoMaD_ViNT(nn.Module):
 
     def map_tokens(self, image_tokens: torch.Tensor, goal_mask: torch.Tensor, map_img: torch.Tensor,
                    map_mask: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        """MapMaD: image tokens + map token (last), positional encoding added -> (tokens, key padding mask)."""
+        """MapMaD: image tokens + map token (last), positional encoding added -> (tokens, key padding mask).
+        v2 (two map tokens): map_img (B, 2, C, H, W) near/far, map_mask (B, 2), tokens [..., near, far]."""
         device = image_tokens.device
+        if self.n_map_tokens == 2:
+            map_img = map_img.to(device)
+            near = self.map_encoder["near"](map_img[:, 0]).unsqueeze(1)
+            far = self.map_encoder["far"](map_img[:, 1]).unsqueeze(1)
+            tokens = self.positional_encoding(torch.cat((image_tokens, near, far), dim=1))
+            old = torch.index_select(self.all_masks.to(device), 0, goal_mask.long().to(device))
+            return tokens, torch.cat((old, map_mask.to(device).bool()), dim=1)
         map_token = self.map_encoder(map_img.to(device)).unsqueeze(1)
         tokens = self.positional_encoding(torch.cat((image_tokens, map_token), dim=1))
         mask_row = goal_mask.long().to(device) + 2 * map_mask.long().to(device)
@@ -174,6 +193,29 @@ class NoMaD_ViNT(nn.Module):
         visible = (~padding).float().unsqueeze(-1)
         pooled_map_shown = (out * visible).sum(dim=1) / visible.sum(dim=1)
         return torch.where(map_mask.to(out.device).bool().unsqueeze(-1), pooled_map_hidden, pooled_map_shown)
+
+    def _attend_with_maps(self, image_tokens: torch.Tensor, goal_mask: torch.Tensor, map_img: torch.Tensor,
+                          map_mask: torch.Tensor) -> torch.Tensor:
+        """MapMaD v2 attention + pooling. Samples with BOTH maps hidden run NoMaD's own computation exactly: the
+        first context_size + 2 tokens only (the hidden map tokens dropped, not just masked: with them the fused
+        attention kernels round differently, ~4e-6), pooled with avg_pool_mask. Samples with a map shown: all
+        tokens, hidden ones excluded from attention and pooling, plain mean over the visible tokens."""
+        tokens, padding = self.map_tokens(image_tokens, goal_mask, map_img, map_mask)
+        device = tokens.device
+        n_old = self.context_size + 2
+        hidden = map_mask.to(device).bool().all(dim=1)
+        out = torch.zeros((tokens.shape[0], tokens.shape[2]), dtype=tokens.dtype, device=device)
+        if hidden.any():
+            sel = hidden.nonzero(as_tuple=True)[0]
+            enc = self.sa_encoder(tokens[sel, :n_old], src_key_padding_mask=padding[sel, :n_old])
+            old_mask = torch.index_select(self.avg_pool_mask.to(device), 0, goal_mask.long().to(device)[sel]).unsqueeze(-1)
+            out = out.index_put((sel,), torch.mean(enc * old_mask, dim=1))
+        if not hidden.all():
+            sel = (~hidden).nonzero(as_tuple=True)[0]
+            enc = self.sa_encoder(tokens[sel], src_key_padding_mask=padding[sel])
+            visible = (~padding[sel]).float().unsqueeze(-1)
+            out = out.index_put((sel,), (enc * visible).sum(dim=1) / visible.sum(dim=1))
+        return out
 
 
 

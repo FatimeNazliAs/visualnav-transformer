@@ -1,0 +1,13 @@
+# Phase 10 timing test (chain step 3, block item 7): 200 steps of the main run's setup (full splits, batch 256,
+# 12 workers), no checks, no in-loop eval. A DRY folder: never results. The launch overlay may set batch_size 128 +
+# grad_accum_steps 2 (memory fallback) or more workers (speed fallback).
+base_config: mapmad_v2.yaml
+project_name: timing_DRY
+run_name: timing
+run_label: timing
+epochs: 1
+max_steps_per_epoch: 200
+print_log_freq: 20
+step_log_freq: 20
+eval_freq: 0
+training_checks: null

@@ -146,6 +146,31 @@ Original NoMaD files get only small hooks behind `map_input` (`false` = the old 
 `nomad_vint.py`, `nomad.py`, `vint_dataset.py` (`_index_path`), `train.py` (loaders, weight load, loop,
 `logs_root`, `base_config`; Phase 4: the two-group optimizer when `lr_schedule` is set, `--resume`). Extra packages go in `train/requirements-mapmad.txt` (none added in Phase 3).
 
+Phase 10 (MapMaD v2: two map windows, two tokens; rules `/outputs/mapmad/p10_v2_train/p10_rules.md`, run scripts
+`train/scripts/mapmad_p10/`):
+- **Switch:** `map: {tokens: 2, layers: 4}` in a config (`config/mapmad_v2.yaml`) builds v2; v1 configs (no `tokens`)
+  build v1 unchanged; `map_input: false` is NoMaD byte for byte. `config.map_model_kwargs` passes the switch to
+  `NoMaD_ViNT` (train.py, `build_nomad`).
+- **Model** (`nomad_vint.py`): `map_encoder.near` / `map_encoder.far` (v1 design, 4 input layers, last Linear zero);
+  tokens [4 frames, goal, near, far]; sine table 7 rows; masks: photo (B,), maps (B, 2). Both maps hidden -> the first
+  5 tokens only = NoMaD's computation exactly (G10 row 2: max diff 0.0); otherwise mean over the visible tokens.
+- **Map input:** `map_v2.teacher_frontier_at` (the teacher's plain frontier: obstacle | cells bumped before t,
+  explored; = the live teacher, `mapmad/scripts/p10_frontier_parity.py`), `frontier_cache.py` (per-drive changes,
+  checked against the teacher's logged cluster count on every exploring frame), `map_sample_v2.py` ([2, 4, 64, 64]:
+  near/far x obstacle, explored, frontier, noisy target; `MapOptions` for the offline arms).
+- **Data:** `dataset_v2.py` (`MapMaDV2Dataset`: modes search_map 45 / explore_map 20 / explore 20 / photo 15, each
+  limited mode drawn from its drive kind's pool); `dataset.py` hooks (`index_dir`, `photo_part`, `empty_map`);
+  `config.py` `_replace: true` blocks; `modes.py` v2 modes.
+- **Training:** `train_loop.py` `grad_accum_steps` (memory fallback), attention share per map token;
+  `training_checks.py` `dataset` / `arms` keys + `make-offline-subset` + a v2 report per check.
+- **Offline:** `offline_eval make-lists-v2` (search 5,000 / exploration 2,000 frozen lists), `score` (v2 arms
+  `offline_scoring.ARMS_V2`: maps, hidden, clean, near_only, far_only, target_zeroed, frontier_zeroed,
+  target_shifted; `--init-official` = the untrained model), `compare` (`offline_v2.compare_v2`: G10 row 3, per
+  category, forward/turn, attention per token); `gostanford` as Phase 4.
+- **Checks:** `checks_g10.py` (G10 rows 1-2), `smoke_v2.py` (smoke checks + check sheet).
+- **Inference** (Phases 11-12): `inference_v2.MapMaDV2Inference(checkpoint, cfg, device, sha256).predict(frames, near,
+  far, near_shown, far_shown, goal_image, seed)` -> waypoints (normalised and metres) + distance.
+
 Phase 7 (fair camera; commands in `mapmad/README.md`, "Phase 7: fair camera"):
 - `sacson_convert.py` — SACSoN bags -> NoMaD format with NoMaD's unchanged `train/process_bags.py` (a `rosbag` stand-in
   backed by `rosbags`); `sacson_scale.py` — SACSoN odometry scale from its AR-tag detections (report: not metric).

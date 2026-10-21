@@ -1,0 +1,75 @@
+# MapMaD v2 (Phase 10, block items 1-4, 11): Phase 4 run C's recipe (nomad.pth; 50/50 Habitat / GoStanford;
+# waypoint_spacing 5; 20 epochs x 200,000 samples = 782 steps at batch 256; pretrained lr 1e-5, map encoders 1e-4;
+# warmup per step in epoch 1, cosine per epoch after; ema_and_resume checkpoints) with the two-window v2 map
+# (near 64 x 64 @ 10 cm + far 64 x 64 @ 40 cm, 4 layers, two tokens) on habitat_mapmad_v2. Main run seed 1, ema_19
+# fixed in advance (p10_rules.md). The chain picks the GPU with a launch overlay (base_config: this file, gpu_ids).
+base_config: mapmad_p4_C.yaml
+project_name: runs
+run_name: v2_s1
+run_label: v2_s1
+logs_root: /outputs/mapmad/p10_v2_train   # train.py writes /outputs/mapmad/p10_v2_train/runs/v2_s1_<time>/
+gpu_ids: [0]
+seed: 1
+epochs: 20
+batch_size: 256
+grad_accum_steps: 1           # memory fallback (block item 7): batch_size 128 + grad_accum_steps 2 (launch overlay)
+init_weights: /outputs/mapmad/weights/official/nomad.pth   # sha256 70f79b82...a333
+
+map:
+  tokens: 2                   # near + far (map_encoder.near.* / map_encoder.far.*)
+  layers: 4                   # obstacle, explored, frontier, target seen here
+  size: 64
+  resolution: 0.1             # near window, metres per cell
+  far_resolution: 0.4         # far window (4 x 4 near cells per far cell)
+  target: noisy               # training input; clean only in a check arm
+  frontier_cache: /mapmad_data/p10_frontier_cache/habitat_mapmad_v2   # frontier_cache.py (chain step 1)
+  map_cache_size: 64          # per-worker LRU of per-drive files
+  perturb_prob: 0.0           # v1 heat perturbation: not used by v2
+
+habitat_modes:                # block item 2 (modes.HABITAT_MODES_V2)
+  _replace: true
+  search_map: 0.45
+  explore_map: 0.20
+  explore: 0.20
+  photo: 0.15
+
+epoch_samples: 200000
+dataset_weights:
+  _replace: true
+  habitat_mapmad_v2: 0.5
+  go_stanford: 0.5
+eval_samples: 1000            # block item 1: per-epoch test loss on a fixed 1,000-sample subset (curves only)
+
+datasets:
+  _replace: true
+  habitat_mapmad_v2:
+    data_folder: /mapmad_data/habitat_mapmad_v2
+    train: /mapmad_data/splits/habitat_mapmad_v2/train/
+    test: /mapmad_data/splits/habitat_mapmad_v2/test/
+    exclude_drives: /mapmad_data/splits/habitat_mapmad_v2/collision_drives.txt   # -> 9,257 / 551 drives
+    index_dir: /mapmad_data/p10_index   # spacing-5 sample index (the Phase 8 split folders stay read-only)
+    end_slack: 0
+    goals_per_obs: 1
+    negative_mining: True
+    waypoint_spacing: 5       # x metric_waypoint_spacing 0.05 = 0.25 m between waypoints (smoke asserts it)
+  go_stanford:
+    data_folder: /data/raw/go_stanford/go_stanford
+    train: /data/splits/go_stanford/train/
+    test: /data/splits/go_stanford/test/
+    end_slack: 0
+    goals_per_obs: 2
+    negative_mining: True
+
+training_checks:              # every 2 epochs on the EMA weights, report only (Phase 4 style)
+  _replace: true
+  every: 2
+  dataset: habitat_mapmad_v2
+  arms: [maps, hidden]
+  gostanford_subset: /outputs/mapmad/p4_train/subsets/gostanford_subset.json   # Phase 4's, reused
+  offline_subset: /outputs/mapmad/p10_v2_train/offline/lists/offline_subset.json
+  offline_list: /outputs/mapmad/p10_v2_train/offline/lists/search_list.json
+  official_weights: /outputs/mapmad/weights/official/nomad.pth
+  habitat_test: /mapmad_data/splits/habitat_mapmad_v2/test/
+  gostanford_test: /data/splits/go_stanford/test/
+  batch_size: 100
+  workers: 4

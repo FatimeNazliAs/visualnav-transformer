@@ -126,12 +126,24 @@ def cmd_make_subsets(args) -> None:
     print(f"offline_subset.json: {len(off['ids'])} samples, {off['n_drives']} drives; sha256 {sha_off}")
 
 
+def cmd_make_offline_subset(args) -> None:
+    """Phase 10: only the map-effect subset (whole drives, >= 1,000 samples) of a frozen list; the GoStanford subset
+    of Phase 4 is reused unchanged (same GoStanford test split, harness items checked by sha256 at load)."""
+    source = load_list(args.list)
+    off = {"kind": "offline_map_effect", "seed": SUBSET_SEED, "n": SUBSET_N, "source_list": args.list,
+           "source_list_sha256": source["sha256"], "ids": draw_offline_subset(source["samples"]),
+           "rule": "shortest prefix of whole drives in a seeded order with >= n samples"}
+    off["n_drives"] = len({s["drive"] for s in source["samples"] if s["id"] in set(off["ids"])})
+    sha = write_frozen(args.out, off)
+    print(f"{args.out}: {len(off['ids'])} samples, {off['n_drives']} drives; sha256 {sha}")
+
+
 # --- the checker -------------------------------------------------------------------------------------------------
 def checks_config(config: Dict[str, Any]) -> Dict[str, Any]:
     """The config with the test splits the subsets come from (smoke runs train on tiny splits)."""
     cfg = copy.deepcopy(config)
     c = cfg["training_checks"]
-    cfg["datasets"]["habitat_mapmad"]["test"] = c["habitat_test"]
+    cfg["datasets"][c.get("dataset", "habitat_mapmad")]["test"] = c["habitat_test"]
     cfg["datasets"]["go_stanford"]["test"] = c["gostanford_test"]
     return cfg
 
@@ -179,7 +191,8 @@ class TrainingChecks:
         by_id = {s["id"]: s for s in source["samples"]}
         self.map_samples = [by_id[i] for i in off["ids"]][:limit]
         self.map_drives = np.array([s["drive"] for s in self.map_samples])
-        self.hab_ds = build_mapmad_dataset(self.cfg, "habitat_mapmad", "test", train=False)
+        self.hab_ds = build_mapmad_dataset(self.cfg, c.get("dataset", "habitat_mapmad"), "test", train=False)
+        self.arms = tuple(c.get("arms", ("map_goal", "map_hidden")))  # (map shown, map hidden); v2: maps, hidden
         self.official: Optional[np.ndarray] = None
         self.subset_sha = {"gostanford": gs["sha256"], "offline": off["sha256"]}
 
@@ -229,24 +242,40 @@ class TrainingChecks:
             mine = self._gs_scores(model, map_input=True) if gs_scores is None else gs_scores
             arms = {arm: score_arm(model, self.hab_ds, self.map_samples, arm, self.cfg, self.device,
                                    self.c.get("batch_size", 100), self.c.get("workers", 4))
-                    for arm in ("map_goal", "map_hidden")}
+                    for arm in self.arms}
+        shown, hidden = self.arms
         nh = ci_trajectory(mine - official, self.gs_drives)
-        a, b = arms["map_goal"]["gc_action_loss"], arms["map_hidden"]["gc_action_loss"]
+        a, b = arms[shown]["gc_action_loss"], arms[hidden]["gc_action_loss"]
         me = paired_stats(a, b, self.map_drives)
+        share = np.asarray(arms[shown]["attn_share"], dtype=np.float64)
+        if share.ndim == 2:  # v2: near + far = the share of all map tokens; per token in the v2 report below
+            self._v2_report(arms, epoch_1based)
+            share = share.sum(axis=1)
         row = {"run": self.run, "epoch": epoch_1based, "ema_file": ema_file, "no_harm_delta": nh[0],
                "no_harm_ci_low": nh[1], "no_harm_ci_high": nh[2], "R": me["R"], "R_ci_low": me["R_ci_drive"][0],
                "R_ci_high": me["R_ci_drive"][1],
-               "attention_share": float(np.nanmean(arms["map_goal"]["attn_share"])),
+               "attention_share": float(np.nanmean(share)),
                "minutes": (time.time() - t0) / 60.0, "gs_model": float(mine.mean()),
                "gs_official": float(official.mean()), "map_goal": me["mean_a"], "map_hidden": me["mean_b"],
                "map_diff": me["diff"], "map_diff_ci_low": me["diff_ci_drive"][0],
                "map_diff_ci_high": me["diff_ci_drive"][1], "n_gs": int(len(mine)), "n_map": int(len(a))}
         np.savez(os.path.join(self.folder, "checks", f"epoch_{epoch_1based:02d}.npz"), gostanford=mine,
-                 official=official, map_goal=a, map_hidden=b, map_goal_attn=arms["map_goal"]["attn_share"])
+                 official=official, map_goal=a, map_hidden=b, map_goal_attn=arms[shown]["attn_share"])
         append_trace(os.path.join(self.folder, "no_harm_trace.csv"), row)
         print("[checks] " + " ".join(f"{k}={v:.4f}" if isinstance(v, float) else f"{k}={v}" for k, v in row.items()),
               flush=True)
         return row
+
+    def _v2_report(self, arms: Dict[str, Dict[str, np.ndarray]], epoch_1based: int) -> None:
+        """v2 (report only): offline_v2.compare_v2 on the subset -> checks/epoch_XX_v2.json (forward/turn split,
+        per-category loss, attention share per map token)."""
+        from vint_train.mapmad.offline_v2 import compare_v2
+
+        scores = {"drive": self.map_drives}
+        for arm, res in arms.items():
+            scores.update({f"{arm}.{k}": v for k, v in res.items()})
+        with open(os.path.join(self.folder, "checks", f"epoch_{epoch_1based:02d}_v2.json"), "w") as f:
+            json.dump(compare_v2(scores, self.map_samples), f, indent=1)
 
 
 # --- selection-bias report (final eval) --------------------------------------------------------------------------
@@ -291,8 +320,12 @@ def main(argv: Optional[List[str]] = None) -> None:
     p.add_argument("--scores", required=True)
     p.add_argument("--subset", required=True)
     p.add_argument("--out", required=True)
+    p = sub.add_parser("make-offline-subset")
+    p.add_argument("--list", required=True)
+    p.add_argument("--out", required=True)
     args = parser.parse_args(argv)
-    {"make-subsets": cmd_make_subsets, "gostanford-report": cmd_gostanford_report}[args.cmd](args)
+    {"make-subsets": cmd_make_subsets, "gostanford-report": cmd_gostanford_report,
+     "make-offline-subset": cmd_make_offline_subset}[args.cmd](args)
 
 
 if __name__ == "__main__":

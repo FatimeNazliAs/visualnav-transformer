@@ -452,6 +452,19 @@ def _approach(m: OwnMap, pose: Pose, state: TeacherState, seen: Sequence[SeenIns
     return Decision(NO_PATH, np.asarray([pose[:2]], dtype=np.float64)), state
 
 
+def teacher_frontier(own_map: OwnMap, pose: Pose, committed: Optional[XY] = None,
+                     spec: TeacherSpec = TeacherSpec()) -> np.ndarray:
+    """The frontier cells (bool, whole storey) rule 1 clusters at this step: this step's planning window (_Planner,
+    bumped cells as obstacles, the trajectory ring if own_map.visited is set) -> map_v2.frontier_clusters, put back on
+    the storey grid. Not used by teacher_step itself (that code is unchanged); Phase 10's parity check
+    (scripts/p10_frontier_parity.py) compares it with the NoMaD side's map_v2.teacher_frontier_at."""
+    pl = _Planner(own_map, pose, [committed] if committed is not None else [], spec)
+    labels = frontier_clusters(pl.obstacle, pl.explored, spec.min_cluster, pl.visited)
+    out = np.zeros(own_map.explored.shape, dtype=bool)
+    out[pl.win.i0:pl.win.i1, pl.win.j0:pl.win.j1] = labels > 0
+    return out
+
+
 def teacher_step(own_map: OwnMap, pose: Pose, state: TeacherState, seen: Sequence[SeenInstance] = (),
                  spec: TeacherSpec = TeacherSpec(), searching: bool = True) -> Tuple[Decision, TeacherState]:
     """The teacher's decision at this step and its new memory (module docstring). `searching` = a search drive

@@ -27,7 +27,7 @@ from vint_train.mapmad.check_trace import read_trace  # noqa: E402
 
 # categorical slots in fixed order (dataviz reference palette, light mode)
 SLOTS = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#6250d6", "#e34948"]
-MODE_ORDER = ["photo", "map_goal", "photo_map", "explore_map", "explore", "gs_photo", "gs_explore"]
+MODE_ORDER = ["photo", "map_goal", "photo_map", "explore_map", "explore", "gs_photo", "gs_explore", "search_map"]
 INK, MUTED, GRID = "#0b0b0b", "#52514e", "#e4e3df"
 NO_HARM_LIMIT = 0.08
 
@@ -60,6 +60,15 @@ def series(steps: List[Dict[str, Any]], get) -> tuple:
     return np.array(xs), np.array(ys, dtype=float)
 
 
+def attention_series(steps: List[Dict[str, Any]]) -> list:
+    """[(name, getter)]: one map attention series (v1, a number per record) or near + far (v2, a pair)."""
+    first = next((r["map_attention_share"] for r in steps if r.get("map_attention_share") is not None), None)
+    if isinstance(first, list):
+        return [(name, (lambda r, k=k: r["map_attention_share"][k] if r.get("map_attention_share") else None))
+                for k, name in enumerate(("near", "far"))]
+    return [("map", lambda r: r["map_attention_share"])]
+
+
 def plot_run(steps: List[Dict[str, Any]], label: str, path: str) -> None:
     fig, axes = plt.subplots(2, 2, figsize=(12, 7), constrained_layout=True)
     ax = axes[0, 0]
@@ -74,8 +83,11 @@ def plot_run(steps: List[Dict[str, Any]], label: str, path: str) -> None:
     ax.plot(x, y, color=SLOTS[0], linewidth=1.5)
     style(ax, "Distance loss (photo shown)", "MSE")
     ax = axes[1, 0]
-    x, y = series(steps, lambda r: r["map_attention_share"])
-    ax.plot(x, y, color=SLOTS[0], linewidth=1.5)
+    for k, (name, get) in enumerate(attention_series(steps)):  # v1: one line; v2: near, far (search_map samples)
+        x, y = series(steps, get)
+        ax.plot(x, y, color=SLOTS[k], linewidth=1.5, label=name)
+    if len(attention_series(steps)) > 1:
+        ax.legend(fontsize=8, frameon=False)
     ax.axhline(0.20, color=MUTED, linewidth=1, linestyle="--")
     ax.text(x[0] if len(x) else 0, 0.205, "even share 0.20", fontsize=8, color=MUTED)
     style(ax, "Map attention share (map-goal samples of the batch)", "share")
@@ -107,8 +119,10 @@ def plot_overlay(runs: Dict[str, List[Dict[str, Any]]], traces: Dict[str, Option
         ax.legend(fontsize=8, frameon=False)
     ax = axes[0, 2]
     for i, (label, steps) in enumerate(runs.items()):
-        x, y = series(steps, lambda r: r["map_attention_share"])
-        ax.plot(x, y, color=SLOTS[i], linewidth=1.5, label=f"run {label}")
+        for name, get in attention_series(steps):
+            x, y = series(steps, get)
+            ax.plot(x, y, color=SLOTS[i], linewidth=1.5, linestyle="-" if name != "far" else "--",
+                    label=f"run {label}" + ("" if name == "map" else f" {name}"))
     style(ax, "Map attention share (training batches)", "share")
     ax.set_xlabel("global step", fontsize=9, color=MUTED)
     ax.legend(fontsize=8, frameon=False)

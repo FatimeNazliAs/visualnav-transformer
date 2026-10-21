@@ -6,7 +6,7 @@ spacing 1, 2 and 5), stored as JSON with the sha256 of its canonical form. `offl
 import hashlib
 import json
 import os
-from typing import Any, Dict, List, Sequence
+from typing import Any, Callable, Dict, List, Sequence
 
 import numpy as np
 
@@ -19,8 +19,16 @@ def canonical_sha256(obj: Any) -> str:
     return hashlib.sha256(json.dumps(obj, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
-def make_list(data_folder: str, drives: Sequence[str], n: int = N_SAMPLES, seed: int = LIST_SEED) -> List[Dict[str, Any]]:
-    """n samples spread evenly over `drives` (n // D or n // D + 1 each, the +1 drives drawn with the seed)."""
+def v1_type(meta: Dict[str, Any], traj: Dict[str, np.ndarray], t: int) -> Dict[str, Any]:
+    """v1 list fields: the drive's target kind (spot / object)."""
+    return {"type": meta["target"]["kind"]}
+
+
+def make_list(data_folder: str, drives: Sequence[str], n: int = N_SAMPLES, seed: int = LIST_SEED,
+              fields: Callable[[Dict[str, Any], Dict[str, np.ndarray], int], Dict[str, Any]] = v1_type
+              ) -> List[Dict[str, Any]]:
+    """n samples spread evenly over `drives` (n // D or n // D + 1 each, the +1 drives drawn with the seed);
+    `fields(meta, traj, t)` gives each sample's extra fields (v1: "type"; v2: list_v2.v2_fields)."""
     import pickle
 
     rng = np.random.default_rng(seed)
@@ -30,14 +38,15 @@ def make_list(data_folder: str, drives: Sequence[str], n: int = N_SAMPLES, seed:
     out = []
     for drive, k in zip(drives, per):
         with open(os.path.join(data_folder, drive, "traj_data.pkl"), "rb") as f:
-            length = len(pickle.load(f)["position"])
+            traj = pickle.load(f)
+        length = len(traj["position"])
         with open(os.path.join(data_folder, drive, "mapmad_meta.json")) as f:
-            kind = json.load(f)["target"]["kind"]
+            meta = json.load(f)
         valid = np.arange(BACK_FRAMES, length - 1 - AHEAD_FRAMES + 1)
         if len(valid) < k:
             raise ValueError(f"{drive}: only {len(valid)} valid frames for {k} samples")
         for t in np.sort(rng.choice(valid, k, replace=False)):
-            out.append({"drive": drive, "t": int(t), "type": kind})
+            out.append({"drive": drive, "t": int(t), **fields(meta, traj, int(t))})
     for i, s in enumerate(out):
         s["id"] = i
     return out
