@@ -1,0 +1,15 @@
+# Phase 11 DRY runs (driver and pipeline tests only; never results): p11_dagger.yaml with every output in
+# <outputs>/p11_dagger/DRY, tiny frozen subsets of the real sets (DRY/dev_set_dry, DRY/rollout_set_dry) and rollout drives
+# in <mapmad_data>/p11_dry2_dagger.
+extends: p11_dagger.yaml
+out_dir: p11_dagger/DRY
+sets:
+  dev:
+    folder: dev_set_dry
+  rollout:
+    folder: rollout_set_dry
+rollouts:
+  data_folder: p11_dry2_dagger
+  splits: splits/p11_dry2_dagger
+  label_check_drives: 4
+  label_check_max_median_m: 1.0     # DRY: the check runs, it does not stop the DRY chain

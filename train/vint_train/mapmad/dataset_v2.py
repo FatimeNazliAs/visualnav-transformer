@@ -17,6 +17,9 @@ is "seen before, now out of view" (target_groups.seen_out_of_view: a simulator-t
 none at t); else the rule above. p = 0 draws no extra random number, so other runs sample exactly as before.
 GoStanford: maps hidden (all zero, both masks 1), photo shown/hidden 50/50 with NoMaD's own goal sampling.
 The distance loss counts only shown photos (train_loop.py).
+DAgger union (Phase 11, `attach_dagger`, dataset_dagger.py): a search_map draw is uniform over the Phase 8 search
+samples plus the DAgger samples (the seen pool over both sources' seen frames); without an attached DaggerDataset the
+draws are exactly the above.
 """
 
 from typing import Any, Dict, Optional, Tuple
@@ -39,6 +42,28 @@ class MapMaDV2Dataset(MapMaDDataset):
 
     def _init_modes(self, habitat_modes: Dict[str, float]) -> None:
         self.mode_p = M.habitat_mode_table(habitat_modes, M.HABITAT_MODES_V2)
+
+    dagger = None  # Phase 11: an attached DaggerDataset joins the search_map pool (attach_dagger)
+
+    def attach_dagger(self, dagger: "MapMaDV2Dataset") -> None:
+        """Phase 11 union (module docstring): search_map draws become uniform over this split's search samples and the
+        DAgger samples; the seen pool (seen_oversample > 0) over both sources' seen frames."""
+        if self.seen_p > 0 and "seen" not in dagger.pools:
+            raise ValueError("seen_oversample > 0 needs the DAgger seen pool (same map config)")
+        self.dagger = dagger
+
+    def _union_draw(self, rng: np.random.Generator):
+        """(source dataset, drive, t) of a search_map draw over the union (module docstring)."""
+        pool = "search"
+        if self.seen_p > 0 and rng.random() < self.seen_p:
+            pool = "seen"
+        own, other = self.pools[pool], self.dagger.pools[pool]
+        k = int(rng.integers(len(own) + len(other)))
+        if k < len(own):
+            drive, t, _ = self.index_to_data[int(own[k])]
+            return self, drive, t
+        drive, t, _ = self.dagger.index_to_data[int(other[k - len(own)])]
+        return self.dagger, drive, t
 
     def _init_maps(self, map_cfg: Dict[str, Any], train: bool) -> None:
         if int(map_cfg.get("layers", 4)) != 4:
@@ -104,6 +129,9 @@ class MapMaDV2Dataset(MapMaDDataset):
         if not self.has_maps:
             return self._gostanford(i, M.draw_gostanford_mode(self.goal_mask_prob, rng))
         mode = M.draw_habitat_mode(self.mode_p, rng, M.HABITAT_MODES_V2)
+        if self.dagger is not None and mode.name == "search_map":
+            source, drive, t = self._union_draw(rng)
+            return source.habitat_sample(drive, t, mode, rng)
         drive, t, _ = self.index_to_data[self.pool_index(i, mode, rng)]
         return self.habitat_sample(drive, t, mode, rng)
 

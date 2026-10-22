@@ -15,6 +15,8 @@ atomically to <dir>/gpu_free.json:
      "free": {"any": [...], "chain": [...], "twin": [...]}}
 Every change of the free sets and every process that appears or ends goes to <dir>/gpu_watch.log (GPU events).
 `gpu_watch.py --check <gpu> <owner>`: exit 0 if that GPU holds no process of anyone but the owner right now.
+Phase 11 reuses it with MAPMAD_OWNER_ENV=MAPMAD_P11_OWNER (the environment variable that marks our processes; default
+MAPMAD_P10_OWNER).
 """
 
 import json
@@ -25,6 +27,7 @@ import time
 from typing import Dict, List
 
 OWNERS = ("any", "chain", "twin")
+OWNER_ENV = os.environ.get("MAPMAD_OWNER_ENV", "MAPMAD_P10_OWNER").encode()
 
 
 def owner_of(pid: int) -> str:
@@ -34,7 +37,7 @@ def owner_of(pid: int) -> str:
     except OSError:
         return "other"
     for item in env:
-        if item.startswith(b"MAPMAD_P10_OWNER="):
+        if item.startswith(OWNER_ENV + b"="):
             value = item.split(b"=", 1)[1].decode()
             return value if value in ("chain", "twin") else "other"
     return "other"
@@ -95,7 +98,7 @@ def main() -> None:
         with open(log_path, "a") as f:
             f.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {msg}\n")
 
-    say(f"watcher start: every {check_s} s, free = {need} consecutive checks; owners by MAPMAD_P10_OWNER")
+    say(f"watcher start: every {check_s} s, free = {need} consecutive checks; owners by {OWNER_ENV.decode()}")
     streak: Dict[str, Dict[str, int]] = {}
     last_free, last_pids = None, {}
     while True:

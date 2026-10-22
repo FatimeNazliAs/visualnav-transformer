@@ -1,0 +1,10 @@
+# MapMaD v2.1 when the step-0 pick makes run C v2 (Phase 11, p11_rules.md): mapmad_v21.yaml's fine-tune on run C's
+# recipe (mapmad_v2_seen.yaml: seen_oversample 0.25, applied over the union of Phase 8 and DAgger seen frames), from
+# run C ema_19.
+base_config: mapmad_v21.yaml
+run_name: v21c_s1
+run_label: v21c_s1
+init_checkpoint: /outputs/mapmad/p10_v2_train/runs/v2c_s1_2026_10_22_04_44_29/ema_19.pth
+init_checkpoint_sha256: aa30d133606094506e57ec10695e5d12ffe0c5443fe8bf7726127057cc502a5c
+map:
+  seen_oversample: 0.25

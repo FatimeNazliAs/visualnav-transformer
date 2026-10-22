@@ -390,3 +390,30 @@ MAPMAD_SIDECAR_KEY=$(openssl rand -hex 16) bash mapmad/scripts/p9_job.sh driver 
 - Every long job runs in `screen` through `p9_job.sh` (EXIT trap: `STOP_reason.txt` on any abnormal exit, `DONE.txt`
   on a normal one). Claude Code itself may run in VS Code; it can be closed once the driver runs.
 - Unique ids: frames `p9f-<home>-<rnd|drv>-<n>`, items `p9q-<frame>-<category>` / `p9o-<frame>-<OVON name>`.
+
+## Phase 11: closed-loop search harness, dev set, DAgger labels (rules /outputs/mapmad/p11_dagger/p11_rules.md)
+
+The v2 closed loop (also Phase 12's): the simulator server builds the training map online (`mapmad_sim/search_v2.py`:
+`SearchMap` = Phase 8 builder + simulator-truth target layer with the Phase 8 noise + the teacher's frontier incl. bumped
+cells -> near / far windows; `outputs={"search_v2": ...}` at reset, settings from `search_wire.search_settings`; `save`
+writes a recorded run in the Phase 8 drive format); the policy runs in `naz_mapmad`
+(`vint_train.mapmad.closed_loop.run_search`). Episode sets (`search_set.py`): the dev set (plan 8.7 builder on the 10
+Phase 1 dev homes; Phase 12 reuses it) and the rollout set (Phase 8 search starts, seed 1101). DAgger labels
+(`dagger_labels.py`): `teacher_step` on the robot's own map at every visited frame (blacklist counter frozen), then a
+40-step kinematic look-ahead -> 8 waypoints. Config `configs/p11_dagger.yaml` (DRY: `p11_dryrun.yaml`).
+
+```bash
+# sets (GPU, minutes): dev candidates per worker + freeze; rollout starts per worker + freeze
+python mapmad/scripts/make_p11_sets.py dev-candidates --gpu 0 --worker 0 --workers 2 && python mapmad/scripts/make_p11_sets.py dev-freeze
+python mapmad/scripts/make_p11_sets.py rollout-candidates --gpu 1 --worker 0 --workers 6 && python mapmad/scripts/make_p11_sets.py rollout-freeze
+# online map = generator map (2 dev drives; pose replay pass/fail, action replay report only) -> checks/map_parity.json
+python mapmad/scripts/p11_map_parity.py --gpu 1
+# closed-loop pairs on one GPU (the chain does this), e.g. 3 pairs on GPU 1 for the dev set
+GPU=1 TOKEN=x mapmad/scripts/run_p11_pairs.sh --config /app/visualnav-transformer/mapmad/configs/p11_dagger.yaml \
+    --set dev --arms run1 runC --subdir step0
+# labels (CPU): label check on 50 Phase 8 test drives; labels of every rollout drive; splits; 10-state sheet
+python mapmad/scripts/p11_labels.py check|label|splits|sheet [--workers N]
+# tests (CPU; the replay test needs MAPMAD_TEST_GPU=<gpu>)
+cd mapmad && python -m pytest -q -p no:cacheprovider tests/test_p11_dagger.py
+```
+The unattended chain and twin: `train/scripts/mapmad_p11/` (README there).

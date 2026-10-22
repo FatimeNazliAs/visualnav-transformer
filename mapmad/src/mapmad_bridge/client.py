@@ -16,7 +16,7 @@ import numpy as np
 
 from mapmad_bridge import protocol
 
-EXTRAS = ("map", "grid", "goal_rect")
+EXTRAS = ("map", "grid", "goal_rect", "maps")
 
 
 @dataclass
@@ -29,7 +29,7 @@ class Frame:
     goal_rgb: Optional[np.ndarray] = None  # goal photo (reset only, if asked for)
     topdown: Optional[Dict[str, Any]] = None  # {"grid": bool (rows z, cols x), "origin": [x, z], "m_per_px"} (reset)
     navmesh_sha256: Optional[str] = None  # floor map of the home (reset)
-    extras: Dict[str, Any] = field(default_factory=dict)  # Phase 5 outputs: "map", "grid", "goal_rect"
+    extras: Dict[str, Any] = field(default_factory=dict)  # Phase 5 outputs "map", "grid", "goal_rect"; Phase 11 "maps"
 
 
 def extras_of(reply: Dict[str, Any]) -> Dict[str, Any]:
@@ -77,6 +77,11 @@ class SimClient:
         """Drive (v m/s, w rad/s) for one control period (0.25 s) and observe."""
         r = self._call("step", v=float(v), w=float(w))
         return Frame(rgb=r["rgb"], state=r["state"], move=r["move"], extras=extras_of(r))
+
+    def save(self, folder: str, meta: Dict[str, Any]) -> Dict[str, Any]:
+        """Phase 11: the server writes the recorded search episode to `folder` (a path inside the simulator
+        container, e.g. /mapmad_data/...) in the Phase 8 drive format; returns {"bytes"}."""
+        return self._call("save", folder=str(folder), meta=meta)
 
     def close(self, shutdown_server: bool = False) -> None:
         """Leave; with shutdown_server the server process exits too."""

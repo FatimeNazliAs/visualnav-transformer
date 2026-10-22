@@ -1,0 +1,26 @@
+# MapMaD v2.1 (Phase 11 block item 5, p11_rules.md): DAgger fine-tune of v2 = run 1 ema_19 (if the step-0 pick keeps
+# run 1; the chain picks mapmad_v21_seen.yaml if run C wins). Same recipe as Phase 10 (two lr groups: pretrained 1e-5,
+# map encoders 1e-4; warm-up over epoch 1, cosine over epochs 2-10; batch 256; 200,000 samples per epoch; modes
+# 45/20/20/15; GoStanford 50/50), 10 epochs, seed 1, from ema_19 (weights; the EMA starts from them too). DAgger
+# samples join the search_map pool only, uniform over the union (dataset_dagger.py). ema_9 fixed in advance.
+# In-training checks off: their step-0 sanity compares with the official nomad.pth, which a fine-tune start is not
+# (the offline checks on ema_9 replace them).
+base_config: mapmad_v2.yaml
+project_name: runs
+run_name: v21_s1
+run_label: v21_s1
+logs_root: /outputs/mapmad/p11_dagger
+seed: 1
+epochs: 10
+init_weights: null
+init_checkpoint: /outputs/mapmad/p10_v2_train/runs/v2_s1_2026_10_21_08_42_50/ema_19.pth
+init_checkpoint_sha256: 6d2492f19f7f1a5ccadea3f120b66a78b04bb5e88d10ca701fc523e0f9aee984
+training_checks: null
+
+map:
+  dagger:
+    data_folder: /mapmad_data/habitat_mapmad_v2_dagger
+    train: /mapmad_data/splits/habitat_mapmad_v2_dagger/train/
+    test: /mapmad_data/splits/habitat_mapmad_v2_dagger/test/
+    frontier_cache: /mapmad_data/p11_frontier_cache/habitat_mapmad_v2_dagger
+    index_dir: /mapmad_data/p11_index

@@ -14,12 +14,14 @@ Requests ({"cmd": ...}) and replies:
 - reset(episode, hfov_deg, goal_photo, topdown_m_per_px[, outputs][, camera])
                                          -> {"rgb", "goal_rgb" (or None), "state", "topdown", "navmesh_sha256"}
                                             (+ "map", "grid", "goal_rect" as asked in outputs; Phase 5)
-- step(v, w)                             -> {"rgb", "state", "move"} (+ "map", "grid" as asked at reset)
+- step(v, w)                             -> {"rgb", "state", "move"} (+ "map", "grid", "maps" as asked at reset)
+- save(folder, meta)                     -> {"bytes"} (Phase 11: the recorded search episode, Phase 8 drive format)
 - bye                                    -> {} (client leaves, server waits for the next one)
 - close                                  -> {} (server exits)
 Any failure -> {"error": "<type>: <message>"}.
-`state` = {"position": [x, y, z], "yaw", "geodesic_m", "floor_below_feet_m"[, "vp_geodesic_m"]}; `move` =
-mapmad_sim.robot.Move fields. `outputs` = {"map": bool, "grid": bool, "map_settings": {"builder", "crop"}}
+`state` = {"position": [x, y, z], "yaw", "geodesic_m", "floor_below_feet_m"[, "vp_geodesic_m"][, Phase 11 "in_view",
+"first_in_view_step", "seen_instances"]}; `move` =
+mapmad_sim.robot.Move fields. `outputs` = {"map": bool, "grid": bool, "map_settings": {"builder", "crop"}} (Phase 5) or {"search_v2": {...}} (Phase 11)
 (mapmad_sim.sidecar_server.SimService). `camera` (Phase 7) = a camera setting dict (mapmad_sim.camera_setting:
 "name", "lens", "height_m", "pitch_deg", "hfov_deg"[, "double_sphere"]); absent = robot_limo.yaml's camera.
 """

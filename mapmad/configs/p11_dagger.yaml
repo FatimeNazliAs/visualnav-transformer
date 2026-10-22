@@ -1,0 +1,86 @@
+# Phase 11 — dev check (pick v2) + DAgger round -> v2.1 (v2 plan §8.6; rules frozen in
+# /outputs/mapmad/p11_dagger/p11_rules.md + .sha256, copy in configs/p11_rules.md). Read by both containers:
+# mapmad/scripts/make_p11_sets.py, p11_map_parity.py, p11_labels.py (Habitat side) and
+# vint_train.mapmad.closed_loop.run_search (NoMaD side). Paths below <outputs> unless "repo:".
+out_dir: p11_dagger
+datagen: p8_datagen_v3a.yaml          # Phase 8 option A: map builder, target-layer noise, teacher, motion (configs/)
+camera: camera_fair.yaml              # pin025 for every arm and every set
+
+sets:
+  dev:                                # block item 1 / plan 8.7 builder on the 10 Phase 1 dev homes (also Phase 12's dev set)
+    folder: dev_set
+    split: train
+    objectnav_split: train            # their ObjectNav v2 TRAIN episodes
+    homes: ["00746", "00440", "00272", "00330", "00241", "00732", "00081", "00534", "00397", "00401"]
+    candidates_per_home: 300          # official episodes examined per home, in a seeded random order
+    candidate_seed: 11101
+    total: 120                        # aim 120, <= 15 per home, 3 distance bins (neighbour-bin fill)
+    per_home: 15
+    draw_seed: 11201
+  rollout:                            # block item 2: the winner drives itself, 10 search episodes per labelled home
+    folder: rollouts/set
+    per_home: 10
+    seed: 1101                        # replaces p8_datagen.yaml's seed for the start draws
+    test_homes: dev                   # rollouts in the 10 dev homes go to the DAgger test split (never trained on)
+
+set_rules:                            # exam_set.SetRules (Phase 5 numbers; goal-photo fields unused)
+  start_snap_max_m: 0.2
+  view_point_max_snap_m: 0.2
+  same_storey_dy_m: 0.5
+  distance_m: [3.0, 15.0]
+  bins_m: [3.0, 6.0, 10.0, 15.0]
+  goal_photo_min_share: 0.05
+  target_point_max_m: 1.0
+  floor_names: [floor, carpet, rug, mat, doormat]
+  goal_photo_box_m: null
+
+run:
+  success_m: 0.2                      # walking distance to the nearest usable view point of ANY instance; oracle stop
+  max_steps: 1000
+  stuck_steps: 100                    # stuck streak = >= 100 consecutive collision steps (report)
+  seeds: 3                            # seed indices 0..2; noise seed = f(episode id, seed index), same for every arm
+  seed_salt: mapmad-p11
+  topdown_m_per_px: 0.05
+
+policy:                               # Phase 5 MapMaD arm settings
+  num_samples: 8
+  sample_index: 0
+  waypoint_index: 1
+  context_spacing: 5
+  step_m: 0.25
+
+checkpoints:                          # sha256 checked before every run
+  run1:
+    path: p10_v2_train/runs/v2_s1_2026_10_21_08_42_50/ema_19.pth
+    sha256: 6d2492f19f7f1a5ccadea3f120b66a78b04bb5e88d10ca701fc523e0f9aee984
+    config: repo:train/config/mapmad_v2.yaml
+  runC:
+    path: p10_v2_train/runs/v2c_s1_2026_10_22_04_44_29/ema_19.pth
+    sha256: aa30d133606094506e57ec10695e5d12ffe0c5443fe8bf7726127057cc502a5c
+    config: repo:train/config/mapmad_v2_seen.yaml
+  v2: {from_file: V2_FINAL.json}    # below <out_dir>: written by the step-0 pick
+  v21: {from_file: V21.json}        # below <out_dir>: written after the fine-tune (ema_9)
+
+arms:                                 # name: checkpoint key + maps shown
+  run1: {checkpoint: run1, maps: true}
+  runC: {checkpoint: runC, maps: true}
+  run1_hidden: {checkpoint: run1, maps: false, seeds: [0]}   # report only: first closed-loop map-effect sanity check
+  v2: {checkpoint: v2, maps: true}
+  v21: {checkpoint: v21, maps: true}
+
+rollouts:                             # block items 2-3
+  data_folder: habitat_mapmad_v2_dagger          # below <mapmad_data>
+  splits: splits/habitat_mapmad_v2_dagger        # below <mapmad_data>: train/ test/ traj_names.txt
+  seed_index: 0
+  collision_skip_steps: 20            # states inside a collision streak >= 20 steps are not labelled
+  label_steps: 40                     # look-ahead: 40 control steps, waypoint every 5th
+  label_every: 5
+  label_replan: true                  # look-ahead variant (dagger_labels module docstring, step 3)
+  skip_order: collision_first         # a state in a collision streak AND a teacher fail counts as collision
+  label_check_drives: 50              # Phase 8 test-split search drives
+  label_check_seed: 11301
+  label_check_max_median_m: 0.25     # Naz 2026-10-22 (was 0.15; p11_rules.md §12)
+  label_check_max_wp1_median_m: 0.10 # and the first waypoint's median error
+  max_teacher_fail_share: 0.40
+  sheet_states: 10
+  sheet_seed: 11401

@@ -8,7 +8,8 @@
   model's own sine row.
 Then `load_state_dict(strict=True)` on the merged dict, so nothing is skipped silently.
 
-Our own checkpoints (train_loop saves them unwrapped) load with `load_checkpoint`: strict, every key.
+Our own checkpoints (train_loop saves them unwrapped) load with `load_checkpoint`: strict, every key; a fine-tune
+starts from one with `load_own_into` (Phase 11: `init_checkpoint` + `init_checkpoint_sha256` in the train config).
 """
 
 from typing import Any, Dict, Tuple
@@ -72,3 +73,13 @@ def load_checkpoint(cfg: Dict[str, Any], path: str, device: torch.device, map_in
     model = build_nomad(dict(cfg, map_input=map_input))
     model.load_state_dict(strip_module_prefix(torch.load(path, map_location="cpu", weights_only=True)), strict=True)
     return model.to(device).eval()
+
+
+def load_own_into(model: torch.nn.Module, path: str, sha256: str) -> Dict[str, Any]:
+    """Load one of our own checkpoints into `model` (strict, every key) after checking its sha256 (Phase 11 fine-tune
+    start: v2 ema_19 -> v2.1). The EMA model is built from these weights by the training loop."""
+    from vint_train.mapmad.closed_loop.mapmad_policy import check_sha256
+
+    got = check_sha256(path, sha256)
+    model.load_state_dict(strip_module_prefix(torch.load(path, map_location="cpu", weights_only=True)), strict=True)
+    return {"init_checkpoint": path, "sha256": got, "keys": len(model.state_dict())}

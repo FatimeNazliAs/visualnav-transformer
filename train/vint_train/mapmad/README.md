@@ -191,3 +191,22 @@ Phase 7 (fair camera; commands in `mapmad/README.md`, "Phase 7: fair camera"):
 - `closed_loop/nomad_policy.py` — `context_spacing` (default 1 = deployment exactly; the extra uses 3).
 - `closed_loop/run_exam.py` — `--arm-major` (one home load per camera) and `--claims <token>` (every runner takes the
   next unclaimed run of this launch, so no pair idles; results do not depend on which pair runs a run).
+
+Phase 11 (v2 closed loop, DAgger -> v2.1; rules `/outputs/mapmad/p11_dagger/p11_rules.md`, run scripts
+`train/scripts/mapmad_p11/`):
+- `closed_loop/search_policy.py` — `MapMaDV2Policy`: MapMaDV2Inference with the Phase 5 MapMaD arm settings (context
+  t-15/-10/-5/t, first frame repeated, photo hidden, 8 samples / sample 0, waypoint 1, 0.25 m, pd_controller); maps shown
+  or both hidden (= NoMaD's computation).
+- `closed_loop/search_runner.py`, `closed_loop/run_search.py` — one search episode (oracle stop at the first entry into
+  the success zone of ANY instance; search / approach split by the truth first sighting; stuck streaks) and the shared-queue
+  runner (arms + checkpoints from `mapmad/configs/p11_dagger.yaml`, sha256 checked, retries, `--save-drives` for
+  rollouts, `--stop-file` for GPU withdrawal).
+- `closed_loop/search_tables.py` — `pick` (step 0: Delta = mean(C - run 1), run C only if >= +0.03, tie -> run 1;
+  writes V2_FINAL.json/.txt) and `compare` (report-only tables, e.g. v2.1 vs v2).
+- `dataset_dagger.py` — `DaggerDataset` (labelled frames of the rollouts; action target = the stored teacher label) and
+  the union: with `map.dagger` in the train config, search_map draws are uniform over Phase 8 search samples + DAgger
+  samples (`MapMaDV2Dataset.attach_dagger`); `prepare` (index, LMDB, union shares), `frontier` (cache of the DAgger
+  drives), `loss` (DAgger-state loss, report only).
+- `weights.load_own_into` + `train.py` `init_checkpoint` / `init_checkpoint_sha256`: fine-tune from our own checkpoint
+  (`config/mapmad_v21.yaml`, `mapmad_v21_seen.yaml`: 10 epochs from v2 ema_19, ema_9 = v2.1).
+- Tests: `tests/test_p11.py`.

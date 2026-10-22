@@ -14,26 +14,31 @@ import math
 import socket
 import traceback
 from dataclasses import asdict
+from pathlib import Path
 from typing import Any, Callable, Dict, Optional, Tuple
+
+import numpy as np
 
 from mapmad_bridge import protocol
 
-RobotFactory = Callable[..., Any]  # (split, home, hfov_deg[, depth=True][, camera={...}]) -> LimoSim-like robot
+RobotFactory = Callable[..., Any]  # (split, home, hfov_deg[, depth=True][, camera={...}][, semantic=True]) -> LimoSim-like
 
 
 def limo_factory(gpu: int, seed: int = 0) -> RobotFactory:
     """Robots built from configs/robot_limo.yaml (LIMO-sized floor map) with the requested camera FOV; depth=True
     adds the depth camera the online map needs (Phase 5); camera = a Phase 7 camera setting (CameraSetting config
-    dict with its "name": lens, height, pitch, floor map)."""
+    dict with its "name": lens, height, pitch, floor map); semantic=True adds the semantic camera (Phase 11 search
+    map: simulator-truth detections)."""
     from mapmad_sim import config
     from mapmad_sim.camera_setting import CameraSetting
     from mapmad_sim.robot import LimoSim, RobotSpec
 
-    def make(split: str, home: str, hfov_deg: float, depth: bool = False, camera: Optional[Dict[str, Any]] = None) -> Any:
+    def make(split: str, home: str, hfov_deg: float, depth: bool = False, camera: Optional[Dict[str, Any]] = None,
+             semantic: bool = False) -> Any:
         spec = RobotSpec.from_config(config.robot(), hfov_deg=hfov_deg)
         if camera is not None:
             spec = CameraSetting.from_wire(camera).apply(spec)
-        return LimoSim(split, home, spec, depth=depth, gpu=gpu, seed=seed)
+        return LimoSim(split, home, spec, semantic=semantic, depth=depth, gpu=gpu, seed=seed)
 
     return make
 
@@ -47,6 +52,12 @@ class SimService:
     with `map_settings` = {"builder": p2_datagen.yaml `map`, "crop": the train config's `map`}. Episodes with
     `target.view_points` (snapped navmesh points) also get the walking distance to the nearest one in `state`
     ("vp_geodesic_m", the Phase 5 primary metric).
+
+    Phase 11 (`outputs` = {"search_v2": settings}, settings from search_v2.search_settings + "noise_seed" + "record"):
+    the robot gets depth and semantic cameras; every reply carries the v2 map input "maps" [2, 4, 64, 64]
+    (search_v2.SearchMap, simulator-truth target layer with the Phase 8 noise seeded by noise_seed) and `state` the
+    truth "in_view" / "first_in_view_step" / "seen_instances"; `save` writes a recorded episode in the Phase 8 drive
+    format. The episode's `target.instances` and `target.category_ids` say what counts as the target.
     """
 
     def __init__(self, factory: RobotFactory) -> None:
@@ -56,6 +67,8 @@ class SimService:
         self.target = None
         self.view_points: Optional[Any] = None
         self.online_map: Optional[Any] = None
+        self.search: Optional[Any] = None  # Phase 11: search_v2.SearchMap of the current episode
+        self.episode: Optional[Dict[str, Any]] = None
         self.outputs: Dict[str, Any] = {}
 
     def handle(self, msg: Dict[str, Any]) -> Dict[str, Any]:
@@ -70,19 +83,26 @@ class SimService:
             if self.robot is None or self.target is None:
                 raise RuntimeError("step before reset")
             move = self.robot.drive(msg["v"], msg["w"])
+            if self.search is not None:
+                self.search.after_move(move, self.pose2d(), self.robot.spec.dt)
             return {**self.observation(), "state": self.state(), "move": asdict(move)}
+        if cmd == "save":
+            return self.save(msg["folder"], msg.get("meta") or {})
         raise ValueError(f"unknown command {cmd!r}")
 
     def reset(self, episode: Dict[str, Any], hfov_deg: float, goal_photo: bool, m_per_px: float,
               outputs: Dict[str, Any], camera: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        depth = bool(outputs.get("map") or outputs.get("grid"))
+        searching = bool(outputs.get("search_v2"))
+        depth = bool(outputs.get("map") or outputs.get("grid")) or searching
         camera_key = json.dumps(camera, sort_keys=True) if camera is not None else None
-        key = (episode["split"], episode["home"], float(hfov_deg), depth, camera_key)
+        key = (episode["split"], episode["home"], float(hfov_deg), depth, camera_key, searching)
         if key != self.key:
             self.close()
             kwargs: Dict[str, Any] = {"depth": True} if depth else {}
             if camera is not None:
                 kwargs["camera"] = camera
+            if searching:
+                kwargs["semantic"] = True
             self.robot = self.factory(*key[:3], **kwargs)
             self.key = key
         self.target = episode["target"]["point"]
@@ -94,8 +114,17 @@ class SimService:
             goal_rgb = self.robot.observe()["rgb"]
         self.robot.place(episode["start_position"], episode["start_yaw"])
         self.online_map = None
+        self.search = None
+        self.episode = episode
+        if searching:
+            from mapmad_sim.search_v2 import SearchMap, SearchSpec, instances_of
+
+            sv = outputs["search_v2"]
+            self.search = SearchMap(self.robot, SearchSpec.from_wire(sv), episode["target"]["category_ids"],
+                                    instances_of(episode), np.random.default_rng(sv["noise_seed"]),
+                                    record=bool(sv.get("record")))
         extra: Dict[str, Any] = {}
-        if depth:
+        if outputs.get("map") or outputs.get("grid"):  # Phase 5 online map (v1 tensor / planner grid)
             from mapmad_sim.depth_map import MapSpec
             from mapmad_sim.online_map import OnlineMap
 
@@ -118,7 +147,29 @@ class SimService:
                 out["map"] = self.online_map.tensor(self.robot)
             if self.outputs.get("grid"):
                 out["grid"] = self.online_map.grid(self.robot)
+        if self.search is not None:
+            self.search.add_frame(self.robot, obs)
+            out["maps"] = self.search.windows(self.pose2d())
         return out
+
+    def pose2d(self) -> Tuple[float, float, float]:
+        """(X, Y, yaw) of the turning centre in the 2D frame of traj_data.pkl."""
+        from mapmad_sim.frames import to_2d
+
+        x, y = to_2d(self.robot.position)
+        return float(x), float(y), float(self.robot.yaw)
+
+    def save(self, folder: str, meta: Dict[str, Any]) -> Dict[str, Any]:
+        """Phase 11: write the recorded search episode (Phase 8 drive format) to `folder` (must not exist)."""
+        if self.search is None:
+            raise RuntimeError("save without a search episode")
+        e = self.episode
+        full = {**meta, "home": e["home"], "split": e["split"], "kind": "search", "category": e["target"]["category"],
+                "instances": e["target"]["instances"], "navmesh_sha256": self.robot.navmesh_sha256,
+                "floor_y": round(float(np.median(self.search.rec.floor_y)), 4), "student_drive": True,
+                "frontier_ignore_trajectory_m": 0.0, "metric_waypoint_spacing": 0.05,
+                "frame_convention": "traj_data.pkl: X = -z, Y = -x of Habitat, yaw unchanged (mapmad_sim/frames.py)"}
+        return {"bytes": self.search.write(Path(folder), full, e["target"]["category"])}
 
     def state(self) -> Dict[str, Any]:
         geo = self.robot.geodesic(self.robot.position, self.target)
@@ -128,12 +179,16 @@ class SimService:
         if self.view_points:
             vp = self.robot.geodesic_to_any(self.robot.position, self.view_points)
             out["vp_geodesic_m"] = vp if math.isfinite(vp) else None
+        if self.search is not None:
+            out.update(in_view=self.search.in_view, first_in_view_step=self.search.first_in_view,
+                       seen_instances=sorted(self.search.seen))
         return out
 
     def close(self) -> None:
         if self.robot is not None:
             self.robot.close()
         self.robot, self.key, self.target, self.view_points, self.online_map = None, None, None, None, None
+        self.search, self.episode = None, None
 
 
 def serve(listener: socket.socket, service: SimService, key: str) -> None:

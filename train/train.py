@@ -243,7 +243,12 @@ def main(config):
             )
 
     load_report = None
-    if config.get("map_input", False) and config.get("init_weights"):
+    if config.get("map_input", False) and config.get("init_checkpoint"):
+        # MapMaD Phase 11: fine-tune from our own checkpoint (every key, strict; sha256 checked)
+        from vint_train.mapmad.weights import load_own_into
+        load_report = load_own_into(model, config["init_checkpoint"], config["init_checkpoint_sha256"])
+        print("[mapmad] loaded", config["init_checkpoint"], "sha256", load_report["sha256"])
+    elif config.get("map_input", False) and config.get("init_weights"):
         # MapMaD: strict load of the official NoMaD weights; only map_encoder.* is new
         from vint_train.mapmad.weights import load_official_into
         load_report = load_official_into(model, config["init_weights"])

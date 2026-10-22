@@ -187,12 +187,21 @@ class MapMaDDataset(ViNT_Dataset):
 
 def build_mapmad_dataset(config: Dict[str, Any], dataset_name: str, split: str, train: bool) -> MapMaDDataset:
     """A MapMaDDataset (v2: MapMaDV2Dataset when `map.tokens` is 2) from a train config (the same arguments train.py
-    gives ViNT_Dataset, plus the map block)."""
+    gives ViNT_Dataset, plus the map block); Phase 11: with `map.dagger`, the training split of a map dataset gets the
+    DAgger samples attached (dataset_dagger.py)."""
     d = config["datasets"][dataset_name]
     cls = MapMaDDataset
     if int(config["map"].get("tokens", 1)) == 2:
         from vint_train.mapmad.dataset_v2 import MapMaDV2Dataset
         cls = MapMaDV2Dataset
+    ds = _build(cls, config, dataset_name, split, train, d)
+    if train and config["map"].get("dagger") and ds.has_maps:  # Phase 11: DAgger samples join search_map
+        from vint_train.mapmad.dataset_dagger import build_dagger_dataset
+        ds.attach_dagger(build_dagger_dataset(config, "train", train=True))
+    return ds
+
+
+def _build(cls, config: Dict[str, Any], dataset_name: str, split: str, train: bool, d: Dict[str, Any]) -> MapMaDDataset:
     return cls(
         map_cfg=config["map"], habitat_modes=config["habitat_modes"], goal_mask_prob=config["goal_mask_prob"],
         seed=config["seed"], train=train, exclude_drives=d.get("exclude_drives"), index_dir=d.get("index_dir"),
