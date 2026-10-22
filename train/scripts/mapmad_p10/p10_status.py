@@ -124,7 +124,7 @@ def main() -> None:
         state["state"] = args[args.index("--state") + 1]
     state["updated"] = time.strftime("%Y-%m-%d %H:%M:%S")
     save(path, state)
-    tmp = os.path.join(p10, ".STATUS.md.tmp")
+    tmp = os.path.join(p10, f".STATUS.md.{os.getpid()}.tmp")  # one temp file per writer (writers can overlap)
     with open(tmp, "w") as f:
         f.write(render(p10))
     os.replace(tmp, os.path.join(p10, "STATUS.md"))
