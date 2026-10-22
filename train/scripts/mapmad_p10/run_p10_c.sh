@@ -9,6 +9,9 @@
 # `run_p10_c.sh resume <run C folder>` (p10_rules_v5.md): instead of step 2, resume run C ONCE from its latest.pth on
 # the first free GPU, logging free RAM and swap at the start and after every epoch; if it does not finish -> no stop:
 # verdict RUN1_IS_V2 (crash), the run-1 recipe's twin follows.
+# `run_p10_c.sh rerun` (p10_rules_v6.md): instead of step 2, train run C again from nomad.pth in a new folder; a crash
+# before 2 complete epochs -> stop (health check); after that one resume, a second crash -> stop; writes
+# driver/RUN_C_PAST_EPOCH2.txt after epoch 2; RAM / swap logged per epoch.
 # EXIT trap as run_p10_chain.sh. Refuses uncommitted code and changed rules files. Body in one function.
 set -uo pipefail
 
@@ -40,6 +43,7 @@ main() {
     on_exit() {
         local code=$?
         [[ -n "${BG_PID:-}" ]] && kill "$BG_PID" 2>/dev/null
+        kill $(jobs -p) 2>/dev/null  # background watchers (RAM log, epoch-2 marker)
         for pat in "launch/c.yaml" "c_ema19" "launch/twin_c.yaml" "twin_ema19" "checks_g10" "target_groups"; do
             kill_inside "$pat"; done
         if [[ $FINISHED -ne 1 ]]; then
@@ -66,12 +70,75 @@ main() {
         [[ -f "$resume_dir/latest.pth" ]] || stop "resume: $resume_dir/latest.pth missing"
         say "resume mode: $resume_dir (rules v5 sha256 ${want5:0:16})"
     fi
+    if [[ "$mode" == rerun ]]; then
+        local want6; want6="$(cut -d' ' -f1 "$P10/p10_rules_v6.sha256")"
+        [[ "$(sha256sum "$P10/p10_rules_v6.md" | cut -d' ' -f1)" == "$want6" && "$(sha256sum mapmad/configs/p10_rules_v6.md | cut -d' ' -f1)" == "$want6" ]] \
+            || stop "p10_rules_v6.md differs from p10_rules_v6.sha256 or from the repo copy"
+        [[ -f "$P10/launch/c.yaml" ]] || stop "rerun: launch/c.yaml missing"
+        rm -f "$P10/driver/RUN_C_PAST_EPOCH2.txt"
+        say "rerun mode (rules v6 sha256 ${want6:0:16})"
+    fi
     local batch accum workers
     batch="$(grep '^batch_size:' "$P10/launch/main.yaml" | awk '{print $2}')"
     accum="$(grep '^grad_accum_steps:' "$P10/launch/main.yaml" | awk '{print $2}')"
     workers="$(grep '^num_workers:' "$P10/launch/main.yaml" | awk '{print $2}')"
-    [[ "$mode" == resume ]] || overlay "$P10/launch/c.yaml" "$TRAIN_DIR/config/mapmad_v2_seen.yaml" \
+    [[ "$mode" != new ]] || overlay "$P10/launch/c.yaml" "$TRAIN_DIR/config/mapmad_v2_seen.yaml" \
         "batch_size: $batch" "grad_accum_steps: $accum" "num_workers: $workers"
+
+    epochs_done() { local n; n="$(grep -c '"train_seconds"' "$1/metrics.jsonl" 2>/dev/null)"; echo "${n:-0}"; }
+    past_epoch2_watch() {  # old newest run -> waits for the new run folder; RAM per epoch; marker after epoch 2
+        local old="$1" d="" marked=0
+        while true; do
+            d="$(newest_run v2c_s1)"
+            if [[ -n "$d" && "$d" != "$old" ]]; then break; fi
+            pause 30
+        done
+        status main_run="$d"
+        mem_watch "$d" &
+        local mw=$!
+        trap 'kill $mw 2>/dev/null; exit 0' TERM INT
+        while (( marked == 0 )); do
+            if (( $(epochs_done "$d") >= 2 )); then
+                date '+%F %T' > "$P10/driver/RUN_C_PAST_EPOCH2.txt"
+                say "run C rerun is past epoch 2 (health check passed): Phase 9 may run its held checks 3-4 on the other GPU"
+                status note="rerun past epoch 2: health check passed"
+                marked=1
+            fi
+            pause 30
+        done
+        wait "$mw"
+    }
+    rerun_train() {  # gpu -> RUN_DIR; rules v6 §3 (health check, one resume after epoch 2); STOP_WHY on failure
+        local g="$1" old log d n
+        old="$(newest_run v2c_s1)"
+        log="$P10/driver/train_v2c_s1_rerun.log"
+        STOP_WHY=""
+        mem_log start
+        past_epoch2_watch "$old" &
+        local pw=$!
+        say "train v2c_s1 rerun on GPU $g: python train.py -c $C/launch/c.yaml (from nomad.pth, new folder)"
+        train_once "$g" "$C/launch/c.yaml" "$log"
+        d="$(newest_run v2c_s1)"
+        [[ "$d" == "$old" ]] && d=""
+        RUN_DIR="$d"
+        if finished_ok "$log" "$d"; then kill "$pw" 2>/dev/null; mem_log end; say "v2c_s1 rerun finished"; return 0; fi
+        n="$( [[ -n "$d" ]] && epochs_done "$d" || echo 0)"
+        mem_log "at crash (epochs done $n)"
+        if grep -a -q "non-finite loss" "$log"; then kill "$pw" 2>/dev/null; STOP_WHY="NaN loss (rerun, $log)"; return 1; fi
+        if (( n < 2 )); then
+            kill "$pw" 2>/dev/null
+            STOP_WHY="health check: run C rerun crashed before 2 complete epochs ($n done; $log) -- server problem; v2 = run 1 ema_19 stays"
+            return 1
+        fi
+        say "CRASH 1 of the rerun after $n epochs ($log, last line: $(tr '\r' '\n' < "$log" | tail -n 1 | cut -c1-150)) -> resume once"
+        if ! gpu_clean "$g"; then say "GPU $g now holds another process: waiting for a free GPU to resume"; g="$(wait_gpu)"; fi
+        status gpu="$g" note="rerun resume 1"
+        train_once "$g" "$C/launch/c.yaml" "${log%.log}_resume1.log" "--resume ${d/$P10/$C}/latest.pth"
+        kill "$pw" 2>/dev/null
+        mem_log end
+        if finished_ok "${log%.log}_resume1.log" "$d"; then say "v2c_s1 rerun finished after resume 1"; return 0; fi
+        STOP_WHY="second crash of the rerun (${log%.log}_resume1.log)"; return 1
+    }
 
     # --- 1-2. run C -----------------------------------------------------------------------------------------------
     STEP="C1 run C (waiting for a GPU free for 20 min; Phase 9 first)"
@@ -100,6 +167,9 @@ main() {
         else
             say "v2c_s1 finished after resume 2"
         fi
+    elif [[ "$mode" == rerun ]]; then
+        rerun_train "$G" || stop "$STOP_WHY"
+        cdir="$RUN_DIR"
     else
         supervised_train v2c_s1 "$G" "$C/launch/c.yaml" "$accum" || stop "$STOP_WHY"
         cdir="$RUN_DIR"
