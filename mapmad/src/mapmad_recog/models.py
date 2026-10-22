@@ -1,0 +1,469 @@
+"""Phase 9 recognisers (block item 5), run in naz_mapmad_recog. One class per model, one shared call:
+
+    model = build("grounding_dino", spec, device="cuda:0"); dets = model.detect(rgb, "chair")
+
+`rgb` = (H, W, 3) uint8 RGB; `prompt` = one category name (one category per call, as in driving). Returns RawDet
+(box in pixels x0, y0, x1, y1 and/or mask (H, W) bool and/or point (x, y) in pixels, score), best score first, at
+most `max_det`, score >= `min_score`. Box-only models get their masks from MobileSAM afterwards (MaskMaker), never
+here. VLMs return score 1.0 (one operating point). Prompts and the VLM questions are fixed in VLM_PROMPTS
+(copied into p9_rules.md).
+
+Text reuse (timing rule, Naz 2026-10-21; not a scoring change): as in driving, where the category is fixed for an
+episode, a recogniser may encode a category's text once and reuse it. `reuse_text` switches it on or off per model:
+YOLOE caches its text embeddings per prompt, YOLO-World memoises its CLIP encoding inside ultralytics' set_classes,
+Grounding DINO / LLMDet / OWLv2 / SAM 3 memoise their text encoder's output per input (TEXT_ENCODERS). The VLMs
+encode the question together with the picture (nothing to reuse), RF-DETR and MobileSAM have no text. The server
+checks at start that detections are identical with reuse on and off (`text_reuse_check`), else it switches reuse off.
+"""
+
+import json
+import os
+import re
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+
+import numpy as np
+
+VLM_PROMPTS = {
+    "qwen3vl": ('Locate every {name} in the image. Answer only with a JSON list in which each element is '
+                '{{"bbox_2d": [x1, y1, x2, y2], "label": "{name}"}}. If there is no {name} in the image, answer [].'),
+    "molmo2": "Point to every {name} in the image. If there is no {name} in the image, say that there is none.",
+}
+# RF-DETR has a fixed COCO list: the asked word -> its COCO class name
+TEXT_ENCODERS = {"grounding_dino": "model.text_backbone", "llmdet": "model.text_backbone",
+                 "owlv2": "owlv2.text_model", "sam3": None}  # None: found by name at load (gated, not inspectable)
+COCO_NAME = {"chair": "chair", "couch": "couch", "bed": "bed", "toilet": "toilet", "tv": "tv",
+             "potted plant": "potted plant"}
+
+
+def coco_ids(classes: Dict[int, str]) -> Dict[str, int]:
+    """COCO class name -> the id RF-DETR's predict() returns (the original 1-90 COCO ids, with gaps)."""
+    return {name: int(k) for k, name in classes.items()}
+
+
+@dataclass
+class RawDet:
+    score: float
+    box: Optional[np.ndarray] = None  # (4,) float x0, y0, x1, y1
+    mask: Optional[np.ndarray] = None  # (H, W) bool
+    point: Optional[np.ndarray] = None  # (2,) float x, y
+
+
+def keep_top(dets: List[RawDet], min_score: float, max_det: int) -> List[RawDet]:
+    dets = [d for d in dets if d.score >= min_score]
+    return sorted(dets, key=lambda d: -d.score)[:max_det]
+
+
+def clip_box(box: Any, w: int, h: int) -> np.ndarray:
+    b = np.asarray(box, dtype=np.float64).reshape(4)
+    return np.array([np.clip(b[0], 0, w), np.clip(b[1], 0, h), np.clip(b[2], 0, w), np.clip(b[3], 0, h)])
+
+
+# Model output -> RawDets: the model-specific mapping of each wrapper, pure (numpy in, RawDets out), so it is
+# tested without the weights (tests/test_p9_model_outputs.py). Each wrapper's detect() = forward pass + one of these
+# + keep_top.
+
+def box_dets(scores: np.ndarray, boxes: np.ndarray, hw: Tuple[int, int],
+             masks: Optional[List[np.ndarray]] = None) -> List[RawDet]:
+    """Scores + pixel boxes (+ masks) -> RawDets, boxes clipped to the picture (Grounding DINO, LLMDet, SAM 3)."""
+    h, w = hw
+    return [RawDet(float(scores[k]), clip_box(boxes[k], w, h), None if masks is None else masks[k])
+            for k in range(len(scores))]
+
+
+def ultralytics_dets(scores: np.ndarray, boxes: np.ndarray, masks: Optional[np.ndarray],
+                     hw: Tuple[int, int]) -> List[RawDet]:
+    """YOLOE / YOLO-World arrays -> RawDets; a mask of another size than the picture is dropped (box only)."""
+    h, w = hw
+    return [RawDet(float(scores[k]), clip_box(boxes[k], w, h),
+                   masks[k] if masks is not None and masks[k].shape == (h, w) else None) for k in range(len(scores))]
+
+
+def owlv2_square(hw: Tuple[int, int]) -> Tuple[int, int]:
+    """OWLv2 pads the picture to a square at the bottom / right, so its boxes are scaled to that square."""
+    side = max(hw)
+    return side, side
+
+
+def owlv2_dets(scores: np.ndarray, boxes: np.ndarray, hw: Tuple[int, int]) -> List[RawDet]:
+    """OWLv2 boxes (in the padded square) -> RawDets clipped to the picture; boxes wholly in the padding dropped."""
+    return [d for d in box_dets(scores, boxes, hw) if d.box[2] > d.box[0] and d.box[3] > d.box[1]]
+
+
+def rfdetr_dets(class_id: np.ndarray, scores: np.ndarray, boxes: np.ndarray, prompt: str, class_of: Dict[str, int],
+                hw: Tuple[int, int]) -> List[RawDet]:
+    """RF-DETR detections of the asked category only: class_id = the COCO id predict() returns (class_of: coco_ids)."""
+    keep = np.asarray(class_id) == class_of[COCO_NAME[prompt]]
+    return box_dets(np.asarray(scores)[keep], np.asarray(boxes)[keep], hw)
+
+
+def tensor_key(value: Any) -> Any:
+    """Hashable key of a forward call's inputs (tensors by dtype, shape and bytes)."""
+    if hasattr(value, "detach") and hasattr(value, "shape"):
+        return ("t", str(value.dtype), tuple(value.shape), value.detach().cpu().numpy().tobytes())
+    if isinstance(value, (list, tuple)):
+        return tuple(tensor_key(v) for v in value)
+    if isinstance(value, dict):
+        return tuple(sorted((k, tensor_key(v)) for k, v in value.items()))
+    return repr(value)
+
+
+def memo_forward(module: Any, owner: "Recogniser") -> None:
+    """Reuse a text encoder's output for repeated identical inputs while owner.reuse_text is on."""
+    orig = module.forward
+    cache: Dict[Any, Any] = {}
+
+    def forward(*args: Any, **kwargs: Any) -> Any:
+        if not owner.reuse_text:
+            return orig(*args, **kwargs)
+        key = (tensor_key(args), tensor_key(kwargs))
+        if key not in cache:
+            cache[key] = orig(*args, **kwargs)
+        return cache[key]
+
+    module.forward = forward
+    owner.text_caches.append(cache)
+
+
+def find_module(model: Any, path: Optional[str]) -> Optional[Any]:
+    """`a.b` below model, or (path None) the first module named text_encoder / text_model / text_backbone."""
+    if path:
+        for part in path.split("."):
+            model = getattr(model, part)
+        return model
+    for name, mod in model.named_modules():
+        if name.split(".")[-1] in ("text_encoder", "text_model", "text_backbone") and name.count(".") <= 2:
+            return mod
+    return None
+
+
+class Recogniser:
+    """Base: holds the spec, the device, the raw-pass limits and the text-reuse switch."""
+
+    def __init__(self, spec: Dict[str, Any], cache: Path, device: str, min_score: float, max_det: int) -> None:
+        self.spec, self.cache, self.device = spec, cache, device
+        self.min_score, self.max_det = min_score, max_det
+        self.reuse_text = True
+        self.text_caches: List[Dict[Any, Any]] = []
+        self.text_reuse = "none"  # what reuse means for this model (logged by the server)
+
+    def clear_text_caches(self) -> None:
+        for c in self.text_caches:
+            c.clear()
+
+    def memo_text_encoder(self, key: str, model: Any) -> None:
+        mod = find_module(model, TEXT_ENCODERS.get(key))
+        if mod is None:
+            self.text_reuse = "none (no text encoder found)"
+            return
+        memo_forward(mod, self)
+        self.text_reuse = f"text encoder output memoised ({type(mod).__name__})"
+
+    def detect(self, rgb: np.ndarray, prompt: str) -> List[RawDet]:
+        raise NotImplementedError
+
+
+class _Ultralytics(Recogniser):
+    """YOLOE (masks) and YOLO-World (boxes): one class per call, text embeddings cached per prompt."""
+
+    def __init__(self, *a: Any, **k: Any) -> None:
+        super().__init__(*a, **k)
+        from ultralytics import YOLO, YOLOE
+
+        folder = self.cache / "ultralytics"
+        os.chdir(folder)  # text encoders were saved here by p9_download.py
+        self.yoloe = self.spec["ultralytics"].startswith("yoloe")
+        self.model = (YOLOE if self.yoloe else YOLO)(str(folder / self.spec["ultralytics"]))
+        self.current: Optional[str] = None
+        self.pe: Dict[str, Any] = {}
+        self.text_caches.append(self.pe)
+        self.text_reuse = "text embeddings cached per prompt" if self.yoloe else "CLIP encoding memoised per prompt"
+        if not self.yoloe:  # YOLO-World: set_classes reloads CLIP from disk on every call (~1.3 s); in driving the
+            self._memoise_text_pe()  # class is fixed per episode, so the text encoding is memoised per prompt
+
+    def _memoise_text_pe(self) -> None:
+        """Keep ultralytics' own set_classes path; only its CLIP text encoding is computed once per prompt list
+        (identical features, checked: same detections over alternating prompts)."""
+        world = self.model.model
+        orig = world.get_text_pe
+        cache: Dict[tuple, Any] = {}
+
+        def memo(text, batch=80, cache_clip_model=False, **kw):
+            if not self.reuse_text:
+                return orig(text, batch=batch, cache_clip_model=cache_clip_model, **kw)
+            key = tuple(text)
+            if key not in cache:
+                cache[key] = orig(text, batch=batch, cache_clip_model=True, **kw)
+            return cache[key]
+
+        world.get_text_pe = memo
+        self.text_caches.append(cache)
+
+    def _set(self, prompt: str) -> None:
+        if prompt == self.current and self.reuse_text:
+            return
+        if self.yoloe:
+            if prompt not in self.pe or not self.reuse_text:
+                self.pe[prompt] = self.model.get_text_pe([prompt])
+            self.model.set_classes([prompt], self.pe[prompt])
+        else:
+            self.model.set_classes([prompt])
+        self.current = prompt
+
+    def detect(self, rgb: np.ndarray, prompt: str) -> List[RawDet]:
+        self._set(prompt)
+        r = self.model.predict(rgb[..., ::-1], conf=self.min_score, max_det=self.max_det, device=self.device,
+                               verbose=False, retina_masks=True)[0]
+        boxes = r.boxes.xyxy.cpu().numpy() if r.boxes is not None else np.zeros((0, 4))
+        scores = r.boxes.conf.cpu().numpy() if r.boxes is not None else np.zeros(0)
+        masks = r.masks.data.cpu().numpy() > 0.5 if (self.yoloe and r.masks is not None) else None
+        return keep_top(ultralytics_dets(scores, boxes, masks, rgb.shape[:2]), self.min_score, self.max_det)
+
+
+class _GroundingDino(Recogniser):
+    """Grounding DINO-T and LLMDet-T (MM-Grounding-DINO weights) through transformers; text "<prompt>."."""
+
+    def __init__(self, *a: Any, **k: Any) -> None:
+        super().__init__(*a, **k)
+        import torch
+        from transformers import AutoModelForZeroShotObjectDetection, AutoProcessor
+
+        self.torch = torch
+        self.proc = AutoProcessor.from_pretrained(self.spec["hf"], revision=self.spec["revision"])
+        self.model = AutoModelForZeroShotObjectDetection.from_pretrained(
+            self.spec["hf"], revision=self.spec["revision"]).to(self.device).eval()
+        self.memo_text_encoder("llmdet" if "llmdet" in self.spec["hf"] else "grounding_dino", self.model)
+
+    def detect(self, rgb: np.ndarray, prompt: str) -> List[RawDet]:
+        h, w = rgb.shape[:2]
+        inputs = self.proc(images=rgb, text=f"{prompt}.", return_tensors="pt").to(self.device)
+        with self.torch.inference_mode():
+            outputs = self.model(**inputs)
+        res = self.proc.post_process_grounded_object_detection(outputs, inputs.input_ids, threshold=self.min_score,
+                                                               text_threshold=0.0, target_sizes=[(h, w)])[0]
+        return keep_top(box_dets(res["scores"].cpu().numpy(), res["boxes"].cpu().numpy(), (h, w)), self.min_score,
+                        self.max_det)
+
+
+class _Owlv2(Recogniser):
+    """OWLv2-B/16 (self-trained checkpoint); the image is padded to a square, so boxes are mapped to that square."""
+
+    def __init__(self, *a: Any, **k: Any) -> None:
+        super().__init__(*a, **k)
+        import torch
+        from transformers import Owlv2ForObjectDetection, Owlv2Processor
+
+        self.torch = torch
+        self.proc = Owlv2Processor.from_pretrained(self.spec["hf"], revision=self.spec["revision"])
+        self.model = Owlv2ForObjectDetection.from_pretrained(self.spec["hf"], revision=self.spec["revision"]).to(self.device).eval()
+        self.memo_text_encoder("owlv2", self.model)
+
+    def detect(self, rgb: np.ndarray, prompt: str) -> List[RawDet]:
+        h, w = rgb.shape[:2]
+        inputs = self.proc(text=[[prompt]], images=rgb, return_tensors="pt").to(self.device)
+        with self.torch.inference_mode():
+            outputs = self.model(**inputs)
+        res = self.proc.post_process_grounded_object_detection(outputs, threshold=self.min_score,
+                                                               target_sizes=[owlv2_square((h, w))])[0]
+        return keep_top(owlv2_dets(res["scores"].cpu().numpy(), res["boxes"].cpu().numpy(), (h, w)), self.min_score,
+                        self.max_det)
+
+
+class _RfDetr(Recogniser):
+    """RF-DETR-M, fixed COCO list: keeps only the detections of the asked category's COCO class."""
+
+    def __init__(self, *a: Any, **k: Any) -> None:
+        super().__init__(*a, **k)
+        import rfdetr
+        from rfdetr.assets.coco_classes import COCO_CLASSES
+
+        folder = self.cache / "rfdetr"
+        os.chdir(folder)
+        self.model = {"medium": rfdetr.RFDETRMedium}[self.spec["rfdetr"]](device=self.device.split(":")[0])
+        # predict() returns the original COCO ids (1-90, e.g. chair 62); model.class_names is a 0-79 list, so its
+        # index is NOT the returned id (bug found 2026-10-22: chair looked up as 56 = broccoli)
+        self.class_of = coco_ids(COCO_CLASSES)
+
+    def detect(self, rgb: np.ndarray, prompt: str) -> List[RawDet]:
+        from PIL import Image
+
+        det = self.model.predict(Image.fromarray(rgb), threshold=self.min_score)
+        return keep_top(rfdetr_dets(det.class_id, det.confidence, det.xyxy, prompt, self.class_of, rgb.shape[:2]),
+                        self.min_score, self.max_det)
+
+
+class _Sam3(Recogniser):
+    """SAM 3 (segmentation with a text prompt) through transformers."""
+
+    def __init__(self, *a: Any, **k: Any) -> None:
+        super().__init__(*a, **k)
+        import torch
+        from transformers import Sam3Model, Sam3Processor
+
+        self.torch = torch
+        self.proc = Sam3Processor.from_pretrained(self.spec["hf"], revision=self.spec["revision"])
+        self.model = Sam3Model.from_pretrained(self.spec["hf"], revision=self.spec["revision"]).to(self.device).eval()
+        self.memo_text_encoder("sam3", self.model)
+
+    def detect(self, rgb: np.ndarray, prompt: str) -> List[RawDet]:
+        h, w = rgb.shape[:2]
+        inputs = self.proc(images=rgb, text=prompt, return_tensors="pt").to(self.device)
+        with self.torch.inference_mode():
+            outputs = self.model(**inputs)
+        res = self.proc.post_process_instance_segmentation(outputs, threshold=self.min_score, mask_threshold=0.5,
+                                                           target_sizes=inputs.get("original_sizes").tolist())[0]
+        masks = [res["masks"][k].cpu().numpy().astype(bool) for k in range(len(res["scores"]))]
+        return keep_top(box_dets(res["scores"].cpu().numpy(), res["boxes"].cpu().numpy(), (h, w), masks),
+                        self.min_score, self.max_det)
+
+
+def parse_json_list(text: str) -> List[Any]:
+    """The first JSON list in a VLM answer ([] if none can be read)."""
+    t = re.sub(r"^```(json)?|```$", "", text.strip(), flags=re.M).strip()
+    start, end = t.find("["), t.rfind("]")
+    if start < 0 or end <= start:
+        return []
+    try:
+        val = json.loads(t[start:end + 1])
+    except json.JSONDecodeError:
+        return []
+    return val if isinstance(val, list) else []
+
+
+def qwen_boxes(text: str, w: int, h: int) -> List[np.ndarray]:
+    """Qwen3-VL boxes ("bbox_2d", coordinates 0-1000 relative to the image) -> pixel boxes."""
+    out = []
+    for el in parse_json_list(text):
+        b = el.get("bbox_2d") if isinstance(el, dict) else None
+        if isinstance(b, (list, tuple)) and len(b) == 4 and all(isinstance(v, (int, float)) for v in b):
+            x0, y0, x1, y1 = (float(v) for v in b)
+            box = clip_box([x0 / 1000 * w, y0 / 1000 * h, x1 / 1000 * w, y1 / 1000 * h], w, h)
+            if box[2] > box[0] and box[3] > box[1]:
+                out.append(box)
+    return out
+
+
+def molmo_points(text: str, w: int, h: int) -> List[np.ndarray]:
+    """Molmo points -> pixels. Molmo2: <points coords="1 x y;2 x y ...">, coordinates 0-1000 (also "t i x y" with
+    a time index); Molmo (v1): <point x="12.3" y="45.6"> / <points x1=.. y1=..>, coordinates in percent."""
+    out = []
+    for coords in re.findall(r'coords="([^"]*)"', text):
+        for part in coords.split(";"):
+            nums = [float(v) for v in re.findall(r"-?\d+(?:\.\d+)?", part)]
+            if len(nums) >= 2:
+                x, y = nums[-2], nums[-1]
+                out.append(np.array([x / 1000 * w, y / 1000 * h]))
+    if not out:
+        for xs, ys in re.findall(r'x\d*="([\d.]+)"\s+y\d*="([\d.]+)"', text):
+            out.append(np.array([float(xs) / 100 * w, float(ys) / 100 * h]))
+    return [np.clip(p, [0, 0], [w - 1, h - 1]) for p in out]
+
+
+def vlm_dets(key: str, text: str, hw: Tuple[int, int]) -> List[RawDet]:
+    """A VLM answer -> RawDets with score 1.0: boxes (Qwen3-VL) or points (Molmo2)."""
+    h, w = hw
+    if key == "qwen3vl":
+        return [RawDet(1.0, box=b) for b in qwen_boxes(text, w, h)]
+    return [RawDet(1.0, point=p) for p in molmo_points(text, w, h)]
+
+
+class _Vlm(Recogniser):
+    """Qwen3-VL-8B-Instruct (boxes as text) and Molmo2-8B (points as text); greedy decoding, score 1.0."""
+
+    def __init__(self, key: str, *a: Any, **k: Any) -> None:
+        super().__init__(*a, **k)
+        import torch
+        from transformers import AutoModelForImageTextToText, AutoProcessor
+
+        self.key, self.torch = key, torch
+        remote = False  # Molmo2's own remote code targets transformers 4.57; transformers 5.20 has it natively
+        self.proc = AutoProcessor.from_pretrained(self.spec["hf"], revision=self.spec["revision"], trust_remote_code=remote)
+        self.model = AutoModelForImageTextToText.from_pretrained(
+            self.spec["hf"], revision=self.spec["revision"], trust_remote_code=remote, dtype=torch.bfloat16,
+            device_map=self.device).eval()
+        self.last_text = ""
+
+    def detect(self, rgb: np.ndarray, prompt: str) -> List[RawDet]:
+        from PIL import Image
+
+        h, w = rgb.shape[:2]
+        question = VLM_PROMPTS[self.key].format(name=prompt)
+        messages = [{"role": "user", "content": [{"type": "image", "image": Image.fromarray(rgb)},
+                                                 {"type": "text", "text": question}]}]
+        inputs = self.proc.apply_chat_template(messages, tokenize=True, add_generation_prompt=True, return_dict=True,
+                                               return_tensors="pt").to(self.device)
+        with self.torch.inference_mode():
+            gen = self.model.generate(**inputs, max_new_tokens=256, do_sample=False)
+        text = self.proc.batch_decode(gen[:, inputs["input_ids"].shape[1]:], skip_special_tokens=True)[0]
+        self.last_text = text
+        return vlm_dets(self.key, text, (h, w))[: self.max_det]
+
+
+class MaskMaker:
+    """MobileSAM through ultralytics (block item 5: box-only models -> MobileSAM masks): one call per item for all
+    its boxes."""
+
+    def __init__(self, weights: Path, device: str) -> None:
+        from ultralytics import SAM
+
+        self.model, self.device = SAM(str(weights)), device
+
+    def masks(self, rgb: np.ndarray, boxes: List[np.ndarray]) -> List[np.ndarray]:
+        if not boxes:
+            return []
+        h, w = rgb.shape[:2]
+        r = self.model.predict(rgb[..., ::-1], bboxes=[b.tolist() for b in boxes], device=self.device, verbose=False)[0]
+        data = r.masks.data.cpu().numpy() > 0.5
+        return [m if m.shape == (h, w) else np.zeros((h, w), bool) for m in data]
+
+
+def text_reuse_check(model: Recogniser, images: List[np.ndarray], prompts: List[str]) -> Dict[str, Any]:
+    """Detections with text reuse off and on (alternating prompts, so each prompt's text is reused) must be identical
+    (scores, boxes, masks, points); otherwise reuse is switched off. Returns the record the server writes."""
+    def run() -> List[List[RawDet]]:
+        return [model.detect(img, p) for img in images for p in prompts]
+
+    def same(a: List[List[RawDet]], b: List[List[RawDet]]) -> bool:
+        for x, y in zip(a, b):
+            if len(x) != len(y):
+                return False
+            for d, e in zip(x, y):
+                for f in ("box", "mask", "point"):
+                    u, v = getattr(d, f), getattr(e, f)
+                    if (u is None) != (v is None) or (u is not None and not np.array_equal(u, v)):
+                        return False
+                if d.score != e.score:
+                    return False
+        return True
+
+    if model.text_reuse.startswith("none"):
+        return {"reuse": False, "reason": model.text_reuse, "identical": None}
+    model.reuse_text = False
+    off = run()
+    model.reuse_text = True
+    model.clear_text_caches()
+    on = run()
+    ok = same(off, on)
+    model.reuse_text = ok
+    model.clear_text_caches()
+    return {"reuse": ok, "how": model.text_reuse, "identical": ok, "calls": len(off),
+            "detections": sum(len(x) for x in off)}
+
+
+def build(key: str, spec: Dict[str, Any], cache: Path, device: str, min_score: float, max_det: int) -> Recogniser:
+    """The recogniser of p9_models.yaml entry `key`."""
+    args = (spec, cache, device, min_score, max_det)
+    if "ultralytics" in spec:
+        return _Ultralytics(*args)
+    if key in ("grounding_dino", "llmdet"):
+        return _GroundingDino(*args)
+    if key == "owlv2":
+        return _Owlv2(*args)
+    if key == "rfdetr":
+        return _RfDetr(*args)
+    if key == "sam3":
+        return _Sam3(*args)
+    if key in ("qwen3vl", "molmo2"):
+        return _Vlm(key, *args)
+    raise KeyError(key)

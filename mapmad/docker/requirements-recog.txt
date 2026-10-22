@@ -1,0 +1,18 @@
+# Phase 9 recogniser sidecar (naz_mapmad_recog): every package of Dockerfile.recog, pinned. Never install by hand.
+# torch / torchvision come from the base image (pytorch/pytorch:2.6.0-cuda12.4-cudnn9-runtime): driver 550 = CUDA 12.4.
+transformers==5.20.2          # Grounding DINO-T, LLMDet-T (MM-Grounding-DINO), OWLv2, SAM 3, Qwen3-VL, Molmo2
+accelerate==1.15.0
+huggingface_hub==2.2.0
+safetensors==0.8.0
+tokenizers==0.23.3
+ultralytics==8.4.183          # YOLOE-11-L-seg, YOLO-World v2-L, MobileSAM (one pinned version, block item 5)
+clip @ git+https://github.com/ultralytics/CLIP.git@a13192f8cb767260d7dfd98c843b0716593169e7  # YOLO-World text encoder
+rfdetr==1.11.2                # RF-DETR-M (fixed COCO list)
+supervision==0.31.1
+timm==1.0.30
+einops==0.8.1
+pyyaml==6.0.2
+opencv-python-headless==4.11.0.86
+pillow==11.3.0
+scipy==1.15.3
+pytest==8.4.2

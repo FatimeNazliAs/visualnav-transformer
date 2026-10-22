@@ -1,0 +1,24 @@
+# Phase 9 photo-test frame set (block items 2, 3, 6; mapmad_sim/photo_frames.py, scripts/p9_build_frames.py).
+# Homes: the 10 labelled Phase 1 homes of the frozen val-drive split (p2_home_splits.json): HM3D train-split scenes
+# held out of MapMaD training since Phase 2. Never exam homes, never MapMaD training homes.
+datagen: p8_datagen_v3a.yaml       # camera (pin025), floor rules (sampling), map numbers: as Phase 8's full run
+splits_file: p2_home_splits.json
+split: train                       # the 10 homes are HM3D train-split scenes
+out_dir: p9_recognisers            # below the outputs root
+seed: 20261021
+category_map: objectnav_categories.yaml   # Phase 8's raw-label -> category mapping (sha256 in p9_rules.md)
+drives:                            # source (b): Phase 8 test-split drives of these homes, re-rendered
+  dataset: habitat_mapmad_v2       # below mapmad_data
+  split_file: splits/habitat_mapmad_v2/test/traj_names.txt
+  min_move_m: 1.0
+  min_turn_deg: 30.0
+random_poses_per_home: 300         # source (a): seeded random real-floor poses, random heading
+max_depth_m: 4.0                   # near pixels (Phase 8 seen rule) and the map's projection limit
+select:                            # photo_frames.SelectSpec
+  six: {max_pos: 200, free_share: 0.55, max_ignore_ratio: 0.10, home_cap: 0.20}
+  ovon: {max_pos: 5, free_share: 0.55, max_ignore_ratio: 0.10, home_cap: 0.20}
+halves_min_share: 0.3              # each category: >= 30% of its positives in each half (else closest balance)
+ovon:
+  root: ovon                       # below mapmad_data: hm3d/<split>/content/*.json.gz (category names only)
+  min_positive_items: 5            # a category counts as covered with >= 5 positive items
+sheet_frames: 24

@@ -6,7 +6,9 @@
 #   mapmad/docker/run_containers.sh check     # GPUs seen by both containers
 #   mapmad/docker/run_containers.sh down      # stop + remove naz_mapmad and naz_mapmad_habitat only
 #
-# Single steps: network | habitat | nomad. Host paths come from paths.env (override with env vars).
+# Single steps: network | habitat | nomad | recog-build | recog (Phase 9 recogniser sidecar).
+# Host paths and container names come from paths.env (override with env vars), e.g. a second worktree:
+#   HABITAT_CONTAINER=naz_mapmad_habitat_p9 mapmad/docker/run_containers.sh habitat
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -14,8 +16,6 @@ REPO="$(cd "$HERE/../.." && pwd)"
 # shellcheck source=paths.env
 source "$HERE/paths.env"
 
-HABITAT_CONTAINER=naz_mapmad_habitat
-NOMAD_CONTAINER=naz_mapmad
 # Run as Naz, not root, so files written to the shared disk are hers. HOME must be writable.
 USER_ARGS=(--user "$(id -u):$(id -g)" -e HOME=/tmp)
 # The worktree's .git is a pointer into the main repo's git folder; mount that folder read-only at the
@@ -86,6 +86,26 @@ cmd_nomad() {
     fi
 }
 
+cmd_recog_build() {
+    run docker build -f "$HERE/Dockerfile.recog" -t "$RECOG_IMAGE" "$HERE"
+}
+
+cmd_recog() {
+    if exists "$RECOG_CONTAINER"; then echo "$RECOG_CONTAINER exists"; return; fi
+    make_host_dirs
+    mkdir -p "$MODEL_CACHE" "$HF_TOKEN_DIR"
+    run docker run -d --name "$RECOG_CONTAINER" \
+        --network "$MAPMAD_NETWORK" \
+        --gpus all \
+        "${USER_ARGS[@]}" --shm-size 8g \
+        -v "$REPO":/app/visualnav-transformer "${GIT_ARGS[@]}" \
+        -v "$MODEL_CACHE":/model_cache \
+        -v "$HF_TOKEN_DIR":/hf_token:ro \
+        -v "$MAPMAD_DATA":/mapmad_data:ro \
+        -v "$NOMAD_OUTPUTS":/outputs \
+        "$RECOG_IMAGE" sleep infinity
+}
+
 cmd_up() { cmd_network; cmd_habitat; cmd_nomad; }
 
 cmd_down() {
@@ -105,5 +125,7 @@ cmd_check() {
 
 case "${1:-}" in
     network | build | habitat | nomad | up | down | check) "cmd_$1" ;;
+    recog-build) cmd_recog_build ;;
+    recog) cmd_recog ;;
     *) sed -n '2,10p' "$0"; exit 1 ;;
 esac

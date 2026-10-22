@@ -1,0 +1,74 @@
+# Phase 9 recognisers (block item 5): exact checkpoints. HF repos are pinned to a commit (revision); every weight
+# file's sha256 is recorded by scripts/p9_download.py into <outputs>/p9_recognisers/photo_test/weights.json and
+# copied into p9_rules.md. Weights live in the model cache (/model_cache in naz_mapmad_recog; HF_HOME=/model_cache/hf).
+# family: choice-rule families (block item 1). kind: open (open vocabulary) | fixed (fixed COCO list) | vlm.
+# output: mask | box (-> MobileSAM mask) | point (-> point + depth).
+cache: /model_cache
+mobile_sam: {hf: dhkim2810/MobileSAM, revision: 4e2e5245fe9dc63096d575d36e70eb39b03b3aba, file: mobile_sam.pt}
+max_detections: 10            # raw pass: top 10 detections per query item (by score) are kept with masks
+min_score: 0.01               # raw pass: detections below this score are dropped (threshold grid starts at 0.01)
+models:
+  yoloe:
+    name: YOLOE-11-L-seg
+    family: fast_yolo
+    kind: open
+    output: mask
+    ultralytics: yoloe-11l-seg.pt
+  yolo_world:
+    name: YOLO-World v2-L
+    family: fast_yolo
+    kind: open
+    output: box
+    ultralytics: yolov8l-worldv2.pt
+  llmdet:
+    name: LLMDet-T
+    family: dino
+    kind: open
+    output: box
+    hf: iSEE-Laboratory/llmdet_tiny
+    revision: d05199165a19320a9236396e20fca0a5e065189c
+  grounding_dino:
+    name: Grounding DINO-T
+    family: dino
+    kind: open
+    output: box
+    hf: IDEA-Research/grounding-dino-tiny
+    revision: a2bb814dd30d776dcf7e30523b00659f4f141c71
+  owlv2:
+    name: OWLv2-B/16 (self-trained, google/owlv2-base-patch16)
+    family: clip_vit
+    kind: open
+    output: box
+    hf: google/owlv2-base-patch16
+    revision: 2a1560802f8cf3c408fec9b809d705f56a2f7146
+  rfdetr:
+    name: RF-DETR-M (COCO)
+    family: fixed
+    kind: fixed
+    output: box
+    rfdetr: medium
+  qwen3vl:
+    name: Qwen3-VL-8B-Instruct
+    family: vlm
+    kind: vlm
+    output: box
+    hf: Qwen/Qwen3-VL-8B-Instruct
+    revision: 0c351dd01ed87e9c1b53cbc748cba10e6187ff3b
+  molmo2:
+    name: Molmo2-8B
+    family: vlm
+    kind: vlm
+    output: point
+    hf: allenai/Molmo2-8B
+    revision: e28fa28597e5ec5e0cca2201dd8ab33d48bc4a1b
+  sam3:                        # gated: downloaded last (block: retry once before scoring, skip if still denied)
+    name: SAM 3
+    family: sam_text
+    kind: open
+    output: mask
+    hf: facebook/sam3
+    revision: 3c879f39826c281e95690f02c7821c4de09afae7
+    gated: true
+download_order: [yoloe, yolo_world, rfdetr, llmdet, grounding_dino, owlv2, qwen3vl, molmo2, sam3]
+# p9_rules_v2.md A2: detectors first (a release costs <= ~15 min), SAM 3, VLMs last (yoloe ran under v1)
+run_order: [yoloe, yolo_world, rfdetr, llmdet, grounding_dino, owlv2, sam3, qwen3vl, molmo2]
