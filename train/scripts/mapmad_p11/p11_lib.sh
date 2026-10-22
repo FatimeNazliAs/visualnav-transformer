@@ -90,7 +90,8 @@ closed_loop() {  # label subdir total budget_s args... -> 0 when every run has a
     # that gets another user's process is withdrawn (STOP file: its runners finish their current run, take no more);
     # a GPU free later is added to the same queue. When every runner has exited and runs are left (withdrawal, a
     # crashed runner), a new launch token restarts the queue (claims of unfinished runs do not block). The budget
-    # counts only time with >= 1 GPU running (waiting excluded, §8).
+    # counts running time scaled by the share of the two GPUs in use (one GPU for 1 h = 0.5 h; waiting, also for a
+    # second GPU, is not counted, p11_rules.md §9).
     # Returns 0 (all runs done), 1 (budget exceeded) or 2 (runners keep exiting without progress: a possible bug).
     local label="$1" subdir="$2" total="$3" budget="$4"; shift 4
     local round=0 used=0 t_last token g done crashed pids_alive progress_at_round=0 launched=0
@@ -141,7 +142,7 @@ closed_loop() {  # label subdir total budget_s args... -> 0 when every run has a
         status gpus="${!PIDS[*]}" subdir="$subdir" arms="${CL_ARMS}" total="$total"
         t_last=$SECONDS
         pause "${CL_CHECK_S:-300}"
-        (( ${#PIDS[@]} > 0 )) && used=$(( used + SECONDS - t_last ))
+        used=$(( used + (SECONDS - t_last) * ${#PIDS[@]} / 2 ))  # GPU-running time x share of the 2 GPUs in use
         if (( used > budget )); then
             say "$label: budget exceeded ($(( used / 60 )) min > $(( budget / 60 )) min of GPU-running time)"
             for g in "${!PIDS[@]}"; do touch "$P11/driver/STOP_gpu${g}_$token"; done

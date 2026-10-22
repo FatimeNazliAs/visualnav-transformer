@@ -137,7 +137,11 @@ The online map ≠ generator map check ran before this file (§2: passed).
 ## 9. Budgets (pre-approved; GPU waiting not counted; stop at > 1.5×)
 
 Step-0 dev check ≤ 4 h · rollouts + labels ≤ 6 h · fine-tune ≤ 4 h (estimate after epoch 1) · offline checks ≤ 1 h · dev
-check v2.1 ≤ 2 h · twin ≤ 7 h.
+check v2.1 ≤ 2 h · twin ≤ 7 h. The closed-loop budgets are planned for both GPUs (6 pairs): their running time is
+counted scaled by the share of the two GPUs in use (one GPU for 1 h counts 0.5 h), since waiting for a GPU — also for the
+second one — is not counted (clarification added 2026-10-22 19:5x, before any judged run; the first launch at 19:44 was
+stopped in its label check because another user's back-to-back jobs hold GPU 0; previous file sha256
+cccaa15ce90b345090bbefa65763da4732bbea2d2556791ae3c183f433b95521).
 
 ## 10. GPUs (v2 plan §8 rules 1–10)
 
