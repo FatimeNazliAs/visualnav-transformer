@@ -157,3 +157,19 @@ pretrain_report() {  # gpu -> offline/pretrain/{search,explore} (untrained v2 = 
         python -m vint_train.mapmad.offline_eval compare --scores $o/explore/scores.npz --out $o/explore" \
         >> "$P10/driver/offline_pretrain.log" 2>&1
 }
+
+mem_log() {  # label -> one log line with free RAM and swap (MiB; rules v5)
+    say "RAM $1: $(free -m | awk '/^Mem:/ {printf "mem used %d / total %d, available %d", $3, $2, $7} /^Swap:/ {printf "; swap used %d / %d", $3, $2}') MiB"
+}
+
+mem_watch() {  # run dir -> mem_log after every finished epoch + driver/mem_<WHO>.csv every 60 s (until killed)
+    local run="$1" seen=-1 n
+    while true; do
+        n="$(grep -c '"train_seconds"' "$run/metrics.jsonl" 2>/dev/null)"
+        n="${n:-0}"
+        if (( n != seen )); then (( seen >= 0 )) && mem_log "after epoch $(( n - 1 ))"; seen=$n; fi
+        echo "$(date '+%F %T'),$(free -m | awk '/^Mem:/ {printf "%d,%d", $3, $7} /^Swap:/ {printf ",%d", $3}')" \
+            >> "$P10/driver/mem_$WHO.csv"
+        pause 60
+    done
+}

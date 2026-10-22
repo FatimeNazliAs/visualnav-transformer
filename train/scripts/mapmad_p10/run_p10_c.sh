@@ -6,10 +6,14 @@
 #   3. offline checks on ema_19 (run-1 harness -> offline/c_ema19), seen list, guard vs run 1, G10 rows 1-2 (CPU),
 #      draft G10 table, curves, p10_c_decide.py -> verdict C_IS_V2 | RUN1_IS_V2 | STOP (STOP = automatic stop for Naz);
 #   4. twin (report only): seed 2 of the recipe that became v2, after Phase 9 no longer needs a GPU, same checks.
-# EXIT trap as run_p10_chain.sh. Refuses uncommitted code and a changed rules v4 file. Body in one function.
+# `run_p10_c.sh resume <run C folder>` (p10_rules_v5.md): instead of step 2, resume run C ONCE from its latest.pth on
+# the first free GPU, logging free RAM and swap at the start and after every epoch; if it does not finish -> no stop:
+# verdict RUN1_IS_V2 (crash), the run-1 recipe's twin follows.
+# EXIT trap as run_p10_chain.sh. Refuses uncommitted code and changed rules files. Body in one function.
 set -uo pipefail
 
 main() {
+    local mode="${1:-new}" resume_dir="${2:-}"
     REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
     OUT_MOUNT="$(docker inspect -f '{{range .Mounts}}{{if eq .Destination "/outputs"}}{{.Source}}{{end}}{{end}}' naz_mapmad)"
     P10="${P10_DRY_DIR:-$OUT_MOUNT/mapmad/p10_v2_train}"  # P10_DRY_* = DRY replay only (p10_scratch/c_DRY)
@@ -54,13 +58,20 @@ main() {
     local want; want="$(cut -d' ' -f1 "$P10/p10_rules_v4.sha256")"
     [[ "$(sha256sum "$P10/p10_rules_v4.md" | cut -d' ' -f1)" == "$want" && "$(sha256sum mapmad/configs/p10_rules_v4.md | cut -d' ' -f1)" == "$want" ]] \
         || stop "p10_rules_v4.md differs from p10_rules_v4.sha256 or from the repo copy"
-    say "run C driver start: commit $(git rev-parse HEAD), rules v4 sha256 ${want:0:16}"
+    say "run C driver start ($mode): commit $(git rev-parse HEAD), rules v4 sha256 ${want:0:16}"
+    if [[ "$mode" == resume ]]; then
+        local want5; want5="$(cut -d' ' -f1 "$P10/p10_rules_v5.sha256")"
+        [[ "$(sha256sum "$P10/p10_rules_v5.md" | cut -d' ' -f1)" == "$want5" && "$(sha256sum mapmad/configs/p10_rules_v5.md | cut -d' ' -f1)" == "$want5" ]] \
+            || stop "p10_rules_v5.md differs from p10_rules_v5.sha256 or from the repo copy"
+        [[ -f "$resume_dir/latest.pth" ]] || stop "resume: $resume_dir/latest.pth missing"
+        say "resume mode: $resume_dir (rules v5 sha256 ${want5:0:16})"
+    fi
     local batch accum workers
     batch="$(grep '^batch_size:' "$P10/launch/main.yaml" | awk '{print $2}')"
     accum="$(grep '^grad_accum_steps:' "$P10/launch/main.yaml" | awk '{print $2}')"
     workers="$(grep '^num_workers:' "$P10/launch/main.yaml" | awk '{print $2}')"
-    overlay "$P10/launch/c.yaml" "$TRAIN_DIR/config/mapmad_v2_seen.yaml" "batch_size: $batch" \
-        "grad_accum_steps: $accum" "num_workers: $workers"
+    [[ "$mode" == resume ]] || overlay "$P10/launch/c.yaml" "$TRAIN_DIR/config/mapmad_v2_seen.yaml" \
+        "batch_size: $batch" "grad_accum_steps: $accum" "num_workers: $workers"
 
     # --- 1-2. run C -----------------------------------------------------------------------------------------------
     STEP="C1 run C (waiting for a GPU free for 20 min; Phase 9 first)"
@@ -70,8 +81,31 @@ main() {
     say "GPU event: GPU $G taken by run C (free for the chain per gpu_free.json + instant check)"
     STEP="C2 run C (seed 1, seen oversampling 0.25)"
     status step="$STEP" gpu="$G" --state RUNNING
-    supervised_train v2c_s1 "$G" "$C/launch/c.yaml" "$accum" || stop "$STOP_WHY"
-    local cdir="$RUN_DIR"
+    local cdir crashed=0
+    if [[ "$mode" == resume ]]; then
+        cdir="$resume_dir"
+        STEP="C2 run C resume 2 (rules v5, from latest.pth)"
+        status step="$STEP" main_run="$cdir" note="resume 2 (rules v5)"
+        mem_log start
+        mem_watch "$cdir" &
+        local memw=$!
+        local rlog="$P10/driver/train_v2c_s1_resume2.log"
+        say "train v2c_s1 resume 2 on GPU $G: python train.py -c $C/launch/c.yaml --resume ${cdir/$P10/$C}/latest.pth"
+        train_once "$G" "$C/launch/c.yaml" "$rlog" "--resume ${cdir/$P10/$C}/latest.pth"
+        kill "$memw" 2>/dev/null
+        mem_log end
+        if ! finished_ok "$rlog" "$cdir"; then
+            crashed=1
+            say "CRASH in resume 2 ($rlog, last line: $(tr '\r' '\n' < "$rlog" | tail -n 1 | cut -c1-150)) -> rules v5: v2 = run 1 ema_19 (limitation), run-1 twin"
+        else
+            say "v2c_s1 finished after resume 2"
+        fi
+    else
+        supervised_train v2c_s1 "$G" "$C/launch/c.yaml" "$accum" || stop "$STOP_WHY"
+        cdir="$RUN_DIR"
+    fi
+    local v
+    if [[ $crashed -eq 0 ]]; then
     cp "$P10/launch/c.yaml" "$cdir/launch_c.yaml"
     sha256sum "$cdir/ema_19.pth" > "$P10/offline/c_ema19/ema_19.sha256"
     [[ -s "$P10/offline/c_ema19/ema_19.sha256" ]] && cp "$P10/offline/c_ema19/ema_19.sha256" "$cdir/ema_19.sha256" \
@@ -100,11 +134,17 @@ main() {
     python3 "$SCRIPTS/g10_table.py" "$P10" c >> "$LOG" 2>&1
     run_bg dx "" "python -m vint_train.mapmad.plot_curves --run v2c_s1=${cdir/$P10/$C} --out $C/curves" \
         >> "$P10/driver/curves.log" 2>&1 || say "curves failed (report only)"
-    local v; v="$(python3 "$SCRIPTS/p10_c_decide.py" "$P10" | tee -a "$LOG" | tail -n 1)"
+    v="$(python3 "$SCRIPTS/p10_c_decide.py" "$P10" | tee -a "$LOG" | tail -n 1)"
     say "run C verdict: $v (offline/c_ema19/decision.md)"
+    else
+        v=RUN1_IS_V2_CRASH
+        say "GPU event: run C released GPU $G (crashed); run C verdict: $v (rules v5)"
+    fi
     case "$v" in
         C_IS_V2) echo "v2 = run C ema_19 ${cdir}/ema_19.pth" > "$P10/V2_CHOICE.txt"; local twin_cfg=mapmad_v2_seen_twin.yaml twin_label=v2c_s2 ;;
         RUN1_IS_V2) echo "v2 = run 1 ema_19 (run C failed the seen-list rule; limitation)" > "$P10/V2_CHOICE.txt"
+                    local twin_cfg=mapmad_v2_twin.yaml twin_label=v2_s2 ;;
+        RUN1_IS_V2_CRASH) echo "v2 = run 1 ema_19 (run C crashed again in resume 2, rules v5; limitation: no result for run C)" > "$P10/V2_CHOICE.txt"
                     local twin_cfg=mapmad_v2_twin.yaml twin_label=v2_s2 ;;
         *) stop "run C verdict STOP: row 4, the guard or G10 failed (offline/c_ema19/decision.md) -- waiting for Naz" ;;
     esac

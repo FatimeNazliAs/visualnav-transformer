@@ -7,6 +7,7 @@
 #   bash train/scripts/mapmad_p10/launch_p10.sh            # chain + twin
 #   bash train/scripts/mapmad_p10/launch_p10.sh chain      # chain only
 #   bash train/scripts/mapmad_p10/launch_p10.sh c          # run C (p10_rules_v4.md): screens p10_c + p10_c_watch
+#   bash train/scripts/mapmad_p10/launch_p10.sh c-resume <run C folder>   # run C resume 2 (p10_rules_v5.md)
 set -euo pipefail
 WHAT="${1:-all}"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -30,8 +31,9 @@ if [[ "$WHAT" == all || "$WHAT" == chain ]]; then
     screen -dmS p10_chain_watch bash -c "$(watch_cmd p10_chain "$P10/driver/CHAIN_DONE.txt" "$P10/STOP_reason.txt")"
     echo "started screens p10_chain + p10_chain_watch (log driver/chain.log, STATUS.md)"
 fi
-if [[ "$WHAT" == c ]]; then
-    screen -dmS p10_c bash "$HERE/run_p10_c.sh"
+if [[ "$WHAT" == c || "$WHAT" == c-resume ]]; then
+    if [[ "$WHAT" == c ]]; then screen -dmS p10_c bash "$HERE/run_p10_c.sh"
+    else screen -dmS p10_c bash "$HERE/run_p10_c.sh" resume "$2"; fi
     screen -dmS p10_c_watch bash -c "$(watch_cmd p10_c "$P10/driver/C_DONE.txt" "$P10/STOP_reason.txt" chain)"
     echo "started screens p10_c + p10_c_watch (log driver/c.log, STATUS.md)"
 fi
