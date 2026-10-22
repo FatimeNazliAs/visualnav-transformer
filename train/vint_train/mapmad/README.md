@@ -160,7 +160,13 @@ Phase 10 (MapMaD v2: two map windows, two tokens; rules `/outputs/mapmad/p10_v2_
   near/far x obstacle, explored, frontier, noisy target; `MapOptions` for the offline arms).
 - **Data:** `dataset_v2.py` (`MapMaDV2Dataset`: modes search_map 45 / explore_map 20 / explore 20 / photo 15, each
   limited mode drawn from its drive kind's pool); `dataset.py` hooks (`index_dir`, `photo_part`, `empty_map`);
-  `config.py` `_replace: true` blocks; `modes.py` v2 modes.
+  `config.py` `_replace: true` blocks; `modes.py` v2 modes. `map.seen_oversample: p` (default 0 = off, training split
+  only; `config/mapmad_v2_seen.yaml` p = 0.25 = run C): a search_map sample is with probability p a "seen before, now
+  out of view" frame.
+- **Checkpoints after Phase 10:** v2 = run 1 `ema_19` (`mapmad_v2.yaml`) provisionally; candidate = run C `ema_19`
+  (`mapmad_v2_seen.yaml`: uses the remembered target, seen list +0.058 [+0.039, +0.082], at a small exploration cost);
+  the final v2 is chosen by a pre-set closed-loop dev check at the start of Phase 11 (paths and sha256 in the Phase 10
+  summary).
 - **Training:** `train_loop.py` `grad_accum_steps` (memory fallback), attention share per map token;
   `training_checks.py` `dataset` / `arms` keys + `make-offline-subset` + a v2 report per check.
 - **Offline:** `offline_eval make-lists-v2` (search 5,000 / exploration 2,000 frozen lists), `score` (v2 arms
