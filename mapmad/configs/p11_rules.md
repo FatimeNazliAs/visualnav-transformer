@@ -148,7 +148,9 @@ cccaa15ce90b345090bbefa65763da4732bbea2d2556791ae3c183f433b95521).
 A GPU is free after 4 consecutive 5-min checks without another user's process (watcher `p11_gpuwatch`; our processes carry
 MAPMAD_P11_OWNER); live `nvidia-smi` right before taking one; another user's process on a GPU we use → its pairs finish
 their current run and take no more (training already started is not killed; logged); a second GPU joins the run queue
-when free; never share a GPU. Priority: the chain > the twin; no mutual waiting. Claim flag if ever needed:
+when free; never share a GPU. Priority: the chain > the twin; no mutual waiting. **Change by Naz, 2026-10-22 ~21:40
+(during step 0, no result judged; run results do not depend on the GPU or the number of pairs): both GPUs may be used
+even while another user's job is on GPU 0** (`P11_GPUS="0 1"`); the twin's training and our pairs never share one GPU. Claim flag if ever needed:
 `/mnt/shared_disk/nazli/nomad_outputs/mapmad/P11_WANTS_GPU`.
 
 ## 11. Gate G11 (v2 plan v2.4)

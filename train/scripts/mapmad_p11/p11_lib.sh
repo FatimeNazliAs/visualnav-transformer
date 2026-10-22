@@ -24,11 +24,24 @@ status() {  # key=value ... [--state S] -> driver/<who>_state.json + STATUS.md
 pause() { sleep "$1" & wait $!; }  # a sleep that TERM can interrupt at once
 
 free_for() {  # owner -> GPUs free for it for 20 min (gpu_watch.py's gpu_free.json; DRY runs: P11_GPU_FREE)
+    # P11_GPUS="0 1" (Naz, 2026-10-22 21:4x): these GPUs count as usable even with another user's job on them; never the
+    # GPU the other driver of this phase trains on (chain <-> twin), so a training run never shares with our pairs.
+    if [[ -n "${P11_GPUS:-}" ]]; then
+        local other g out=""
+        other="$(python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print(d.get('gpus','') if d.get('state')=='RUNNING' and str(d.get('step','')).startswith(('training','6 ')) else '')" \
+            "$P11/driver/$([[ "$WHO" == chain ]] && echo twin || echo chain)_state.json" 2>/dev/null)"
+        for g in $P11_GPUS; do [[ " $other " == *" $g "* ]] || out="$out $g"; done
+        echo $out
+        return
+    fi
     python3 -c "import json,sys; print(' '.join(json.load(open(sys.argv[1]))['free'][sys.argv[2]]))" \
         "${P11_GPU_FREE:-$P11/driver/gpu_free.json}" "$1" 2>/dev/null
 }
 
-gpu_clean() { python3 "$WATCH" --check "$1" "$WHO" >> "$LOG" 2>&1; }  # live nvidia-smi: nobody else on GPU $1
+gpu_clean() {  # live nvidia-smi: nobody else on GPU $1 (P11_GPUS: allowed to share with other users, Naz)
+    [[ " ${P11_GPUS:-} " == *" $1 "* ]] && return 0
+    python3 "$WATCH" --check "$1" "$WHO" >> "$LOG" 2>&1
+}
 
 wait_gpu() {  # [preferred gpu] [excluded gpu] -> echoes a GPU free for 20 min AND clean right now; waits in CHECK_S
     local prefer="${1:-}" exclude="${2:-}" g list
