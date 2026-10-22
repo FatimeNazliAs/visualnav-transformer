@@ -22,6 +22,7 @@ import numpy as np
 import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from mapmad_bridge import detections  # noqa: E402
 from mapmad_sim import config, photo_labels as pl  # noqa: E402
 from mapmad_sim import photo_scoring as ps  # noqa: E402
 from mapmad_sim.categories import load_map  # noqa: E402
@@ -61,7 +62,7 @@ def load_items(kind: str) -> List[Dict[str, Any]]:
 def label_all(key: str, items: List[Dict[str, Any]], tabs: Dict[str, pl.LabelTable], raw_dir: str = "raw") -> List[ps.Det]:
     fr = root() / "frames"
     frames = {f["frame_id"]: f for f in json.loads((fr / "frames.json").read_text())}
-    raw = ps.load_raw(root() / "photo_test" / key / raw_dir, (240, 320))
+    raw = detections.load_parts(root() / "photo_test" / key / raw_dir, detections.FRAME_HW)
     missing = [i["item_id"] for i in items if i["item_id"] not in raw]
     if missing:
         raise SystemExit(f"{key}: {len(missing)} items without raw output, e.g. {missing[:3]}")
@@ -299,7 +300,7 @@ def cmd_sheets(key: str, seed: int = 20261021) -> None:
     hit_items = {d.item for d in kept if d.map == "hit"}
     misses = sorted(i for i, it in items.items() if it["status"] == "positive" and i not in hit_items)
     pick = lambda xs: [xs[k] for k in sorted(rng.permutation(len(xs))[:8])] if xs else []
-    raw = ps.load_raw(root() / "photo_test" / key / "raw", (240, 320))
+    raw = detections.load_parts(root() / "photo_test" / key / "raw", detections.FRAME_HW)
     fr = root() / "frames"
     frames = {f["frame_id"]: f for f in json.loads((fr / "frames.json").read_text())}
     tabs = tables()
@@ -315,7 +316,7 @@ def cmd_sheets(key: str, seed: int = 20261021) -> None:
                 if m is not None:
                     cnts, _ = cv2.findContours(m.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
                     cv2.drawContours(img, cnts, -1, (0, 0, 255), 1)
-                elif not np.isnan(r["points"][k]).any():
+                elif detections.present(r["points"][k]) is not None:
                     cv2.circle(img, tuple(int(v) for v in r["points"][k]), 4, (0, 0, 255), -1)
             from mapmad_sim.photo_frames import instances_from_json
             truth = ps.item_truth(instances_from_json(frames[it["frame_id"]]["instances"]), tabs[it["key"]])
@@ -324,13 +325,13 @@ def cmd_sheets(key: str, seed: int = 20261021) -> None:
                 cv2.drawContours(img, cnts, -1, (0, 255, 255), 1)
             tiles.append(annotate(img, f"{group}: {it['prompt']} {item[4:]}"))
     while len(tiles) < 24:
-        tiles.append(np.zeros((240, 320, 3), np.uint8))
+        tiles.append(np.zeros((*detections.FRAME_HW, 3), np.uint8))
     sheet = np.vstack([np.hstack(tiles[r:r + 8]) for r in range(0, 24, 8)])
     cv2.imwrite(str(root() / "sheets" / f"{key}.png"), sheet)
 
 
 def annotate(img: np.ndarray, text: str) -> np.ndarray:
-    cv2.rectangle(img, (0, 0), (320, 14), (0, 0, 0), -1)
+    cv2.rectangle(img, (0, 0), (img.shape[1], 14), (0, 0, 0), -1)
     cv2.putText(img, text[:52], (2, 10), cv2.FONT_HERSHEY_SIMPLEX, 0.33, (255, 255, 255), 1)
     return img
 

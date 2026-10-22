@@ -6,7 +6,8 @@ the raw outputs (block items 4, 5; task 9.4). The server (mapmad_recog.server) h
 
 raw: the 6-category items, plus the OVON items for open-vocabulary models (not RF-DETR), in item-id order; top 10
 detections per item with score >= 0.01, with masks (MobileSAM for box models). Saved in chunks of 250 items:
-<outputs>/p9_recognisers/photo_test/<model>/raw/part_<k>.npz (+ part_<k>.json: VLM answers, timing), resumable.
+<outputs>/p9_recognisers/photo_test/<model>/raw/part_<k>.npz (+ part_<k>.json: VLM answers; format and timing
+fields: mapmad_bridge.detections), resumable.
 Peak VRAM after the pass -> raw/stats.json.
 timing: the driving setting (min score = the model's tuned threshold) on 350 seeded half-B 6-category items; the first
 50 calls are warm-up and not counted. Round trip per item = client send -> reply (includes MobileSAM and the
@@ -16,7 +17,6 @@ comes from the raw pass (half-B 6-category items, the first 50 calls of the pass
 
 import argparse
 import json
-import os
 import sys
 import time
 from pathlib import Path
@@ -29,7 +29,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from mapmad_sim import config  # noqa: E402
 from mapmad_sim.photo_frames import write_json_atomic  # noqa: E402
 from mapmad_sim.recogniser import SidecarRecogniser, connect  # noqa: E402
-from mapmad_bridge import protocol  # noqa: E402
+from mapmad_bridge import detections, protocol  # noqa: E402
 
 CHUNK = 250
 WARMUP = 50
@@ -75,47 +75,23 @@ def call(client: SidecarRecogniser, rgb: np.ndarray, prompt: str, min_score: flo
     return r, (time.perf_counter() - t0) * 1e3
 
 
-def save_chunk(folder: Path, k: int, rows: List[Dict[str, Any]], hw: int) -> None:
-    """One chunk of raw outputs (module docstring), written atomically."""
-    det_item, scores, boxes, points, masks, has_mask = [], [], [], [], [], []
-    for j, r in enumerate(rows):
-        n = len(r["scores"])
-        det_item += [j] * n
-        scores.append(np.asarray(r["scores"], np.float32))
-        boxes.append(np.asarray(r["boxes"], np.float32).reshape(-1, 4))
-        points.append(np.asarray(r["points"], np.float32).reshape(-1, 2))
-        m = r.get("masks")
-        masks.append(np.asarray(m, np.uint8) if m is not None else np.zeros((n, (hw + 7) // 8), np.uint8))
-        has_mask += [m is not None] * n
-    arrays = {"item_id": np.asarray([r["item_id"] for r in rows]), "det_item": np.asarray(det_item, np.int32),
-              "scores": np.concatenate(scores), "boxes": np.concatenate(boxes), "points": np.concatenate(points),
-              "masks": np.concatenate(masks), "has_mask": np.asarray(has_mask, bool),
-              "rtt_ms": np.asarray([r["rtt_ms"] for r in rows], np.float32),
-              "model_ms": np.asarray([r["model_ms"] for r in rows], np.float32),
-              "sam_ms": np.asarray([r["sam_ms"] for r in rows], np.float32)}
-    tmp = folder / f"part_{k:03d}.tmp.npz"
-    np.savez_compressed(tmp, **arrays)
-    os.replace(tmp, folder / f"part_{k:03d}.npz")
-    write_json_atomic(folder / f"part_{k:03d}.json", {r["item_id"]: r["text"] for r in rows if r["text"]})
-
-
 def cmd_raw(a: argparse.Namespace, client: SidecarRecogniser) -> None:
     folder = out_root() / "photo_test" / a.model / a.raw_dir
     folder.mkdir(parents=True, exist_ok=True)
     items = load_items(client.info["kind"])
     imgs = Images()
     client.request({"cmd": "reset_stats"})
-    hw = 0
+    hw = detections.FRAME_HW
     for k in range(0, (len(items) + CHUNK - 1) // CHUNK):
         if (folder / f"part_{k:03d}.npz").exists():
             continue
         rows = []
         for it in items[k * CHUNK:(k + 1) * CHUNK]:
             rgb = imgs.rgb(it["frame_id"])
-            hw = rgb.shape[0] * rgb.shape[1]
+            hw = rgb.shape[:2]
             r, ms = call(client, rgb, it["prompt"], a.min_score)
             rows.append({**r, "item_id": it["item_id"], "rtt_ms": ms})
-        save_chunk(folder, k, rows, hw)
+        detections.save_part(folder, k, rows, hw)
         print(f"{a.model}: chunk {k} done ({min((k + 1) * CHUNK, len(items))}/{len(items)})", flush=True)
     errors = sum(sum(t.startswith("ERROR") for t in json.loads(f.read_text()).values()) for f in folder.glob("part_*.json"))
     write_json_atomic(folder / "stats.json", {**client.request({"cmd": "stats"}), "items": len(items), "errors": errors,

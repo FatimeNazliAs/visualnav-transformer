@@ -22,7 +22,7 @@ from typing import Dict, List, Optional, Protocol, Sequence, Tuple
 
 import numpy as np
 
-from mapmad_bridge import protocol
+from mapmad_bridge import detections, protocol
 from mapmad_sim.photo_labels import PROMPTS
 from mapmad_sim.target_layer import FrameCells, NoiseSpec, detect as truth_detect, max_into
 
@@ -135,17 +135,16 @@ def connect(name: str, host: str, port: int, threshold: float, p99: float, vlm: 
 
 def unpack(reply: Dict, shape: Tuple[int, int], score_of, min_score: float = 0.0) -> List[Detection]:
     """Sidecar reply arrays -> Detections with score >= min_score (raw score kept)."""
-    h, w = shape
     masks = reply.get("masks")
     out = []
     for k, s in enumerate(np.asarray(reply["scores"], np.float64)):
         if s < min_score:
             continue
-        m = np.unpackbits(masks[k])[: h * w].astype(bool).reshape(h, w) if masks is not None else None
-        b = reply["boxes"][k]
-        p = reply["points"][k]
-        out.append(Detection(score_of(float(s)), m, None if np.isnan(p).any() else (float(p[0]), float(p[1])),
-                             float(s), None if np.isnan(b).any() else tuple(float(v) for v in b)))
+        m = detections.unpack_mask(masks[k], shape) if masks is not None else None
+        b = detections.present(reply["boxes"][k])
+        p = detections.present(reply["points"][k])
+        out.append(Detection(score_of(float(s)), m, None if p is None else (float(p[0]), float(p[1])),
+                             float(s), None if b is None else tuple(float(v) for v in b)))
     return out
 
 

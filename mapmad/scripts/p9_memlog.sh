@@ -13,7 +13,7 @@ seen=$(dmesg 2>/dev/null | wc -l)
 while true; do
     t=$(date '+%F %T')
     free -m | awk -v t="$t" '/^Mem:/ {printf "%s ram used_mb=%s free_mb=%s avail_mb=%s", t, $3, $4, $7} /^Swap:/ {printf " swap_used_mb=%s/%s\n", $3, $2}' >> "$OUT"
-    docker exec "$REC" ps -eo pid,rss,pcpu,stat,args 2>/dev/null | awk -v t="$t" '/mapmad_recog.server/ && !/bash -c/ {printf "%s server pid=%s rss_mb=%.0f cpu=%s stat=%s model=%s\n", t, $1, $2/1024, $3, $4, $8}' >> "$OUT"
+    docker exec "$REC" ps -eo pid,rss,pcpu,stat,args 2>/dev/null | awk -v t="$t" '/mapmad_recog.server/ && !/bash -c/ {printf "%s server pid=%s rss_mb=%.0f cpu=%s stat=%s model=%s\n", t, $1, $2/1024, $3, $4, $9}' >> "$OUT"
     nvidia-smi --query-gpu=index,memory.used,utilization.gpu --format=csv,noheader 2>/dev/null | awk -v t="$t" '{print t " gpu " $0}' >> "$OUT"
     n=$(dmesg 2>/dev/null | wc -l)
     if (( n > seen )); then

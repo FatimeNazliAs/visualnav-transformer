@@ -27,25 +27,16 @@ from typing import Any, Dict, List
 import numpy as np
 import yaml
 
-from mapmad_bridge import protocol
+from mapmad_bridge import detections, protocol
 from mapmad_recog.models import MaskMaker, RawDet, build, text_reuse_check
 
 CONFIG = Path(__file__).resolve().parents[2] / "configs" / "p9_models.yaml"
 
 
-def pack(dets: List[RawDet], shape) -> Dict[str, np.ndarray]:
-    """RawDets -> the reply arrays (module docstring)."""
-    n = len(dets)
-    out = {"scores": np.array([d.score for d in dets], np.float32),
-           "boxes": np.full((n, 4), np.nan, np.float32), "points": np.full((n, 2), np.nan, np.float32)}
-    for k, d in enumerate(dets):
-        if d.box is not None:
-            out["boxes"][k] = d.box
-        if d.point is not None:
-            out["points"][k] = d.point
-    if n and all(d.mask is not None for d in dets):
-        out["masks"] = np.stack([np.packbits(d.mask.reshape(-1)) for d in dets])
-    return out
+def pack(dets: List[RawDet]) -> Dict[str, np.ndarray]:
+    """RawDets -> the reply arrays (mapmad_bridge.detections)."""
+    return detections.pack([d.score for d in dets], [d.box for d in dets], [d.point for d in dets],
+                           [d.mask for d in dets])
 
 
 class RecogService:
@@ -117,7 +108,7 @@ class RecogService:
                 d.mask = m
             self.sync()
         t2 = time.perf_counter()
-        return {**pack(dets, rgb.shape[:2]), "model_ms": (t1 - t0) * 1e3, "sam_ms": (t2 - t1) * 1e3,
+        return {**pack(dets), "model_ms": (t1 - t0) * 1e3, "sam_ms": (t2 - t1) * 1e3,
                 "text": getattr(self.model, "last_text", "")}
 
 

@@ -8,7 +8,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from mapmad_bridge import protocol
+from mapmad_bridge import detections, protocol
 from mapmad_recog.models import RawDet, molmo_points, parse_json_list, qwen_boxes
 from mapmad_sim import photo_frames as pf
 from mapmad_sim.recogniser import (Detection, SidecarRecogniser, TruthRecogniser, detection_cells, frame_scores,
@@ -87,8 +87,7 @@ def test_unpack_reply():
     h, w = 4, 4
     m = np.zeros((h, w), bool)
     m[1:3, 1:3] = True
-    reply = {"scores": np.array([0.9, 0.2], np.float32), "boxes": np.array([[1, 1, 3, 3], [0, 0, 1, 1]], np.float32),
-             "points": np.full((2, 2), np.nan, np.float32), "masks": np.stack([np.packbits(m.reshape(-1))] * 2)}
+    reply = detections.pack([0.9, 0.2], [[1, 1, 3, 3], [0, 0, 1, 1]], [None, None], [m, m])  # as the server packs
     dets = unpack(reply, (h, w), lambda s: map_score(s, 0.3, 0.9), min_score=0.3)
     assert len(dets) == 1 and dets[0].raw_score == pytest.approx(0.9) and dets[0].score == pytest.approx(1.0)
     assert np.array_equal(dets[0].mask, m) and dets[0].point is None

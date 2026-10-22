@@ -21,7 +21,7 @@ import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -35,6 +35,11 @@ TEXT_ENCODERS = {"grounding_dino": "model.text_backbone", "llmdet": "model.text_
                  "owlv2": "owlv2.text_model", "sam3": None}  # None: found by name at load (gated, not inspectable)
 COCO_NAME = {"chair": "chair", "couch": "couch", "bed": "bed", "toilet": "toilet", "tv": "tv",
              "potted plant": "potted plant"}
+
+
+def coco_ids(classes: Dict[int, str]) -> Dict[str, int]:
+    """COCO class name -> the id RF-DETR's predict() returns (the original 1-90 COCO ids, with gaps)."""
+    return {name: int(k) for k, name in classes.items()}
 
 
 @dataclass
@@ -53,6 +58,44 @@ def keep_top(dets: List[RawDet], min_score: float, max_det: int) -> List[RawDet]
 def clip_box(box: Any, w: int, h: int) -> np.ndarray:
     b = np.asarray(box, dtype=np.float64).reshape(4)
     return np.array([np.clip(b[0], 0, w), np.clip(b[1], 0, h), np.clip(b[2], 0, w), np.clip(b[3], 0, h)])
+
+
+# Model output -> RawDets: the model-specific mapping of each wrapper, pure (numpy in, RawDets out), so it is
+# tested without the weights (tests/test_p9_model_outputs.py). Each wrapper's detect() = forward pass + one of these
+# + keep_top.
+
+def box_dets(scores: np.ndarray, boxes: np.ndarray, hw: Tuple[int, int],
+             masks: Optional[List[np.ndarray]] = None) -> List[RawDet]:
+    """Scores + pixel boxes (+ masks) -> RawDets, boxes clipped to the picture (Grounding DINO, LLMDet, SAM 3)."""
+    h, w = hw
+    return [RawDet(float(scores[k]), clip_box(boxes[k], w, h), None if masks is None else masks[k])
+            for k in range(len(scores))]
+
+
+def ultralytics_dets(scores: np.ndarray, boxes: np.ndarray, masks: Optional[np.ndarray],
+                     hw: Tuple[int, int]) -> List[RawDet]:
+    """YOLOE / YOLO-World arrays -> RawDets; a mask of another size than the picture is dropped (box only)."""
+    h, w = hw
+    return [RawDet(float(scores[k]), clip_box(boxes[k], w, h),
+                   masks[k] if masks is not None and masks[k].shape == (h, w) else None) for k in range(len(scores))]
+
+
+def owlv2_square(hw: Tuple[int, int]) -> Tuple[int, int]:
+    """OWLv2 pads the picture to a square at the bottom / right, so its boxes are scaled to that square."""
+    side = max(hw)
+    return side, side
+
+
+def owlv2_dets(scores: np.ndarray, boxes: np.ndarray, hw: Tuple[int, int]) -> List[RawDet]:
+    """OWLv2 boxes (in the padded square) -> RawDets clipped to the picture; boxes wholly in the padding dropped."""
+    return [d for d in box_dets(scores, boxes, hw) if d.box[2] > d.box[0] and d.box[3] > d.box[1]]
+
+
+def rfdetr_dets(class_id: np.ndarray, scores: np.ndarray, boxes: np.ndarray, prompt: str, class_of: Dict[str, int],
+                hw: Tuple[int, int]) -> List[RawDet]:
+    """RF-DETR detections of the asked category only: class_id = the COCO id predict() returns (class_of: coco_ids)."""
+    keep = np.asarray(class_id) == class_of[COCO_NAME[prompt]]
+    return box_dets(np.asarray(scores)[keep], np.asarray(boxes)[keep], hw)
 
 
 def tensor_key(value: Any) -> Any:
@@ -172,15 +215,10 @@ class _Ultralytics(Recogniser):
         self._set(prompt)
         r = self.model.predict(rgb[..., ::-1], conf=self.min_score, max_det=self.max_det, device=self.device,
                                verbose=False, retina_masks=True)[0]
-        h, w = rgb.shape[:2]
         boxes = r.boxes.xyxy.cpu().numpy() if r.boxes is not None else np.zeros((0, 4))
         scores = r.boxes.conf.cpu().numpy() if r.boxes is not None else np.zeros(0)
         masks = r.masks.data.cpu().numpy() > 0.5 if (self.yoloe and r.masks is not None) else None
-        out = []
-        for k in range(len(scores)):
-            m = masks[k] if masks is not None and masks[k].shape == (h, w) else None
-            out.append(RawDet(float(scores[k]), clip_box(boxes[k], w, h), m))
-        return keep_top(out, self.min_score, self.max_det)
+        return keep_top(ultralytics_dets(scores, boxes, masks, rgb.shape[:2]), self.min_score, self.max_det)
 
 
 class _GroundingDino(Recogniser):
@@ -204,8 +242,8 @@ class _GroundingDino(Recogniser):
             outputs = self.model(**inputs)
         res = self.proc.post_process_grounded_object_detection(outputs, inputs.input_ids, threshold=self.min_score,
                                                                text_threshold=0.0, target_sizes=[(h, w)])[0]
-        return keep_top([RawDet(float(s), clip_box(b.cpu().numpy(), w, h))
-                         for s, b in zip(res["scores"], res["boxes"])], self.min_score, self.max_det)
+        return keep_top(box_dets(res["scores"].cpu().numpy(), res["boxes"].cpu().numpy(), (h, w)), self.min_score,
+                        self.max_det)
 
 
 class _Owlv2(Recogniser):
@@ -226,11 +264,10 @@ class _Owlv2(Recogniser):
         inputs = self.proc(text=[[prompt]], images=rgb, return_tensors="pt").to(self.device)
         with self.torch.inference_mode():
             outputs = self.model(**inputs)
-        side = max(h, w)
         res = self.proc.post_process_grounded_object_detection(outputs, threshold=self.min_score,
-                                                               target_sizes=[(side, side)])[0]
-        dets = [RawDet(float(s), clip_box(b.cpu().numpy(), w, h)) for s, b in zip(res["scores"], res["boxes"])]
-        return keep_top([d for d in dets if d.box[2] > d.box[0] and d.box[3] > d.box[1]], self.min_score, self.max_det)
+                                                               target_sizes=[owlv2_square((h, w))])[0]
+        return keep_top(owlv2_dets(res["scores"].cpu().numpy(), res["boxes"].cpu().numpy(), (h, w)), self.min_score,
+                        self.max_det)
 
 
 class _RfDetr(Recogniser):
@@ -239,21 +276,20 @@ class _RfDetr(Recogniser):
     def __init__(self, *a: Any, **k: Any) -> None:
         super().__init__(*a, **k)
         import rfdetr
+        from rfdetr.assets.coco_classes import COCO_CLASSES
 
         folder = self.cache / "rfdetr"
         os.chdir(folder)
         self.model = {"medium": rfdetr.RFDETRMedium}[self.spec["rfdetr"]](device=self.device.split(":")[0])
-        names = self.model.class_names
-        self.class_of = {v: int(k) for k, v in (names.items() if isinstance(names, dict) else enumerate(names))}
+        # predict() returns the original COCO ids (1-90, e.g. chair 62); model.class_names is a 0-79 list, so its
+        # index is NOT the returned id (bug found 2026-10-22: chair looked up as 56 = broccoli)
+        self.class_of = coco_ids(COCO_CLASSES)
 
     def detect(self, rgb: np.ndarray, prompt: str) -> List[RawDet]:
         from PIL import Image
 
-        h, w = rgb.shape[:2]
         det = self.model.predict(Image.fromarray(rgb), threshold=self.min_score)
-        cid = self.class_of[COCO_NAME[prompt]]
-        keep = det.class_id == cid
-        return keep_top([RawDet(float(s), clip_box(b, w, h)) for s, b in zip(det.confidence[keep], det.xyxy[keep])],
+        return keep_top(rfdetr_dets(det.class_id, det.confidence, det.xyxy, prompt, self.class_of, rgb.shape[:2]),
                         self.min_score, self.max_det)
 
 
@@ -277,11 +313,9 @@ class _Sam3(Recogniser):
             outputs = self.model(**inputs)
         res = self.proc.post_process_instance_segmentation(outputs, threshold=self.min_score, mask_threshold=0.5,
                                                            target_sizes=inputs.get("original_sizes").tolist())[0]
-        out = []
-        for k in range(len(res["scores"])):
-            m = res["masks"][k].cpu().numpy().astype(bool)
-            out.append(RawDet(float(res["scores"][k]), clip_box(res["boxes"][k].cpu().numpy(), w, h), m))
-        return keep_top(out, self.min_score, self.max_det)
+        masks = [res["masks"][k].cpu().numpy().astype(bool) for k in range(len(res["scores"]))]
+        return keep_top(box_dets(res["scores"].cpu().numpy(), res["boxes"].cpu().numpy(), (h, w), masks),
+                        self.min_score, self.max_det)
 
 
 def parse_json_list(text: str) -> List[Any]:
@@ -326,6 +360,14 @@ def molmo_points(text: str, w: int, h: int) -> List[np.ndarray]:
     return [np.clip(p, [0, 0], [w - 1, h - 1]) for p in out]
 
 
+def vlm_dets(key: str, text: str, hw: Tuple[int, int]) -> List[RawDet]:
+    """A VLM answer -> RawDets with score 1.0: boxes (Qwen3-VL) or points (Molmo2)."""
+    h, w = hw
+    if key == "qwen3vl":
+        return [RawDet(1.0, box=b) for b in qwen_boxes(text, w, h)]
+    return [RawDet(1.0, point=p) for p in molmo_points(text, w, h)]
+
+
 class _Vlm(Recogniser):
     """Qwen3-VL-8B-Instruct (boxes as text) and Molmo2-8B (points as text); greedy decoding, score 1.0."""
 
@@ -355,9 +397,7 @@ class _Vlm(Recogniser):
             gen = self.model.generate(**inputs, max_new_tokens=256, do_sample=False)
         text = self.proc.batch_decode(gen[:, inputs["input_ids"].shape[1]:], skip_special_tokens=True)[0]
         self.last_text = text
-        if self.key == "qwen3vl":
-            return [RawDet(1.0, box=b) for b in qwen_boxes(text, w, h)][: self.max_det]
-        return [RawDet(1.0, point=p) for p in molmo_points(text, w, h)][: self.max_det]
+        return vlm_dets(self.key, text, (h, w))[: self.max_det]
 
 
 class MaskMaker:

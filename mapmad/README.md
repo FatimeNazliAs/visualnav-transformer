@@ -348,7 +348,10 @@ sees the name. Phase 9 compares 9 local models + simulator truth on still frames
 picks R1, R2 by the rule in `configs/p9_rules.md`. Code: `mapmad_sim/photo_labels.py` (counted / near-synonym labels),
 `photo_frames.py` (frames, items, halves), `photo_scoring.py` (pixel + map metrics, threshold, choice rule),
 `recogniser.py` (the plug-in: `Recogniser.detect(rgb, depth, category)`, truth, sidecar client, score mapping);
-`mapmad_recog/` (models + sidecar server, its own container). Configs `p9_frames.yaml`, `p9_models.yaml`.
+`mapmad_recog/` (models + sidecar server, its own container; each wrapper = forward pass + a pure output mapping,
+tested without weights in `tests/test_p9_model_outputs.py`); `mapmad_bridge/detections.py` (the one detection
+format: reply arrays and raw part files, used by the server, the photo test, the scorer and the plug-in).
+Configs `p9_frames.yaml`, `p9_models.yaml`.
 Outputs `/outputs/mapmad/p9_recognisers/` (`STATUS.md`, `frames/`, `photo_test/`, `ovon_test/`, `plugin/`, `sheets/`).
 
 ```bash
@@ -374,6 +377,7 @@ MAPMAD_SIDECAR_KEY=$(openssl rand -hex 16) bash mapmad/scripts/p9_job.sh driver 
 #   python mapmad/scripts/p9_score.py tune|score|choose|sheets [--model M] [--fresh]
 #   python mapmad/scripts/p9_plugin_run.py --recogniser truth|M --gpu G [--port P]
 # tests (CPU): docker exec -w /app/visualnav-transformer/mapmad naz_mapmad_habitat_p9 python -m pytest tests/test_p9_*.py
+#   (tests/test_p9_model_outputs.py, test_p9_text_reuse.py, test_p9_detections.py also in naz_mapmad_recog)
 ```
 - Every long job runs in `screen` through `p9_job.sh` (EXIT trap: `STOP_reason.txt` on any abnormal exit, `DONE.txt`
   on a normal one). Claude Code itself may run in VS Code; it can be closed once the driver runs.

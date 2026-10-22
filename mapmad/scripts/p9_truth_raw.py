@@ -18,9 +18,10 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from mapmad_bridge import detections  # noqa: E402
 from mapmad_sim import config, objectnav, photo_labels as pl  # noqa: E402
 from mapmad_sim.photo_frames import instances_from_json, write_json_atomic  # noqa: E402
-from p9_photo_test import CHUNK, save_chunk  # noqa: E402
+from p9_photo_test import CHUNK  # noqa: E402
 
 MIN_PX, MAX_D = 200, 4.0
 
@@ -58,13 +59,12 @@ def main() -> None:
                 m = (sem == i) & near
                 if m.sum() >= MIN_PX:
                     ys, xs = np.nonzero(m)
-                    masks.append(np.packbits(m.reshape(-1)))
+                    masks.append(m)
                     boxes.append([xs.min(), ys.min(), xs.max() + 1, ys.max() + 1])
             n = len(masks)
-            rows.append({"item_id": it["item_id"], "scores": np.ones(n, np.float32),
-                         "boxes": np.asarray(boxes, np.float32).reshape(-1, 4), "points": np.full((n, 2), np.nan, np.float32),
-                         "masks": np.stack(masks) if n else None, "rtt_ms": 0.0, "model_ms": 0.0, "sam_ms": 0.0, "text": ""})
-        save_chunk(out, k, rows, 320 * 240)
+            rows.append({**detections.pack(np.ones(n), boxes, [None] * n, masks), "item_id": it["item_id"],
+                         "rtt_ms": 0.0, "model_ms": 0.0, "sam_ms": 0.0, "text": ""})
+        detections.save_part(out, k, rows, detections.FRAME_HW)
     write_json_atomic(out / "stats.json", {"items": len(items), "errors": 0, "peak_vram_mb": 0.0,
                                            "info": {"model": "truth", "kind": "truth"}})
     print(f"truth: {len(items)} items")

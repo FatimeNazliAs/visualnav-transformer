@@ -31,6 +31,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 import cv2
 import numpy as np
 
+from mapmad_bridge import detections
 from mapmad_sim.depth_map import camera_points
 from mapmad_sim.photo_frames import Instance, instances_from_json
 from mapmad_sim.photo_labels import LabelTable
@@ -118,11 +119,13 @@ def detection_pixels(mask: Optional[np.ndarray], box: Optional[np.ndarray], poin
     h, w = shape
     if mask is not None:
         return np.flatnonzero(mask.reshape(-1))
-    if box is not None and not np.isnan(box).any():
+    box = None if box is None else detections.present(box)
+    point = None if point is None else detections.present(point)
+    if box is not None:
         x0, y0, x1, y1 = (int(round(v)) for v in box)
         ys, xs = np.mgrid[max(y0, 0):min(y1, h), max(x0, 0):min(x1, w)]
         return (ys * w + xs).ravel()
-    if point is not None and not np.isnan(point).any():
+    if point is not None:
         x, y = int(min(max(round(point[0]), 0), w - 1)), int(min(max(round(point[1]), 0), h - 1))
         return np.array([y * w + x])
     return np.zeros(0, np.int64)
@@ -138,8 +141,8 @@ def label_item(item_id: str, frame: FrameData, truth: ItemTruth, scores: np.ndar
     matched: set = set()
     out = []
     for k in np.argsort(-scores, kind="stable"):
-        box = boxes[k] if not np.isnan(boxes[k]).any() else None
-        pt = points[k] if not np.isnan(points[k]).any() else None
+        box = detections.present(boxes[k])
+        pt = detections.present(points[k])
         px = detection_pixels(masks[k], box, pt, (h, w))
         if box is None and masks[k] is not None and px.size:
             ys, xs = np.divmod(px, w)
@@ -324,23 +327,6 @@ def choose(models: Dict[str, Dict[str, Any]], max_latency_s: float = 0.25, tie: 
             flags.append(f"{m}: fallback (fastest remaining open-vocabulary model{'' if other else ', same family'})")
     return {"R1": chosen[0] if chosen else None, "R2": chosen[1] if len(chosen) > 1 else None,
             "qualifying": sorted(qual), "fallback_flags": flags, "log": log}
-
-
-def load_raw(folder: Path, hw: Tuple[int, int]) -> Dict[str, Dict[str, Any]]:
-    """Item id -> {"scores", "boxes", "points", "masks" (list of (H, W) bool or None)} from part_*.npz."""
-    h, w = hw
-    out: Dict[str, Dict[str, Any]] = {}
-    for path in sorted(folder.glob("part_*.npz")):
-        if ".tmp" in path.name:
-            continue
-        z = np.load(path)
-        for j, item in enumerate(z["item_id"].tolist()):
-            sel = np.nonzero(z["det_item"] == j)[0]
-            masks = [np.unpackbits(z["masks"][k])[: h * w].astype(bool).reshape(h, w) if z["has_mask"][k] else None
-                     for k in sel]
-            out[item] = {"scores": z["scores"][sel].astype(np.float64), "boxes": z["boxes"][sel].astype(np.float64),
-                         "points": z["points"][sel].astype(np.float64), "masks": masks}
-    return out
 
 
 def write_json(path: Path, obj: Any) -> None:
