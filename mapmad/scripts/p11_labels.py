@@ -82,8 +82,17 @@ def _label_one(folder: str) -> Dict[str, Any]:
     if out.exists():
         with np.load(out) as z:
             stale = "teacher_fail" not in z.files  # written by an older labeller: redone
+    attempts = 0
     if not out.exists() or stale:
-        arrays = label_drive(Path(folder), _CTX["teacher"], _CTX["pursuit"], _CTX["spec"], freeze_blacklist=True)
+        while True:  # labels are deterministic: a retry gives the same arrays (an intermittent numpy error under
+            attempts += 1  # the 24-worker load hit 1 of 1,448 drives on 2026-10-23; the same drive labels fine alone)
+            try:
+                arrays = label_drive(Path(folder), _CTX["teacher"], _CTX["pursuit"], _CTX["spec"], freeze_blacklist=True)
+                break
+            except ValueError as exc:
+                if attempts >= 3:
+                    raise
+                print(f"[labels] {Path(folder).name}: attempt {attempts} failed ({exc}); retrying", flush=True)
         tmp = out.with_name(".labels.tmp.npz")
         np.savez_compressed(tmp, **arrays)
         os.replace(tmp, out)
@@ -94,7 +103,7 @@ def _label_one(folder: str) -> Dict[str, Any]:
             "counts": {**{REASONS[i]: int((reason == i).sum()) for i in range(len(REASONS))},
                        "teacher_fail_any": int(tf.sum()), "collision_any": int(coll.sum()),
                        "overlap": int((tf & coll).sum())},
-            "seconds": round(time.time() - t0, 2)}
+            "seconds": round(time.time() - t0, 2), "attempts": attempts}
 
 
 def cmd_check(args, layout: RunLayout) -> None:
