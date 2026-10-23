@@ -159,8 +159,9 @@ even while another user's job is on GPU 0** (`P11_GPUS="0 1"`); the twin's train
 `/mnt/shared_disk/nazli/nomad_outputs/mapmad/P11_WANTS_GPU`.
 **Change by Naz, 2026-10-23 ~09:00 (after a GPU sharing event at 08:25, before ema_9 and the dev check v2.1):** a training
 run (~22 of 24 GiB) does not fit next to another user's job, so trainings run only on GPU 1 (`P11_TRAIN_GPUS="1"`). After
-the offline checks, the dev check v2.1 runs on GPU 1; GPU 0 joins only when it passes the free check (4 × 5-min checks + live
-check; withdrawn on another user's process). The twin starts on GPU 1 only after the dev check (driver/DEV_V21_DONE).
+the offline checks, the dev check v2.1 runs on both GPUs at once, with no waiting for the free check (Naz, 09:0x, replacing
+her 08:5x wording "GPU 0 only if it passes the free check"; run results do not depend on the GPU). The twin starts on GPU 1
+only after the dev check (driver/DEV_V21_DONE).
 
 ## 11. Gate G11 (v2 plan v2.4)
 
@@ -192,5 +193,5 @@ A failed pass/fail row is recorded as failed and the phase stops for a decision 
    (pose drift ~1e-8 m); the pass/fail check replays the saved poses and applies the bump rule to the logged moves; the
    action replay is reported (51 / 9 frames differ). (Claude Code decision, to confirm.)
 5. **GPU placement after the 08:25 GPU sharing event** (Naz, 2026-10-23, before ema_9): trainings on GPU 1 only; dev check
-   v2.1 on GPU 1 + GPU 0 only when free; twin after the dev check (§9, §10). Previous file sha256
+   v2.1 on both GPUs (no free-check wait); twin after the dev check (§9, §10). Previous file sha256
    8e435a663d10d5d52e5b0a854aa369bd5bf8facc44139d1ee97ddfd4f6653b01.

@@ -281,8 +281,8 @@ EOF
     STEP="8 dev check v2.1"
     status step="$STEP" eta="dev check v2.1 ~1.5 h"
     CL_ARMS="v21"
-    # P11_TRAIN_GPUS set (Naz, 10-23): GPU 1 always, other GPUs only when free (20-min rule + live check); then the twin
-    P11_GPUS="${P11_TRAIN_GPUS:-${P11_GPUS:-}}" closed_loop dev_v21 dev_v21 "$n_dev" 10800 --set dev --arms v21
+    # both GPUs at once (P11_GPUS, Naz 10-23 09:0x: no waiting for the free check); the twin starts after this step
+    closed_loop dev_v21 dev_v21 "$n_dev" 10800 --set dev --arms v21
     code=$?
     (( code == 1 )) && stop "budget: dev check v2.1 > 1.5 x 2 h of GPU-running time"
     (( code == 2 )) && stop "dev v2.1 runners exit without progress (a possible bug; driver/dev_v21_gpu*.log)"
