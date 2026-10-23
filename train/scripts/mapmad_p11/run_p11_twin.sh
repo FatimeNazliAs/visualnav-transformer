@@ -43,11 +43,12 @@ main() {
 
     STEP="waiting for the chain (v2 pick, restart, fine-tune GPU)"
     status step="$STEP" --state WAITING
-    # P11_TRAIN_GPUS set: both trainings share those GPUs, so the twin waits for the end of the fine-tune (V21.json)
+    # P11_TRAIN_GPUS set: the fine-tune, the offline checks and the dev check v2.1 come first on those GPUs, so the twin
+    # waits for the end of the dev check (driver/DEV_V21_DONE; Naz, 10-23)
     local ready="$P11/driver/FINETUNE_GPU"
-    [[ -n "${P11_TRAIN_GPUS:-}" ]] && ready="$P11/V21.json"
+    [[ -n "${P11_TRAIN_GPUS:-}" ]] && ready="$P11/driver/DEV_V21_DONE"
     while [[ ! -f "$ready" ]]; do
-        [[ -f "$P11/STOP_reason.txt" ]] && stop "the chain stopped before the fine-tune: no twin"
+        [[ -f "$P11/STOP_reason.txt" ]] && stop "the chain stopped before the twin's start: no twin"
         pause "$CHECK_S"
     done
     local winner cfg label g

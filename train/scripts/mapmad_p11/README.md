@@ -27,4 +27,4 @@ chain refuses uncommitted code under `train/` or `mapmad/` and a rules file whos
 
 Watch: `cat /mnt/shared_disk/nazli/nomad_outputs/mapmad/p11_dagger/STATUS.md`, `screen -r p11_chain`.
 DRY run (never results; tiny sets in `p11_dagger/DRY`): see the header of `run_p11_chain.sh` (`P11_DIR`, `P11_CONFIG=p11_dryrun.yaml`,
-`P11_TRAIN_GPUS` (trainings only on these GPUs; then the twin waits for the end of the fine-tune), `P11_ALLOW_DIRTY`, `P11_V21_BASE`, `P11_TRAIN_EXTRA`, `P11_GPU_FREE`, `CL_CHECK_S`).
+`P11_TRAIN_GPUS` (trainings and the dev check v2.1 on these GPUs, other GPUs only when free; the twin starts after the dev check), `P11_ALLOW_DIRTY`, `P11_V21_BASE`, `P11_TRAIN_EXTRA`, `P11_GPU_FREE`, `CL_CHECK_S`).

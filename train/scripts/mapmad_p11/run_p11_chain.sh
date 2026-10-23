@@ -281,10 +281,12 @@ EOF
     STEP="8 dev check v2.1"
     status step="$STEP" eta="dev check v2.1 ~1.5 h"
     CL_ARMS="v21"
-    closed_loop dev_v21 dev_v21 "$n_dev" 10800 --set dev --arms v21
+    # P11_TRAIN_GPUS set (Naz, 10-23): GPU 1 always, other GPUs only when free (20-min rule + live check); then the twin
+    P11_GPUS="${P11_TRAIN_GPUS:-${P11_GPUS:-}}" closed_loop dev_v21 dev_v21 "$n_dev" 10800 --set dev --arms v21
     code=$?
     (( code == 1 )) && stop "budget: dev check v2.1 > 1.5 x 2 h of GPU-running time"
     (( code == 2 )) && stop "dev v2.1 runners exit without progress (a possible bug; driver/dev_v21_gpu*.log)"
+    date '+%F %T' > "$P11/driver/DEV_V21_DONE"  # the twin may now take the training GPU
     run_bg dx "" "python -m vint_train.mapmad.closed_loop.search_tables compare --config $CFG --subdir dev_v21 \
         --arms v2=step0/$winner v21 --out dev_v21/table" >> "$P11/driver/dev_v21.log" 2>&1 \
         || stop "dev v2.1 table failed (driver/dev_v21.log)"

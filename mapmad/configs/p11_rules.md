@@ -142,6 +142,11 @@ counted scaled by the share of the two GPUs in use (one GPU for 1 h counts 0.5 h
 second one — is not counted (clarification added 2026-10-22 19:5x, before any judged run; the first launch at 19:44 was
 stopped in its label check because another user's back-to-back jobs hold GPU 0; previous file sha256
 cccaa15ce90b345090bbefa65763da4732bbea2d2556791ae3c183f433b95521).
+Fine-tune reruns (added 2026-10-23 ~09:00, before ema_9 exists): the 08:24 start on GPU 0 ended at its first batch with
+CUDA out of memory when another user's job (1.3 GiB) appeared next to it (a GPU sharing event, logged), and the 08:36 start on
+GPU 1 was stopped by Claude Code after epoch 0 of 10 (ema_0 not used) to move the dev check v2.1 ahead of the twin (Naz). Both are reruns under this
+rule — the fine-tune budget is the estimate after epoch 1 of the run that produces ema_9 — not counted training crashes
+(the one-resume rule applies to the run that produces ema_9). Their folders are in _trash/stop_0825 and _trash/stop_0858.
 
 ## 10. GPUs (v2 plan §8 rules 1–10)
 
@@ -152,6 +157,10 @@ when free; never share a GPU. Priority: the chain > the twin; no mutual waiting.
 (during step 0, no result judged; run results do not depend on the GPU or the number of pairs): both GPUs may be used
 even while another user's job is on GPU 0** (`P11_GPUS="0 1"`); the twin's training and our pairs never share one GPU. Claim flag if ever needed:
 `/mnt/shared_disk/nazli/nomad_outputs/mapmad/P11_WANTS_GPU`.
+**Change by Naz, 2026-10-23 ~09:00 (after a GPU sharing event at 08:25, before ema_9 and the dev check v2.1):** a training
+run (~22 of 24 GiB) does not fit next to another user's job, so trainings run only on GPU 1 (`P11_TRAIN_GPUS="1"`). After
+the offline checks, the dev check v2.1 runs on GPU 1; GPU 0 joins only when it passes the free check (4 × 5-min checks + live
+check; withdrawn on another user's process). The twin starts on GPU 1 only after the dev check (driver/DEV_V21_DONE).
 
 ## 11. Gate G11 (v2 plan v2.4)
 
@@ -182,3 +191,6 @@ A failed pass/fail row is recorded as failed and the phase stops for a decision 
 4. **Map parity by pose replay:** "replayed actions" cannot match exactly because Phase 8 stores the commands as float32
    (pose drift ~1e-8 m); the pass/fail check replays the saved poses and applies the bump rule to the logged moves; the
    action replay is reported (51 / 9 frames differ). (Claude Code decision, to confirm.)
+5. **GPU placement after the 08:25 GPU sharing event** (Naz, 2026-10-23, before ema_9): trainings on GPU 1 only; dev check
+   v2.1 on GPU 1 + GPU 0 only when free; twin after the dev check (§9, §10). Previous file sha256
+   8e435a663d10d5d52e5b0a854aa369bd5bf8facc44139d1ee97ddfd4f6653b01.
