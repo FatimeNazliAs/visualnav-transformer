@@ -43,7 +43,10 @@ main() {
 
     STEP="waiting for the chain (v2 pick, restart, fine-tune GPU)"
     status step="$STEP" --state WAITING
-    while [[ ! -f "$P11/driver/FINETUNE_GPU" ]]; do
+    # P11_TRAIN_GPUS set: both trainings share those GPUs, so the twin waits for the end of the fine-tune (V21.json)
+    local ready="$P11/driver/FINETUNE_GPU"
+    [[ -n "${P11_TRAIN_GPUS:-}" ]] && ready="$P11/V21.json"
+    while [[ ! -f "$ready" ]]; do
         [[ -f "$P11/STOP_reason.txt" ]] && stop "the chain stopped before the fine-tune: no twin"
         pause "$CHECK_S"
     done
@@ -55,7 +58,7 @@ main() {
     say "twin: v2 = $winner -> $cfg (seed 2, 20 epochs); waiting for a GPU free for the twin"
     STEP="waiting for a GPU (not the chain's)"
     status step="$STEP" --state WAITING
-    g="$(wait_gpu "" "$(cat "$P11/driver/FINETUNE_GPU")")"
+    if [[ -n "${P11_TRAIN_GPUS:-}" ]]; then g="$(train_gpu)"; else g="$(wait_gpu "" "$(cat "$P11/driver/FINETUNE_GPU")")"; fi
     overlay "$P11/launch/twin.yaml" "$TRAIN_DIR/config/$cfg" "logs_root: $C/twin"
     STEP="training $label"
     status step="$STEP" gpus="$g" epochs=20 --state RUNNING

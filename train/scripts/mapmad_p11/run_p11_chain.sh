@@ -218,7 +218,7 @@ main() {
     # --- 6. fine-tune -> v2.1 ---------------------------------------------------------------------------------------------
     STEP="6 fine-tune v2.1"
     status step="$STEP" --state WAITING
-    g="$(wait_gpu)"
+    g="$(train_gpu)"
     echo "$g" > "$P11/driver/FINETUNE_GPU"  # the twin may now take a GPU the chain does not hold
     cp "$P11/launch/v21.yaml" "$P11/driver/launch_v21_$(date +%H%M%S).yaml"
     status step="$STEP" gpus="$g" epochs=10 --state RUNNING

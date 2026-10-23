@@ -55,6 +55,18 @@ wait_gpu() {  # [preferred gpu] [excluded gpu] -> echoes a GPU free for 20 min A
     done
 }
 
+train_gpu() {  # -> like wait_gpu, but only GPUs in P11_TRAIN_GPUS (default: any). A training run holds ~22 of 24 GiB,
+    # so it OOMs next to another user's 1.3 GiB job (2026-10-23 08:25, GPU 0): trainings go where no other user runs.
+    local g list
+    while true; do
+        list="$(free_for "$WHO")"
+        for g in ${P11_TRAIN_GPUS:-$list}; do
+            if [[ " $list " == *" $g "* ]] && gpu_clean "$g"; then echo "$g"; return 0; fi
+        done
+        pause "$CHECK_S"
+    done
+}
+
 dx() {  # gpu ("" = CPU) command... -> docker exec in naz_mapmad, pinned + marked, from train/
     local g="$1"; shift
     docker exec -e CUDA_VISIBLE_DEVICES="$g" -e MAPMAD_P11_OWNER="$WHO" -e CUBLAS_WORKSPACE_CONFIG=:4096:8 \
