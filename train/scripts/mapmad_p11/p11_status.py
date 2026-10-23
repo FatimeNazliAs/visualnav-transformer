@@ -2,6 +2,7 @@
 """Phase 11 STATUS.md writer and run counter (kickoff §2). Host side, standard library only.
 
     python3 p11_status.py <p11 dir> chain --set step="1 step-0 dev check" gpus="0 1" [--state RUNNING]
+    python3 p11_status.py <p11 dir> twin --set --reset step="..."    # driver start: drop the keys of earlier launches
     python3 p11_status.py <p11 dir> count <subdir> <arm> [<arm> ...]     # -> "<done> <crashed>" summaries
 
 Each caller (chain, twin) keeps its state in <p11>/driver/<who>_state.json (key=value pairs merged in). STATUS.md
@@ -111,7 +112,9 @@ def main() -> None:
         args = args[1:]
     while args:
         a = args.pop(0)
-        if a == "--state":
+        if a == "--reset":  # a driver (re)start: stale run / reason / gpus of an earlier launch would show otherwise
+            st = {}
+        elif a == "--state":
             st["state"] = args.pop(0)
         elif "=" in a:
             k, v = a.split("=", 1)

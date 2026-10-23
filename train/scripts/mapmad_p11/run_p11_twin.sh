@@ -42,7 +42,7 @@ main() {
     trap 'exit 143' TERM INT
 
     STEP="waiting for the chain (v2 pick, restart, fine-tune GPU)"
-    status step="$STEP" --state WAITING
+    status --reset step="$STEP" --state WAITING  # no fields of an earlier launch
     # P11_TRAIN_GPUS set: the fine-tune, the offline checks and the dev check v2.1 come first on those GPUs, so the twin
     # waits for the end of the dev check (driver/DEV_V21_DONE; Naz, 10-23)
     local ready="$P11/driver/FINETUNE_GPU"

@@ -64,7 +64,7 @@ main() {
 
     # --- 0. pre-flight ------------------------------------------------------------------------------------------------
     STEP="0 pre-flight"
-    status step="$STEP" started="$(date '+%F %T')" --state RUNNING
+    status --reset step="$STEP" started="$(date '+%F %T')" --state RUNNING  # no fields of an earlier launch
     cd "$REPO" || exit 2
     if [[ -z "${P11_ALLOW_DIRTY:-}" && -n "$(git status --porcelain -- train mapmad)" ]]; then
         stop "uncommitted code under train/ or mapmad/ (commit first, §0.8)"

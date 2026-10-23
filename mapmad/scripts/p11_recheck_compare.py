@@ -5,11 +5,12 @@
         --out /outputs/mapmad/p11_dagger/checks/recheck/rechecks.json <rollout id> ...
 
 Checks (each {"pass": bool, ...}):
-- g10_rows_1_2: every "pass" field and every output "equal" of the re-run equals the original offline/v21_ema9 file;
+- g10_rows_1_2: rows 1-2 pass again and every pass/equal flag equals the original offline/v21_ema9 file (the v1
+  map-hidden comparison is report only);
 - rescore: every array of checks/recheck/search/scores.npz equal to offline/v21_ema9/search/scores.npz;
 - determinism: the two re-runs of the dev episode (arm v21, seed 0, one GPU) byte-identical; the dev check's own log of
   that run (maybe another GPU) is compared too, report only;
-- rollouts: per drive the same files; every .jpg byte-identical; every .npz array and traj_data.pkl equal;
+- rollouts: per drive the same files; every .jpg byte-identical; every .npz array and traj_data.pkl equal (NaN = NaN);
   mapmad_meta.json equal except timing fields.
 """
 
@@ -24,11 +25,17 @@ import numpy as np
 TIMING = ("time", "seconds", "elapsed", "date", "host", "created")
 
 
+def same_array(x: np.ndarray, y: np.ndarray) -> bool:
+    """Equal shape and values; NaN equals NaN in float arrays (e.g. no goal yet, attention of a hidden token)."""
+    x, y = np.asarray(x), np.asarray(y)
+    return np.array_equal(x, y, equal_nan=x.dtype.kind == "f" and y.dtype.kind == "f")
+
+
 def same_npz(a: Path, b: Path) -> List[str]:
     """Names of the arrays that differ (or exist in only one file)."""
     x, y = np.load(a, allow_pickle=True), np.load(b, allow_pickle=True)
     keys = set(x.files) | set(y.files)
-    return sorted(k for k in keys if k not in x.files or k not in y.files or not np.array_equal(x[k], y[k]))
+    return sorted(k for k in keys if k not in x.files or k not in y.files or not same_array(x[k], y[k]))
 
 
 def same_obj(a: Any, b: Any) -> bool:
@@ -38,7 +45,7 @@ def same_obj(a: Any, b: Any) -> bool:
     if isinstance(a, (list, tuple)):
         return isinstance(b, (list, tuple)) and len(a) == len(b) and all(same_obj(u, v) for u, v in zip(a, b))
     if isinstance(a, np.ndarray) or isinstance(b, np.ndarray):
-        return np.array_equal(np.asarray(a), np.asarray(b))
+        return same_array(a, b)
     return a == b
 
 
@@ -65,9 +72,14 @@ def g10_flags(d: Any, path: str = "") -> Dict[str, Any]:
 
 
 def check_g10(p11: Path) -> Dict[str, Any]:
-    a = g10_flags(json.loads((p11 / "offline/v21_ema9/g10_rows_1_2_cpu.json").read_text()))
-    b = g10_flags(json.loads((p11 / "checks/recheck/g10_rows_1_2_cpu.json").read_text()))
-    return {"pass": a == b and all(b.values()), "fields": len(b), "all_true": all(b.values())}
+    """Rows 1-2 pass again and every pass/equal flag equals the original run's. The v1 map-hidden comparison is
+    report only (on CPU it differs by ~4e-6 > 1e-6 in every Phase 10/11 file; 0.0 on GPU)."""
+    orig = json.loads((p11 / "offline/v21_ema9/g10_rows_1_2_cpu.json").read_text())
+    new = json.loads((p11 / "checks/recheck/g10_rows_1_2_cpu.json").read_text())
+    same = g10_flags(orig) == g10_flags(new)
+    rows = new["row1"]["pass"] is True and new["row2"]["pass"] is True
+    return {"pass": same and rows, "rows_1_2_pass": rows, "same_flags_as_original": same,
+            "v1_map_hidden_report_only": new.get("v1_map_hidden_report")}
 
 
 def check_rescore(p11: Path) -> Dict[str, Any]:

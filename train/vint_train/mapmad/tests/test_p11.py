@@ -198,3 +198,17 @@ def test_dagger_sample_carries_its_label_frames_and_map():
     from vint_train.mapmad.dataset import pose_at
     built = ds.builder.build(drive, t, pose_at(ds._get_trajectory(drive), t), True)
     assert np.array_equal(x[7].numpy(), built)
+
+
+def test_status_reset_drops_fields_of_an_earlier_launch(tmp_path):
+    """p11_status.py --reset at a driver start: no stale run / reason / gpus from the launch before (Phase 11 lesson)."""
+    import subprocess
+    import sys
+
+    script = Path(__file__).resolve().parents[4] / "train" / "scripts" / "mapmad_p11" / "p11_status.py"
+    (tmp_path / "driver").mkdir()
+    run = lambda *a: subprocess.run([sys.executable, str(script), str(tmp_path), "twin", "--set", *a], check=True)
+    run("step=old", "run=/x", "reason=driver exit 143", "gpus=1", "--state", "RUNNING")
+    run("--reset", "step=new", "--state", "WAITING")
+    assert json.loads((tmp_path / "driver" / "twin_state.json").read_text()) == {"step": "new", "state": "WAITING"}
+    assert "driver exit 143" not in (tmp_path / "STATUS.md").read_text()

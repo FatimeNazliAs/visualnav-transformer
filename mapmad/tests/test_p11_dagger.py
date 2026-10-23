@@ -139,6 +139,27 @@ def test_set_ids_must_be_unique_and_parseable():
     assert search_set_ok([dict(e, target={"view_points": []})]) is not None
 
 
+# --- re-check comparison (scripts/p11_recheck_compare.py) ------------------------------------------------------------
+
+def test_recheck_compare_nan_equal_and_timing_ignored(tmp_path):
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+    import p11_recheck_compare as R
+
+    assert R.same_array(np.array([1.0, np.nan]), np.array([1.0, np.nan]))
+    assert not R.same_array(np.array([1.0, np.nan]), np.array([2.0, np.nan]))
+    assert R.same_array(np.array(["a", "b"]), np.array(["a", "b"]))
+    assert R.strip_timing({"steps": 3, "seconds": 1.2, "run": {"wall_time": 5, "n": 1}}) == {"steps": 3, "run": {"n": 1}}
+    a, b = tmp_path / "a", tmp_path / "b"
+    for d, t in ((a, 1.0), (b, 9.0)):
+        d.mkdir()
+        (d / "0.jpg").write_bytes(b"jpg")
+        np.savez(d / "labels.npz", goal_xy=np.array([np.nan, 1.0]))
+        (d / "mapmad_meta.json").write_text(f'{{"steps": 3, "seconds": {t}}}')
+    assert R.check_drive(a, b)["pass"]
+    (b / "0.jpg").write_bytes(b"other")
+    assert R.check_drive(a, b)["differing"] == ["0.jpg"]
+
+
 # --- GPU: online map = generator map ---------------------------------------------------------------------------------
 
 PARITY_DRIVE = Path("/mapmad_data/p11_checks_parity/p11x-00746-RTV2n6fXB2w-search-000")

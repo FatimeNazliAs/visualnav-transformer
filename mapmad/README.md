@@ -413,6 +413,10 @@ GPU=1 TOKEN=x mapmad/scripts/run_p11_pairs.sh --config /app/visualnav-transforme
     --set dev --arms run1 runC --subdir step0
 # labels (CPU): label check on 50 Phase 8 test drives; labels of every rollout drive; splits; 10-state sheet
 python mapmad/scripts/p11_labels.py check|label|splits|sheet [--workers N]
+# phase-end re-checks: re-run outputs vs the originals (timing excluded, NaN = NaN) -> checks/recheck/rechecks.json
+# (run by train/scripts/mapmad_p11/run_p11_rechecks.sh; config configs/p11_recheck.yaml writes only to recheck folders)
+python mapmad/scripts/p11_recheck_compare.py --p11 /outputs/mapmad/p11_dagger --episode <dev id> \
+    --drives /mapmad_data/habitat_mapmad_v2_dagger --redrives /mapmad_data/p11_recheck_dagger --out <json> <rollout ids>
 # tests (CPU; the replay test needs MAPMAD_TEST_GPU=<gpu>)
 cd mapmad && python -m pytest -q -p no:cacheprovider tests/test_p11_dagger.py
 ```
