@@ -1,0 +1,13 @@
+# Phase 11 §0.8 re-checks (phase end): p11_dagger.yaml with every output in <outputs>/p11_dagger/checks/recheck and
+# regenerated rollout drives in <mapmad_data>/p11_recheck_dagger, so the real runs and drives are never touched. The
+# sets are the real frozen ones; V2_FINAL.json / V21.json are copied into out_dir.
+extends: p11_dagger.yaml
+out_dir: p11_dagger/checks/recheck
+sets:
+  dev:
+    folder: ../../dev_set
+  rollout:
+    folder: ../../rollouts/set
+rollouts:
+  data_folder: p11_recheck_dagger
+  splits: splits/p11_recheck_dagger
