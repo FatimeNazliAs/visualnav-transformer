@@ -1,0 +1,12 @@
+# Phase 12 §0.8 re-check after the 12.0 refactor (arm table): Phase 11's own run config, with every output in
+# <outputs>/p12_search_exam/checks/recheck_p11 (Phase 11's folders are only read). The determinism episode
+# p11d-00081-bed-2624, arm v21, seed 0, on GPU 0, must give a log byte-identical to Phase 11's
+# p11_dagger/checks/recheck/determinism_a (same GPU).
+extends: p11_dagger.yaml
+out_dir: p12_search_exam/checks/recheck_p11
+sets:
+  dev:
+    folder: ../../../p11_dagger/dev_set
+checkpoints:
+  v2: {from_file: ../../../p11_dagger/V2_FINAL.json}
+  v21: {from_file: ../../../p11_dagger/V21.json}

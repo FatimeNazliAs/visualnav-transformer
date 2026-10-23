@@ -58,6 +58,14 @@ class SimService:
     (search_v2.SearchMap, simulator-truth target layer with the Phase 8 noise seeded by noise_seed) and `state` the
     truth "in_view" / "first_in_view_step" / "seen_instances"; `save` writes a recorded episode in the Phase 8 drive
     format. The episode's `target.instances` and `target.category_ids` say what counts as the target.
+
+    Phase 12 (search_exam.py; optional keys of the search_v2 settings, absent = Phase 11 exactly): "target" =
+    {"source": truth_noisy | recogniser | none, "recogniser": {host, port, model, threshold, p99, vlm}} -> what draws
+    the noisy layer (the recogniser is asked with the episode's `target.prompt`, else photo_labels.PROMPTS[category]);
+    "rule" = run.rule_stop -> every reply carries "rule" = {"value", "cell"} (the rule-stop value of this frame);
+    "teacher" = {spec, tau, seen, mode, mark_radius_m} -> every reply carries "teacher" (arm F's decision); every
+    reply carries "timing" = {"rec_ms"} (recogniser round trip; timing only, never in a step log) and `state` the
+    frame's detection count "n_dets".
     """
 
     def __init__(self, factory: RobotFactory) -> None:
@@ -70,6 +78,9 @@ class SimService:
         self.search: Optional[Any] = None  # Phase 11: search_v2.SearchMap of the current episode
         self.episode: Optional[Dict[str, Any]] = None
         self.outputs: Dict[str, Any] = {}
+        self.target_source: Optional[Any] = None  # Phase 12: search_exam.TargetSource (kept across episodes)
+        self.rule: Optional[Any] = None  # Phase 12: search_exam.RuleSpec of the episode
+        self.agent: Optional[Any] = None  # Phase 12: search_exam.FrontierAgent (arm F)
 
     def handle(self, msg: Dict[str, Any]) -> Dict[str, Any]:
         cmd = msg["cmd"]
@@ -116,13 +127,21 @@ class SimService:
         self.online_map = None
         self.search = None
         self.episode = episode
+        self.rule, self.agent = None, None
         if searching:
             from mapmad_sim.search_v2 import SearchMap, SearchSpec, instances_of
 
             sv = outputs["search_v2"]
+            source, rec, prompt = self._target(sv.get("target"), episode)
             self.search = SearchMap(self.robot, SearchSpec.from_wire(sv), episode["target"]["category_ids"],
                                     instances_of(episode), np.random.default_rng(sv["noise_seed"]),
-                                    record=bool(sv.get("record")))
+                                    record=bool(sv.get("record")), source=source, recogniser=rec, prompt=prompt)
+            if sv.get("rule") or sv.get("teacher"):
+                from mapmad_sim.search_exam import FrontierAgent, FrontierSpec, RuleSpec
+
+                self.rule = RuleSpec.from_wire(sv.get("rule"))
+                if sv.get("teacher"):
+                    self.agent = FrontierAgent(FrontierSpec.from_wire(sv["teacher"]))
         extra: Dict[str, Any] = {}
         if outputs.get("map") or outputs.get("grid"):  # Phase 5 online map (v1 tensor / planner grid)
             from mapmad_sim.depth_map import MapSpec
@@ -137,6 +156,22 @@ class SimService:
                 "topdown": {"grid": grid, "origin": [float(origin[0]), float(origin[1])], "m_per_px": m_per_px},
                 "navmesh_sha256": self.robot.navmesh_sha256}
 
+    def _target(self, target: Optional[Dict[str, Any]], episode: Dict[str, Any]):
+        """Phase 12: (source, recogniser or None, prompt) of the reset settings' "target" block (None = Phase 11)."""
+        if not target:
+            return "truth_noisy", None, None
+        source = target["source"]
+        if source != "recogniser":
+            return source, None, None
+        from mapmad_sim.photo_labels import PROMPTS
+        from mapmad_sim.search_exam import TargetSource
+
+        if self.target_source is None:
+            self.target_source = TargetSource()
+        self.target_source.ensure(target["recogniser"])
+        t = episode["target"]
+        return source, self.target_source, t.get("prompt") or PROMPTS[t["category"]]
+
     def observation(self) -> Dict[str, Any]:
         """The picture at the current pose; with an online map also its new frame and the requested map outputs."""
         obs = self.robot.observe()
@@ -150,6 +185,25 @@ class SimService:
         if self.search is not None:
             self.search.add_frame(self.robot, obs)
             out["maps"] = self.search.windows(self.pose2d())
+            if self.rule is not None or self.agent is not None:
+                out.update(self.exam_outputs())
+        return out
+
+    def exam_outputs(self) -> Dict[str, Any]:
+        """Phase 12: the rule-stop value, arm F's decision and the recogniser's timing of the frame just added."""
+        from mapmad_sim.search_exam import rule_value
+
+        pose, s = self.pose2d(), self.search
+        out: Dict[str, Any] = {}
+        if self.rule is not None:
+            fus = s.fusions["noisy"]
+            v, cell = rule_value(fus.value, fus.count, s.fmap.shape, s.fmap.origin, s.spec.map_spec.resolution, pose,
+                                 self.rule)
+            out["rule"] = {"value": v, "cell": list(cell) if cell is not None else None}
+        if self.agent is not None:
+            out["teacher"] = self.agent.step(s, pose)
+        src = self.target_source
+        out["timing"] = {"rec_ms": src.last_ms if (src is not None and s.source == "recogniser") else 0.0}
         return out
 
     def pose2d(self) -> Tuple[float, float, float]:
@@ -182,6 +236,8 @@ class SimService:
         if self.search is not None:
             out.update(in_view=self.search.in_view, first_in_view_step=self.search.first_in_view,
                        seen_instances=sorted(self.search.seen))
+            if self.rule is not None:
+                out["n_dets"] = self.search.n_dets
         return out
 
     def close(self) -> None:
@@ -189,6 +245,13 @@ class SimService:
             self.robot.close()
         self.robot, self.key, self.target, self.view_points, self.online_map = None, None, None, None, None
         self.search, self.episode = None, None
+
+    def shutdown(self) -> None:
+        """close() plus the recogniser connection (kept across homes while the server runs)."""
+        self.close()
+        if self.target_source is not None:
+            self.target_source.close()
+            self.target_source = None
 
 
 def serve(listener: socket.socket, service: SimService, key: str) -> None:
@@ -201,7 +264,7 @@ def serve(listener: socket.socket, service: SimService, key: str) -> None:
                 if not answer(conn, service, key):
                     return
     finally:
-        service.close()
+        service.shutdown()
 
 
 def answer(conn: socket.socket, service: SimService, key: str) -> bool:

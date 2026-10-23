@@ -99,7 +99,11 @@ class SidecarRecogniser:
 
     def detect(self, rgb: np.ndarray, depth: np.ndarray, category: str,
                semantic: Optional[np.ndarray] = None) -> List[Detection]:
-        r = self.request({"cmd": "detect", "rgb": np.ascontiguousarray(rgb, np.uint8), "prompt": PROMPTS[category],
+        return self.detect_prompt(rgb, PROMPTS[category])
+
+    def detect_prompt(self, rgb: np.ndarray, prompt: str) -> List[Detection]:
+        """detect() with the word given as is (Phase 12: OVON names, or PROMPTS[category] resolved by the caller)."""
+        r = self.request({"cmd": "detect", "rgb": np.ascontiguousarray(rgb, np.uint8), "prompt": prompt,
                           "min_score": 0.0 if self.vlm else self.threshold})
         self.last = r
         return unpack(r, rgb.shape[:2], lambda s: 1.0 if self.vlm else map_score(s, self.threshold, self.p99),

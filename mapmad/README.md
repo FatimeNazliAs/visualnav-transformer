@@ -421,3 +421,33 @@ python mapmad/scripts/p11_recheck_compare.py --p11 /outputs/mapmad/p11_dagger --
 cd mapmad && python -m pytest -q -p no:cacheprovider tests/test_p11_dagger.py
 ```
 The unattended chain and twin: `train/scripts/mapmad_p11/` (README there).
+
+## Phase 12: the search exam (rules /outputs/mapmad/p12_search_exam/p12_rules.md)
+
+One arm table (`mapmad_sim/arm_table.py`, config `configs/p12_exam.yaml` `arms` / `checkpoints` / `recognisers`):
+an arm = policy (`mapmad_v2`, `nomad`, `mapmad_v1`, `frontier`) + checkpoint key (sha256 checked on load; `from_choice`
+follows `P12_DEV_CHOICES.json`) + maps shown / hidden + what draws the target layer (`truth_noisy`, `recogniser`, `none`)
++ camera + seeds; Phase 11's `p11_dagger.yaml` reads through the same table unchanged. The simulator server
+(`sidecar_server`, `search_v2`, `search_exam.py`) adds, when asked at reset: the recogniser in the loop (YOLOE / Qwen3-VL
+through the sidecar, every control step, into Phase 8's fusion), the rule-stop value per frame (largest target value
+<= 1.0 m ahead, +-30 deg, seen from >= 2 views) and arm F (`FrontierAgent`: `teacher_step` on the live map with the
+layer's strongest cell >= tau as the seen mark). Sets: `scripts/make_p12_sets.py` (plan 8.7 builder on ObjectNav v2 val;
+unseeable, OVON with semantic matching, exploration, Qwen3-VL subset). The recogniser container is recreated from this
+worktree with `docker/run_containers.sh recog-down` + `recog`.
+
+```bash
+# sets (GPU): candidates per worker (exam + OVON), then the freeze (exit 3 = a bin < 40 -> automatic stop)
+python mapmad/scripts/make_p12_sets.py exam-candidates --gpu 0 --worker 0 --workers 3
+python mapmad/scripts/make_p12_sets.py ovon-candidates --gpu 0 --worker 0 --workers 3
+python mapmad/scripts/make_p12_sets.py freeze
+# F check: F_truth = the Phase 8 teacher on 2 Phase 8 dev drives (pose replay) -> checks/f_check.json (exit 3 = stop)
+python mapmad/scripts/p12_f_check.py --gpu 0
+# pairs on one GPU with a YOLOE sidecar per pair (the chain does this)
+GPU=1 TOKEN=x RECOG=yoloe mapmad/scripts/run_p12_pairs.sh --config /app/visualnav-transformer/mapmad/configs/p12_exam.yaml \
+    --set exam --arms M21 M21h --subdir runs/exam
+# videos from the logs (a YOLOE sidecar on --recog-port redraws the YOLOE arms' target layer)
+python mapmad/scripts/p12_videos.py pick && python mapmad/scripts/p12_videos.py render --gpu 0 --recog-port 5790
+# tests
+cd mapmad && python -m pytest -q -p no:cacheprovider tests/test_p12.py
+```
+The unattended chain: `train/scripts/mapmad_p12/` (README there).

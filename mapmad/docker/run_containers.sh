@@ -6,7 +6,8 @@
 #   mapmad/docker/run_containers.sh check     # GPUs seen by both containers
 #   mapmad/docker/run_containers.sh down      # stop + remove naz_mapmad and naz_mapmad_habitat only
 #
-# Single steps: network | habitat | nomad | recog-build | recog (Phase 9 recogniser sidecar).
+# Single steps: network | habitat | nomad | recog-build | recog (Phase 9 recogniser sidecar) | recog-down (stop + remove
+# naz_mapmad_recog only; Phase 12 recreates it from this worktree: recog-down, then recog).
 # Host paths and container names come from paths.env (override with env vars), e.g. a second worktree:
 #   HABITAT_CONTAINER=naz_mapmad_habitat_p9 mapmad/docker/run_containers.sh habitat
 set -euo pipefail
@@ -106,6 +107,10 @@ cmd_recog() {
         "$RECOG_IMAGE" sleep infinity
 }
 
+cmd_recog_down() {
+    if exists "$RECOG_CONTAINER"; then run docker rm -f "$RECOG_CONTAINER"; else echo "$RECOG_CONTAINER not present"; fi
+}
+
 cmd_up() { cmd_network; cmd_habitat; cmd_nomad; }
 
 cmd_down() {
@@ -127,5 +132,6 @@ case "${1:-}" in
     network | build | habitat | nomad | up | down | check) "cmd_$1" ;;
     recog-build) cmd_recog_build ;;
     recog) cmd_recog ;;
+    recog-down) cmd_recog_down ;;
     *) sed -n '2,10p' "$0"; exit 1 ;;
 esac

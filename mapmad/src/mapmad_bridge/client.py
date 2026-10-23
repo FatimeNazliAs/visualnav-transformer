@@ -16,7 +16,7 @@ import numpy as np
 
 from mapmad_bridge import protocol
 
-EXTRAS = ("map", "grid", "goal_rect", "maps")
+EXTRAS = ("map", "grid", "goal_rect", "maps", "rule", "teacher", "timing")  # Phase 12: rule, teacher, timing
 
 
 @dataclass

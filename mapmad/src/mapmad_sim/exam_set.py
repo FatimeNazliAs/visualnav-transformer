@@ -281,13 +281,35 @@ def bin_quotas(total: int, n_bins: int) -> List[int]:
     return q
 
 
-def draw(kept: List[Dict[str, Any]], total: int, per_home: int, n_bins: int, seed: int) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
-    """The seeded draw described in the module docstring -> (chosen episodes sorted by id, report)."""
+def round_robin(episodes: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Phase 12 draw order within a bin: the bin's (already shuffled) episodes taken one category after the other
+    (categories in sorted order, each keeping its shuffled order) until all are used."""
+    by_cat: Dict[str, List[Dict[str, Any]]] = {}
+    for e in episodes:
+        by_cat.setdefault(e["target"]["category"], []).append(e)
+    out: List[Dict[str, Any]] = []
+    cats = sorted(by_cat)
+    while any(by_cat[c] for c in cats):
+        for c in cats:
+            if by_cat[c]:
+                out.append(by_cat[c].pop(0))
+    return out
+
+
+def draw(kept: List[Dict[str, Any]], total: int, per_home: int, n_bins: int, seed: int,
+         order: str = "random") -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    """The seeded draw described in the module docstring -> (chosen episodes sorted by id, report). order
+    "round_robin_category" (Phase 12 block item 5): within each bin, the seeded order is regrouped round-robin over
+    the categories (round_robin); "random" = Phases 5 and 11 exactly."""
     rng = np.random.default_rng(seed)
-    order = rng.permutation(len(kept))
+    order_idx = rng.permutation(len(kept))
     by_bin: List[List[Dict[str, Any]]] = [[] for _ in range(n_bins)]
-    for i in order:
+    for i in order_idx:
         by_bin[kept[i]["distance_bin"]].append(kept[i])
+    if order == "round_robin_category":
+        by_bin = [round_robin(b) for b in by_bin]
+    elif order != "random":
+        raise ValueError(f"unknown draw order {order!r}")
     quota = bin_quotas(total, n_bins)
     homes: Counter = Counter()
     chosen: List[List[Dict[str, Any]]] = [[] for _ in range(n_bins)]
@@ -328,6 +350,8 @@ def draw(kept: List[Dict[str, Any]], total: int, per_home: int, n_bins: int, see
               "final_quota": quota, "moved": moved, "kept_per_bin": [len(x) for x in by_bin],
               "chosen_per_bin": [len(c) for c in chosen], "chosen": len(out), "missing": total - len(out),
               "chosen_per_home": dict(sorted(Counter(e["home"] for e in out).items()))}
+    if order != "random":  # Phases 5 / 11 reports unchanged
+        report["order"] = order
     return out, report
 
 

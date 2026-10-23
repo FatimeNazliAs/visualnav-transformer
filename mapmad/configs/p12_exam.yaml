@@ -1,0 +1,167 @@
+# Phase 12 — the search exam (v2 plan §8.7-8.9; Phase 12 confirmation block 2026-10-23; rules frozen in
+# /outputs/mapmad/p12_search_exam/p12_rules.md + .sha256, copy in configs/p12_rules.md). Read by both containers:
+# mapmad/scripts/make_p12_sets.py, p12_f_check.py, p12_videos.py (Habitat side) and vint_train.mapmad.closed_loop.
+# run_search / p12_tables (NoMaD side). Paths below <outputs> unless "repo:" or absolute.
+out_dir: p12_search_exam
+datagen: p8_datagen_v3a.yaml          # Phase 8 option A: map builder, target-layer noise, teacher, motion (configs/)
+camera: camera_fair.yaml              # pin025 for every arm except N-fish
+
+sets:
+  dev:                                # Phase 11's dev set (120 episodes, fingerprint c7e64fce...), reused, never rebuilt
+    folder: ../p11_dagger/dev_set
+    seed_salt: mapmad-p11             # = Phase 11's noise seeds, so a rerun reproduces Phase 11's runs (block item 1)
+  exam:                               # block item 5: ObjectNav HM3D v2 val, 36 homes, every official episode examined
+    folder: exam_set
+    split: val
+    objectnav_split: val
+    homes: all
+    id_prefix: p12e
+    total: 300                        # aim 100 per bin (3-6 / 6-10 / 10-15 m), neighbour-bin fill
+    per_home: 10
+    draw_seed: 12201
+    draw_order: round_robin_category  # within each bin, round-robin over the 6 categories (block item 5)
+    min_per_bin: 40                   # a bin below this after the fill -> automatic stop
+    seed_salt: mapmad-p12
+  unseeable:                          # block item 5: dropped ONLY by the start filter; report only
+    folder: unseeable_set
+    from: exam
+    per_home: 3
+    draw_seed: 12202
+    seed_salt: mapmad-p12
+  ovon:                               # block item 6: HM3D-OVON val, same keep rules, 100 per split, <= 5 per home
+    folder: ovon_set
+    splits: [val_seen, val_seen_synonyms, val_unseen]
+    root: ovon/converted              # below <mapmad_data>: objectnav-layout copy (ovon.py), file-local integer ids
+    raw_root: ovon                    # below <mapmad_data>: the extracted archive (OVON object ids + positions)
+    id_prefix: p12o
+    per_split: 100
+    per_home: 5
+    match_max_m: 0.1                  # an OVON goal = the HM3D semantic object whose box centre is within this
+    draw_seed: 12203
+    seed_salt: mapmad-p12
+  explore:                            # block item 7: the main-exam start poses, no target
+    folder: explore_set
+    from: exam
+    id_prefix: p12x
+    seed_salt: mapmad-p12
+  qwen:                               # block item 2: 60 main-exam episodes, seeded, stratified by distance bin
+    folder: qwen_set
+    from: exam
+    total: 60
+    draw_seed: 12204
+    seed_salt: mapmad-p12
+
+set_rules:                            # exam_set.SetRules (Phase 5 / 11 numbers; goal-photo fields unused)
+  start_snap_max_m: 0.2
+  view_point_max_snap_m: 0.2
+  same_storey_dy_m: 0.5
+  distance_m: [3.0, 15.0]
+  bins_m: [3.0, 6.0, 10.0, 15.0]
+  goal_photo_min_share: 0.05
+  target_point_max_m: 1.0
+  floor_names: [floor, carpet, rug, mat, doormat]
+  goal_photo_box_m: null
+
+run:
+  success_m: 0.2                      # walking distance to the nearest usable view point of ANY instance
+  max_steps: 1000
+  stop_at_success: false              # block item 4: every run 1,000 steps; oracle and rule stop scored from the log
+  stuck_steps: 100
+  seeds: 3
+  seed_salt: mapmad-p12               # default; each set names its own
+  topdown_m_per_px: 0.05
+  rule_stop:                          # block item 4: logged every step, judged with tau afterwards
+    ahead_m: 1.0
+    half_angle_deg: 30.0
+    min_views: 2
+  house_seen:                         # v2 plan 8.8: a floor cell is seen if in view, <= 3.0 m, line of sight
+    max_m: 3.0
+    cell_m: 0.1
+  revisit_cell_m: 0.5
+  success_at: [500]
+
+policy:                               # mapmad_v2 arms: Phase 5 MapMaD arm settings (Phase 11)
+  num_samples: 8
+  sample_index: 0
+  waypoint_index: 1
+  context_spacing: 5
+  step_m: 0.25
+
+policies:                             # the other policy types
+  nomad: {num_samples: 8, sample_index: 0, waypoint_index: 2, context_spacing: 1}     # Phase 5 arm A
+  mapmad_v1: {num_samples: 8, sample_index: 0, waypoint_index: 1, context_spacing: 5, step_m: 0.25}   # Phase 5 C
+  frontier: {lookahead_m: 0.5, mark_radius_m: 1.0}   # v1 planner steering; goal = nearest free cell <= 1 m of the mark
+
+map_settings:                         # V1's online map (Phase 5): Phase 2 builder + the v1 train config's crop
+  builder: p2_datagen.yaml
+  crop: repo:train/config/mapmad_p4_C.yaml
+
+checkpoints:                          # sha256 checked before every run (arm_table.ArmTable.verify)
+  v2:
+    path: p10_v2_train/runs/v2_s1_2026_10_21_08_42_50/ema_19.pth
+    sha256: 6d2492f19f7f1a5ccadea3f120b66a78b04bb5e88d10ca701fc523e0f9aee984
+    config: repo:train/config/mapmad_v2.yaml
+  v21:
+    path: p11_dagger/runs/v21_s1_2026_10_23_06_11_59/ema_9.pth
+    sha256: ebaabe28c490567cbd453ae426332864ca1ef22961bf1fabae59bb62bdb7c74f
+    config: repo:train/config/mapmad_v21.yaml
+  v1:
+    path: p4_train/C_2026_10_11_05_21_43/ema_19.pth
+    sha256: 8093c6dba5f91bce48903e74ad9128fde50cccbf9a8f587f9aec8b288bffd9e2
+    config: repo:train/config/mapmad_p4_C.yaml
+  official:
+    path: weights/official/nomad.pth
+    sha256: 70f79b8262527e20e56ced64a3e3d7ef91855bc9e7c3fa348d78edcb83c6a333
+    config: weights/official/nomad.yaml
+  headline: {from_choice: headline}   # v2 or v21 by block item 1 (P12_DEV_CHOICES.json)
+
+recognisers:                          # block item 2 (Phase 9 choice.json R1 / R2)
+  yoloe: {model: yoloe, threshold: 0.01, p99: 0.7878322374820708, vlm: false}
+  qwen3vl: {model: qwen3vl, threshold: 0.0, p99: 1.0, vlm: true}
+
+cameras:                              # N-fish only (Phase 7 fish045); every other arm: camera_fair.yaml
+  fish045: {lens: fisheye, height_m: 0.45, pitch_deg: 0.0, hfov_deg: 66.5,
+            double_sphere: {fx: 117.591603, fy: 117.591603, cx: 82.192118, cy: 54.023754, xi: 0.8, alpha: 0.72,
+                            width: 160, height: 120, circle_px: 96.909709}}
+
+arms:                                 # block item 3 (seeds: run.seeds unless limited)
+  # --- dev decisions (block items 1 and 4; dev set, never exam homes) ---
+  v2h_dev: {checkpoint: v2, maps: false, target: truth_noisy, pair: v2, label: "v2 maps hidden (dev)"}
+  v21h_dev: {checkpoint: v21, maps: false, target: truth_noisy, pair: v21, label: "v2.1 maps hidden (dev)"}
+  hl_yoloe_dev: {checkpoint: headline, maps: true, target: recogniser, recogniser: yoloe, label: "headline + YOLOE (dev, tau)"}
+  # --- main exam ---
+  M2: {checkpoint: v2, maps: true, target: recogniser, recogniser: yoloe, pair: v2, label: "MapMaD v2"}
+  M2h: {checkpoint: v2, maps: false, target: recogniser, recogniser: yoloe, pair: v2, seeds_not_headline: [0],
+        label: "MapMaD v2, maps hidden"}
+  M21: {checkpoint: v21, maps: true, target: recogniser, recogniser: yoloe, pair: v21, label: "MapMaD v2.1"}
+  M21h: {checkpoint: v21, maps: false, target: recogniser, recogniser: yoloe, pair: v21, label: "MapMaD v2.1, maps hidden"}
+  MT: {checkpoint: headline, maps: true, target: truth_noisy, label: "headline, sim-truth layer (upper limit)"}
+  MR1: {checkpoint: headline, maps: true, target: recogniser, recogniser: qwen3vl, seeds: [0], label: "headline + Qwen3-VL"}
+  N: {policy: nomad, checkpoint: official, target: recogniser, recogniser: yoloe, label: "NoMaD explore"}
+  V1: {policy: mapmad_v1, checkpoint: v1, map_zero: [heat], target: recogniser, recogniser: yoloe, label: "MapMaD v1, heat zero"}
+  F: {policy: frontier, target: recogniser, recogniser: yoloe, label: "map + frontier"}
+  Nfish: {policy: nomad, checkpoint: official, camera: fish045, target: none, seeds: [0], label: "NoMaD explore, fisheye"}
+  # --- exploration side test (no target: no target layer, explore modes) ---
+  X_M2: {checkpoint: v2, maps: true, target: none, pair: v2, seeds: [0], label: "MapMaD v2 (explore)"}
+  X_M2h: {checkpoint: v2, maps: false, target: none, pair: v2, seeds: [0], label: "MapMaD v2, maps hidden (explore)"}
+  X_M21: {checkpoint: v21, maps: true, target: none, pair: v21, seeds: [0], label: "MapMaD v2.1 (explore)"}
+  X_M21h: {checkpoint: v21, maps: false, target: none, pair: v21, seeds: [0], label: "MapMaD v2.1, maps hidden (explore)"}
+  X_N: {policy: nomad, checkpoint: official, target: none, seeds: [0], label: "NoMaD explore (explore)"}
+  X_V1: {policy: mapmad_v1, checkpoint: v1, map_zero: [heat], target: none, seeds: [0], label: "MapMaD v1 (explore)"}
+  X_F: {policy: frontier, target: none, teacher_mode: explore, label: "map + frontier (explore)"}
+  # --- F check (Phase 8 drives, pose replay; scripts/p12_f_check.py) ---
+  F_truth: {policy: frontier, target: truth_noisy, teacher_seen: truth, label: "F with Phase 8's truth seen (check)"}
+
+dev_choice:                           # block items 1 and 4: which runs the dev decisions read (below out_dir)
+  maps:                               # maps arms = Phase 11's runs (same 120 episodes x 3 seeds, same noise seeds)
+    v2: {subdir: ../p11_dagger/step0, arm: run1}
+    v21: {subdir: ../p11_dagger/dev_v21, arm: v21}
+  hidden:                             # maps hidden: rerun here (3 seeds; seed 0 of v2 = Phase 11's run1_hidden log)
+    v2: {subdir: dev/hidden, arm: v2h_dev}
+    v21: {subdir: dev/hidden, arm: v21h_dev}
+  tau: {subdir: dev/tau, arm: hl_yoloe_dev}
+
+videos:                               # block item 11
+  random: 8
+  seed: 12501
+  arms: [M2, M2h, M21, M21h, N, V1, F, MT]

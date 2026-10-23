@@ -27,6 +27,9 @@ Commands (inside naz_mapmad, from /app/visualnav-transformer/train):
    k in {4..min(19, K)}; `gc_action_loss` of a MapMaD checkpoint (map hidden, photo shown) vs the official
    nomad.pth, same samples, same noise; pass: MapMaD <= official + 0.10.
 
+5. `run-suite` / `suite-compare` (Phase 12, offline_suite.py) -- every offline check of one checkpoint from a suite in
+   config/mapmad_offline_suites.yaml, one call, one suite.json; and the §0.8 re-check of two such outputs.
+
 Examples:
     python -m vint_train.mapmad.offline_eval make-list --config config/mapmad.yaml \
         --out /outputs/mapmad/p3_model/offline/offline_samples.json
@@ -44,6 +47,7 @@ os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
 import argparse  # noqa: E402
 import hashlib  # noqa: E402
 import json  # noqa: E402
+from pathlib import Path  # noqa: E402
 from typing import List, Optional  # noqa: E402
 
 import numpy as np  # noqa: E402
@@ -217,6 +221,19 @@ def cmd_gostanford(args) -> None:
     print(json.dumps(res, indent=1))
 
 
+def cmd_run_suite(args) -> None:
+    from vint_train.mapmad.offline_suite import run_suite
+
+    res = run_suite(args.suite, args.checkpoint, args.config, Path(args.out), args.suites)
+    print(json.dumps({k: v["numbers"] for k, v in res["rows"].items()}, indent=1))
+
+
+def cmd_suite_compare(args) -> None:
+    from vint_train.mapmad.offline_suite import suite_compare
+
+    raise SystemExit(suite_compare(Path(args.a), Path(args.b), Path(args.out)))
+
+
 def main(argv: Optional[List[str]] = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -248,9 +265,19 @@ def main(argv: Optional[List[str]] = None) -> None:
     p.add_argument("--n", type=int, default=N_SAMPLES)
     p.add_argument("--batch-size", type=int, default=100)
     p.add_argument("--workers", type=int, default=8)
+    p = sub.add_parser("run-suite")
+    p.add_argument("--suite", required=True)
+    p.add_argument("--checkpoint", required=True)
+    p.add_argument("--config", required=True)
+    p.add_argument("--out", required=True)
+    p.add_argument("--suites", default="config/mapmad_offline_suites.yaml")
+    p = sub.add_parser("suite-compare")
+    p.add_argument("--a", required=True, help="a run-suite output")
+    p.add_argument("--b", required=True, help="the reference laid out the same way")
+    p.add_argument("--out", required=True, help="compare json")
     args = parser.parse_args(argv)
     {"make-list": cmd_make_list, "make-lists-v2": cmd_make_lists_v2, "score": cmd_score, "compare": cmd_compare,
-     "gostanford": cmd_gostanford}[args.cmd](args)
+     "gostanford": cmd_gostanford, "run-suite": cmd_run_suite, "suite-compare": cmd_suite_compare}[args.cmd](args)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,26 @@
+# Offline check suites of one checkpoint (offline_eval run-suite; Phase 12 sub-step 12.0, architecture candidate 2).
+# A suite = rows; each row is one existing offline command (unchanged), its output folder below --out/<row name>,
+# and the numbers suite.json collects. Container paths (naz_mapmad). Rows:
+#   g10      checks_g10 (G10 rows 1-2 on the step-0 model, CPU; checkpoint-independent)
+#   score    offline_eval score on a frozen list (+ compare: true -> offline_eval compare)
+#   seen     score on the seen list + target_groups seen-report
+#   gostanford  offline_eval gostanford (G10 row 4)
+#   guard    target_groups guard (this checkpoint's search scores vs a reference scores.npz)
+# {checkpoint} and {config} are replaced by run-suite's arguments.
+suites:
+  recheck:                          # §0.8 re-checks (Phase 12): rows 1-2 + the frozen search list re-scored
+    - {name: g10, kind: g10, config: config/mapmad_v2.yaml, v1_config: config/mapmad_p4_C.yaml,
+       reference: /outputs/mapmad/p10_v2_train/checks/reference_forward_cpu.pt}
+    - {name: search, kind: score, list: /outputs/mapmad/p10_v2_train/offline/lists/search_list.json}
+  p11:                              # Phase 11's offline checks of a v2 checkpoint (p11_lib.sh offline_checks)
+    - {name: gostanford, kind: gostanford, official: /outputs/mapmad/weights/official/nomad.pth}
+    - {name: search, kind: score, list: /outputs/mapmad/p10_v2_train/offline/lists/search_list.json, compare: true}
+    - {name: explore, kind: score, list: /outputs/mapmad/p10_v2_train/offline/lists/explore_list.json,
+       arms: "explore_maps,hidden", compare: true}
+    - {name: seen, kind: seen, list: /outputs/mapmad/p10_v2_train/offline/lists/seen_list.json,
+       arms: "maps,target_zeroed,target_shifted"}
+    - {name: g10, kind: g10, config: config/mapmad_v2.yaml, v1_config: config/mapmad_p4_C.yaml,
+       reference: /outputs/mapmad/p10_v2_train/checks/reference_forward_cpu.pt}
+  g10:                              # rows 1-2 only (checkpoint-independent: the step-0 model)
+    - {name: g10, kind: g10, config: config/mapmad_v2.yaml, v1_config: config/mapmad_p4_C.yaml,
+       reference: /outputs/mapmad/p10_v2_train/checks/reference_forward_cpu.pt}

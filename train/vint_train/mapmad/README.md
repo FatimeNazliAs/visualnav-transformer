@@ -210,3 +210,18 @@ Phase 11 (v2 closed loop, DAgger -> v2.1; rules `/outputs/mapmad/p11_dagger/p11_
 - `weights.load_own_into` + `train.py` `init_checkpoint` / `init_checkpoint_sha256`: fine-tune from our own checkpoint
   (`config/mapmad_v21.yaml`, `mapmad_v21_seen.yaml`: 10 epochs from v2 ema_19, ema_9 = v2.1).
 - Tests: `tests/test_p11.py`.
+
+Phase 12 (the search exam; rules `/outputs/mapmad/p12_search_exam/p12_rules.md`, run scripts `train/scripts/mapmad_p12/`):
+- `closed_loop/run_search.py` reads the arm table (`mapmad_sim/arm_table.py`): policies `mapmad_v2`, `nomad` (official,
+  explore), `mapmad_v1` (heat zeroed), `frontier` (`closed_loop/frontier_policy.py`: arm F steered as the v1 planner arm);
+  per-arm server settings (target layer source, recogniser port, rule stop, F's teacher); Phase 11 configs unchanged.
+- `closed_loop/search_runner.py` — Phase 12 runs: 1,000 steps, no stop; per step `rule_value` / `rule_cell` / `n_dets` /
+  `house_seen` (`closed_loop/house_seen.py`); the oracle stop is the first entry (SPL with the path up to it).
+- `closed_loop/p12_score.py` — both stops from the logs (rule stop at any tau of 0.30-0.95), wrong-object stops,
+  near-misses, search / approach phases, house seen, redundancy; `dev-choices` (headline rule, tau rule ->
+  `P12_DEV_CHOICES.json`), `same-as-p11` (refactor check), `fairness` (G12 row 3).
+- `closed_loop/p12_tables.py`, `closed_loop/p12_figures.py` — every Phase 12 table (home-clustered bootstrap) and the
+  draft G12 table; figures.
+- `offline_suite.py` + `offline_eval run-suite` / `suite-compare` — the offline checks of a checkpoint as data
+  (`config/mapmad_offline_suites.yaml`), one call, one `suite.json`; the §0.8 re-score is `suite-compare`.
+- Tests: `tests/test_p12.py`.

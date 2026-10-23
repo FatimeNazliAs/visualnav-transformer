@@ -18,6 +18,10 @@ second bump source (its floor-map safety step) belongs to the teacher's motion a
 With `record=True` the whole episode is kept in a datagen_v2.Record and `write` saves it in the Phase 8 drive format
 (datagen_v2.write_drive: frames, traj_data.pkl, mapmad_frames.npz, mapmad_map.npz, mapmad_target.npz,
 mapmad_meta.json), so the NoMaD loader, the frontier cache and the labeller read a student drive like a teacher drive.
+Phase 12 (search_exam.py): `source` says what draws the NOISY layer -- truth_noisy (the above, Phase 11 exactly),
+recogniser (a Phase 9 model through the sidecar, every frame, its detections into the same fusion) or none (an empty
+layer, no truth detection either: exploration and the fisheye arm); the clean layer stays simulator truth.
+
 Student drives: `teacher_mode` = search on every frame (no teacher drove; the frontier cache then checks every frame),
 `frontier_clusters` = the live cluster count, `phase` = search until a usable instance is first seen, approach after.
 """
@@ -72,7 +76,8 @@ class SearchMap:
     """The live map v2 of one search episode (module docstring)."""
 
     def __init__(self, robot: Any, spec: SearchSpec, category_ids: Sequence[int], instances: Sequence[Instance],
-                 noise_rng: np.random.Generator, record: bool = False) -> None:
+                 noise_rng: np.random.Generator, record: bool = False, source: str = "truth_noisy",
+                 recogniser: Optional[Any] = None, prompt: Optional[str] = None) -> None:
         low, high = robot.pathfinder.get_bounds()
         self.spec = spec
         self.fmap = FirstSeenMap.around(spec.map_spec, low, high)
@@ -88,6 +93,9 @@ class SearchMap:
         self.n_clusters = 0
         self.rec: Optional[Record] = Record() if record else None
         self.jpg_params = [cv2.IMWRITE_JPEG_QUALITY, spec.jpg_quality]
+        # Phase 12 (search_exam.py): what draws the noisy layer; truth_noisy = Phase 11 exactly
+        self.source, self.recogniser, self.prompt = source, recogniser, prompt
+        self.n_dets = 0  # detections drawn into the noisy layer this frame (recogniser: kept detections)
 
     # --- frame t --------------------------------------------------------------------------------------------------
     def add_frame(self, robot: Any, obs: Dict[str, np.ndarray]) -> int:
@@ -99,10 +107,20 @@ class SearchMap:
                       robot.floor_y, t)
         cells = frame_cells(depth, robot.spec.hfov_deg, cam, robot.floor_y, self.fmap, self.spec.map_spec,
                             self.spec.noise.max_depth_m)
-        found = detect(obs["semantic"], depth, self.ids, self.spec.noise)
+        found = detect(obs["semantic"], depth, self.ids, self.spec.noise) if self.source != "none" else {}
         sc = frame_scores(t, found, cells, self.fmap.shape, self.spec.noise, self.rng)
+        noisy = sc.noisy
+        self.n_dets = sum(not d.missed for d in sc.detections) + (sc.false_mark is not None)
+        if self.source == "recogniser":  # Phase 12: the recogniser's detections, through the same fusion
+            from mapmad_sim.recogniser import frame_scores as recogniser_scores
+
+            dets = self.recogniser.detect(obs["rgb"], depth, self.prompt)
+            noisy = recogniser_scores(dets, cells, depth.shape)
+            self.n_dets = len(dets)
+        elif self.source == "none":  # no target layer at all (no false marks either)
+            noisy, self.n_dets = {}, 0
         self.fusions["clean"].update(t, cells.view, sc.clean)
-        self.fusions["noisy"].update(t, cells.view, sc.noisy)
+        self.fusions["noisy"].update(t, cells.view, noisy)
         self.in_view = bool(found)
         if found and self.first_in_view is None:
             self.first_in_view = t

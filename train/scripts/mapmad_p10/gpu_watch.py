@@ -17,6 +17,9 @@ Every change of the free sets and every process that appears or ends goes to <di
 `gpu_watch.py --check <gpu> <owner>`: exit 0 if that GPU holds no process of anyone but the owner right now.
 Phase 11 reuses it with MAPMAD_OWNER_ENV=MAPMAD_P11_OWNER (the environment variable that marks our processes; default
 MAPMAD_P10_OWNER).
+Phase 12 (§8 rule 11, "recently used counts as busy"): with RECENT_S=3600 a GPU is free for an owner only if, on top of
+the streak, no process of anyone else has been seen on it during the last RECENT_S seconds (default 0 = off, the
+Phase 10/11 behaviour). The last time is kept per GPU in gpu_free.json ("last_foreign").
 """
 
 import json
@@ -98,18 +101,29 @@ def main() -> None:
         with open(log_path, "a") as f:
             f.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {msg}\n")
 
-    say(f"watcher start: every {check_s} s, free = {need} consecutive checks; owners by {OWNER_ENV.decode()}")
+    recent_s = int(os.environ.get("RECENT_S", "0"))
+    say(f"watcher start: every {check_s} s, free = {need} consecutive checks"
+        + (f" and no other user's process in the last {recent_s} s" if recent_s else "")
+        + f"; owners by {OWNER_ENV.decode()}")
     streak: Dict[str, Dict[str, int]] = {}
+    last_foreign: Dict[str, Dict[str, float]] = {}  # gpu -> owner -> time a process of someone else was last seen
     last_free, last_pids = None, {}
     while True:
         procs = gpu_processes()
+        now = time.time()
         for g, ps in procs.items():
             s = streak.setdefault(g, {o: 0 for o in OWNERS})
+            lf = last_foreign.setdefault(g, {o: 0.0 for o in OWNERS})
             owners = {p["owner"] for p in ps}
             s["any"] = 0 if ps else s["any"] + 1
+            if ps:
+                lf["any"] = now
             for o in ("chain", "twin"):
                 s[o] = 0 if owners - {o} else s[o] + 1
-        free = {o: sorted(g for g, s in streak.items() if s[o] >= need) for o in OWNERS}
+                if owners - {o}:
+                    lf[o] = now
+        free = {o: sorted(g for g, s in streak.items()
+                          if s[o] >= need and (not recent_s or now - last_foreign[g][o] >= recent_s)) for o in OWNERS}
         pids = {(g, p["pid"]): p for g, ps in procs.items() for p in ps}
         for key in pids.keys() - last_pids.keys():
             p = pids[key]
@@ -121,7 +135,10 @@ def main() -> None:
         last_free, last_pids = free, pids
         write_atomic(os.path.join(folder, "gpu_free.json"),
                      json.dumps({"time": time.strftime("%Y-%m-%d %H:%M:%S"), "check_s": check_s, "free_checks": need,
-                                 "gpus": {g: {"procs": procs[g], "streak": streak[g]} for g in sorted(procs)},
+                                 "gpus": {g: {"procs": procs[g], "streak": streak[g],
+                                              "last_foreign": {o: time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(t))
+                                                               if t else None for o, t in last_foreign[g].items()}}
+                                          for g in sorted(procs)},
                                  "free": free}) + "\n")
         time.sleep(check_s)
 

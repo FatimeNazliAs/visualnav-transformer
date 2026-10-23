@@ -1,0 +1,31 @@
+# Phase 12 DRY chain (driver and pipeline test only; never results; kickoff §3 12.4): p12_exam.yaml with every output in
+# <outputs>/p12_dry, a 2-episode frozen subset of the dev set (dev_set_dry), tiny exam / unseeable / OVON stand-in /
+# exploration / Qwen sets built from 2 dev homes of the TRAIN split (never exam homes), 400 steps per run, 1 random video.
+extends: p12_exam.yaml
+out_dir: p12_dry
+sets:
+  dev:
+    folder: dev_set_dry
+  exam:
+    split: train
+    objectnav_split: train
+    homes: ["00081", "00534"]
+    candidates_per_home: 25
+    candidate_seed: 12901
+    total: 2
+    per_home: 1
+    min_per_bin: 0
+  unseeable:
+    per_home: 1
+  ovon:
+    dry_from_exam: 2
+  qwen:
+    total: 2
+run:
+  max_steps: 400
+dev_choice:
+  maps:
+    v2: {subdir: ../p11_dagger/step0, arm: run1}
+    v21: {subdir: ../p11_dagger/dev_v21, arm: v21}
+videos:
+  random: 1

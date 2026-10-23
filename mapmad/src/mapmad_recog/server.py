@@ -42,7 +42,7 @@ def pack(dets: List[RawDet]) -> Dict[str, np.ndarray]:
 class RecogService:
     """Holds one recogniser and, for box models, MobileSAM."""
 
-    def __init__(self, key: str, cfg: Dict[str, Any], device: str = "cuda:0") -> None:
+    def __init__(self, key: str, cfg: Dict[str, Any], device: str = "cuda:0", text_reuse_out: Path = None) -> None:
         import torch
 
         self.torch, self.key = torch, key
@@ -51,6 +51,7 @@ class RecogService:
         cache = Path(cfg["cache"])
         self.model = build(key, self.spec, cache, device, float(cfg["min_score"]), int(cfg["max_detections"]))
         self.defaults = (float(cfg["min_score"]), int(cfg["max_detections"]))
+        self.text_reuse_out = text_reuse_out  # Phase 12: never rewrite Phase 9's photo_test files
         self.sam = None
         if self.spec["output"] == "box":
             ms = cfg["mobile_sam"]
@@ -71,7 +72,7 @@ class RecogService:
         rec = text_reuse_check(self.model, images, ["chair", "tv", "chair", "potted plant", "tv"]) if images else \
             {"reuse": self.model.reuse_text, "reason": "no frames to check"}
         rec.update({"model": self.key, "frames": [f.name for f in files]})
-        out = img_dir.parents[1] / "photo_test" / self.key / "text_reuse.json"
+        out = self.text_reuse_out or img_dir.parents[1] / "photo_test" / self.key / "text_reuse.json"
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(json.dumps(rec, indent=1) + "\n")
         print(f"text reuse: {rec}", flush=True)
@@ -145,13 +146,15 @@ def main() -> None:
     p.add_argument("--host", default="0.0.0.0", help="inside the container; only mapmad-net reaches it")
     p.add_argument("--config", type=Path, default=CONFIG)
     p.add_argument("--device", default="cuda:0", help="cuda:0 = the GPU in CUDA_VISIBLE_DEVICES; cpu for smoke tests")
+    p.add_argument("--text-reuse-out", type=Path, default=None,
+                   help="where the text-reuse check is written (default: Phase 9's photo_test/<model>/text_reuse.json)")
     a = p.parse_args()
     key = protocol.auth_key()
     import os
     import torch
 
     torch.set_num_threads(int(os.environ.get("OMP_NUM_THREADS", "4")))  # the driver sets 4 (CPU oversubscription)
-    service = RecogService(a.model, yaml.safe_load(a.config.read_text()), a.device)
+    service = RecogService(a.model, yaml.safe_load(a.config.read_text()), a.device, a.text_reuse_out)
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     sock.bind((a.host, a.port))

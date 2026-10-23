@@ -28,6 +28,7 @@ as Phase 8's variations), each draw seeded by datagen_v2.drive_seed(seed, "p11r-
 """
 
 import math
+import re
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
@@ -43,6 +44,13 @@ HEADINGS = 8
 
 def dev_episode_id(home: str, category: str, objectnav_id: str) -> str:
     return f"p11d-{home[:5]}-{category}-{objectnav_id}"
+
+
+def set_episode_id(prefix: str, home: str, category: str, objectnav_id: str) -> str:
+    """<prefix>-<home5>-<category>-<id> (p11d / p12e; OVON: p12o-<split>); a category's spaces, dots and other
+    characters become "_" (ids name files: no "__" and no ".")."""
+    cat = "_".join(w for w in re.split(r"[^A-Za-z0-9]+", category) if w)
+    return f"{prefix}-{home[:5]}-{cat}-{objectnav_id}"
 
 
 def rollout_sample_id(home: str, n: int) -> str:
@@ -68,13 +76,20 @@ def instance_dict(inst: Instance) -> Dict[str, Any]:
 
 
 class DevSetBuilder:
-    """The dev-set rules on one home (robot: LimoSim with the pin025 camera, semantic=True)."""
+    """The dev-set rules on one home (robot: LimoSim with the pin025 camera, semantic=True). Phase 12 builds the exam
+    sets with the same rules: `id_prefix` (p12e / p12o-<split>), `set_type`, `prompt_of` (OVON: the recogniser's word
+    per category key) and `keep_unseeable` (an episode failing ONLY the start filter is kept as "unseeable_episode",
+    the report-only unseeable set, block item 5)."""
 
-    def __init__(self, robot: Any, goals: Sequence[Goal], rules: SetRules, seen_rule: NoiseSpec) -> None:
+    def __init__(self, robot: Any, goals: Sequence[Goal], rules: SetRules, seen_rule: NoiseSpec,
+                 id_prefix: str = "p11d", set_type: str = "dev", keep_unseeable: bool = False,
+                 prompt_of: Optional[Dict[str, str]] = None) -> None:
         self.robot, self.rules, self.seen_rule = robot, rules, seen_rule
         self.base = HomeSetBuilder(robot, goals, rules, np.random.default_rng(0))
         self.goals = list(goals)
         self._seeable: Dict[str, bool] = {}
+        self.id_prefix, self.set_type, self.keep_unseeable = id_prefix, set_type, keep_unseeable
+        self.prompt_of = prompt_of
 
     def category_ids(self, category: str) -> List[int]:
         return sorted({g.object_id for g in self.goals if g.category == category})
@@ -123,19 +138,26 @@ class DevSetBuilder:
         if not self.seeable(official.category):
             fails.append("not_seeable")
         res["walking_m"] = round(dist, 3)
-        if fails:
+        unseeable = self.keep_unseeable and fails == ["not_seeable"]
+        if fails and not unseeable:
             return dict(res, fails=fails, first_fail=fails[0])
         same = [p for p in nearest.view_points if abs(p[1] - start[1]) <= self.rules.same_storey_dy_m]
         point = min(same, key=lambda p: self.robot.geodesic(start, p))
         home = self.robot.home
-        return dict(res, fails=[], first_fail=None, episode={
-            "episode_id": dev_episode_id(home, official.category, official.episode_id), "type": "dev",
-            "split": split, "home": home, "objectnav_episode_id": official.episode_id,
-            "target": target_block(official.category, ids, [instance_dict(i) for i in insts], point),
+        target = target_block(official.category, ids, [instance_dict(i) for i in insts], point)
+        if self.prompt_of is not None:
+            target["prompt"] = self.prompt_of[official.category]
+        episode = {
+            "episode_id": set_episode_id(self.id_prefix, home, official.category, official.episode_id),
+            "type": self.set_type, "split": split, "home": home, "objectnav_episode_id": official.episode_id,
+            "target": target,
             "start_position": rounded(start), "start_yaw": round(official.start_yaw, 4),
             "official_start_position": rounded(official.start_position), "start_snap_m": round(snap, 4),
             "start_geodesic_m": round(dist, 3), "distance_bin": distance_bin(dist, self.rules.bins_m),
-            "navmesh_sha256": self.robot.navmesh_sha256})
+            "navmesh_sha256": self.robot.navmesh_sha256}
+        if unseeable:
+            return dict(res, fails=fails, first_fail=fails[0], unseeable_episode=episode)
+        return dict(res, fails=[], first_fail=None, episode=episode)
 
 
 def rollout_episodes(gen: Any, home: str, n: int, bins_m: Sequence[float]) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
