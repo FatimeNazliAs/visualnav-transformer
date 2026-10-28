@@ -13,7 +13,9 @@ One run = one log of max_steps steps (no stop); two scores (block item 4):
   +-30 deg, seen from >= 2 views; logged by the server); success if that step is inside the zone; SPL with the path up
   to t; no step -> no stop, a failure. Wrong-object stop: the triggering cell is > 1.0 m (horizontally) from the box of
   every usable instance of the category; near-miss: a stop outside the zone with walking distance <= success_m + 1.0 m.
-  STOP precision = rule-stop successes / rule stops.
+  STOP precision = rule-stop successes / rule stops. Per stop also: walking distance from the stop pose to the
+  nearest view point (`vp_at_stop`) and the stop step minus the first-sight step (`stop_minus_sight`; negative = the
+  robot stopped before simulator truth ever saw the target; None = never seen).
 - search phase: first sight = the first step (0 = start) where simulator truth sees an instance of the category
   (>= 200 px at <= 4 m; `in_view`); found by 1,000 = a first sight exists. Approach phase: success given seen;
   steps from first sight to the stop (oracle or rule).
@@ -107,10 +109,11 @@ def score_log(log: List[Dict[str, Any]], taus: Sequence[float] = TAU_GRID, succe
                 r.update(success=bool(ok), spl=spl(ok, shortest, path[t]), success_at=bool(ok and t <= at),
                          wrong_object=bool(insts) and cell is not None and min(box_distance_2d(cell, i) for i in insts) > wrong_m,
                          near_miss=(not ok) and vp[t] is not None and vp[t] <= success_m + near_m,
-                         approach_steps=(t - seen) if (seen is not None and t >= seen) else None)
+                         approach_steps=(t - seen) if (seen is not None and t >= seen) else None,
+                         vp_at_stop=vp[t], stop_minus_sight=(t - seen) if seen is not None else None)
             else:
                 r.update(success=False, spl=0.0, success_at=False, wrong_object=False, near_miss=False,
-                         approach_steps=None)
+                         approach_steps=None, vp_at_stop=None, stop_minus_sight=None)
             rule[f"{tau:.2f}"] = r
         out["rule"] = rule
     if steps and "house_seen" in steps[0]:
@@ -287,25 +290,37 @@ def cmd_same_as_p11(args) -> None:
     raise SystemExit(0 if res["pass"] else 3)
 
 
+def group_calls(groups: Sequence[str]) -> List[Any]:
+    """--groups "<subdir>:<set>:<arm>,<arm>...[:<seeds>]" as run-plan calls (seeds "0" or "0,1,2"; none = own seeds)."""
+    from mapmad_sim.run_plan import Call
+
+    out = []
+    for g in groups:
+        subdir, set_name, arms, *seeds_given = g.split(":")
+        seeds = tuple(int(k) for k in seeds_given[0].replace(",", " ").split()) if seeds_given and seeds_given[0] else None
+        out.append(Call(g, subdir, set_name, "", seeds, tuple(arms.split(","))))
+    return out
+
+
 def cmd_fairness(args) -> None:
-    """G12 row 3: every (arm, episode, seed) of the given run groups has a log; every log's header carries the frozen
-    set fingerprint and its arm's checkpoint sha256 (arm table). groups: "<subdir>:<set>:<arm>,<arm>..."."""
-    from mapmad_sim.arm_table import ArmTable
+    """G12 row 3: every (arm, episode, seed) of the run plan's reported calls (or of --groups) has a log; every log's
+    header carries the frozen set fingerprint and its arm's checkpoint sha256 (arm table)."""
     from mapmad_sim.episodes import load_episodes
+    from mapmad_sim.run_plan import RunPlan
 
     layout = RunLayout.load(args.config)
-    table = ArmTable.from_layout(layout)
-    run_seeds = list(range(int(layout.cfg["run"]["seeds"])))
+    plan = RunPlan.from_layout(layout)
+    table = plan.table
     problems, counts = [], {}
-    for g in args.groups:
-        subdir, set_name, arms = g.split(":")
+    for call in (group_calls(args.groups) if args.groups else plan.report_calls()):
+        subdir, set_name = call.subdir, call.set
         eps, fp = load_episodes(layout.base / layout.cfg["sets"][set_name]["folder"] / "episodes.json")
-        for arm in arms.split(","):
+        for arm in call.arms:
             a = table.arm(arm)
             sha = table.checkpoint(a.checkpoint).sha256 if a.checkpoint else None
             n = 0
             for e in eps:
-                for k in table.seeds(arm, run_seeds):
+                for k in plan.arm_seeds(call, arm):
                     f = layout.base / subdir / "logs" / arm / f"{e['episode_id']}__s{k}.jsonl"
                     crash = layout.base / subdir / "summaries" / arm / f"{e['episode_id']}__s{k}.crash.json"
                     if not f.exists():
@@ -342,6 +357,82 @@ def cmd_live_check(args) -> None:
     raise SystemExit(0 if res["pass"] else 3)
 
 
+def cmd_rescore_check(args) -> None:
+    """§0.8 re-check: n seeded runs of a run group re-scored from their logs -> the rule-stop (and oracle) numbers equal
+    the stored scores exactly."""
+    layout = RunLayout.load(args.config, subdir=args.subdir)
+    run = layout.cfg["run"]
+    insts = instances_of(layout, args.set)
+    stored = {(r["arm"], r["episode_id"], r["seed_index"]): r for a in args.arms for r in read_scores(layout.root, a)}
+    keys = sorted(stored)
+    pick = [keys[int(i)] for i in np.random.default_rng(args.seed).permutation(len(keys))[:args.n]]
+    rows, ok = [], True
+    for arm, eid, k in pick:
+        log = steplog.read(layout.log(arm, f"{eid}__s{k}"))
+        log[0] = dict(log[0], instances=insts.get(eid, []), stuck_steps=run["stuck_steps"])
+        new = score_log(log, success_m=run["success_m"], revisit_m=run["revisit_cell_m"], at=int(run["success_at"][0]))
+        same = new["rule"] == stored[(arm, eid, k)]["rule"] and new["oracle_step"] == stored[(arm, eid, k)]["oracle_step"]
+        ok &= same
+        rows.append({"run": f"{arm}/{eid}__s{k}", "same": same})
+    res = {"pass": ok and len(rows) == args.n, "n": len(rows), "seed": args.seed, "runs": rows}
+    write_text_atomic(Path(args.out), json.dumps(res, indent=1) + "\n")
+    print(json.dumps({"pass": res["pass"], "n": res["n"]}), flush=True)
+    raise SystemExit(0 if res["pass"] else 3)
+
+
+FLIP_MIN_DEG = 0.5  # a step turns left or right when |heading change| > this
+
+
+def heading_change_deg(log: List[Dict[str, Any]]) -> Tuple[float, float]:
+    """Zigzag of one run: (mean absolute heading change per step in degrees, wrapped to [-180, 180); left/right
+    direction flips per 100 turning steps). The start yaw counts as step 0's heading; turning on the spot counts."""
+    yaws = [float(log[0]["start"]["yaw"])] + [float(s["yaw"]) for s in steplog.steps(log)]
+    d = np.degrees((np.diff(np.asarray(yaws, np.float64)) + math.pi) % (2 * math.pi) - math.pi)
+    if not len(d):
+        return 0.0, 0.0
+    turn = np.sign(d[np.abs(d) > FLIP_MIN_DEG])
+    flips = 100.0 * float((turn[1:] != turn[:-1]).sum()) / max(len(turn) - 1, 1)
+    return float(np.abs(d).mean()), flips
+
+
+def cmd_zigzag(args) -> None:
+    """Per arm of a run group: mean absolute heading change per step (degrees), per-episode means over seeds, arm mean
+    with a home-clustered bootstrap 95% CI (10,000, seed 12601) -> <out_dir>/<out>.md + .json."""
+    from mapmad_sim.episodes import load_episodes
+    from vint_train.mapmad.closed_loop.exam_stats import cluster_bootstrap
+
+    layout = RunLayout.load(args.config)
+    eps, _ = load_episodes(layout.base / layout.cfg["sets"][args.set]["folder"] / "episodes.json")
+    home = {e["episode_id"]: e["home"] for e in eps}
+    res: Dict[str, Any] = {}
+    lines = [f"## Zigzag: mean absolute heading change per step ({args.set}, {args.subdir}; from the logs)", "",
+             "Per run: mean over its 1,000 steps of |heading(t) - heading(t-1)| in degrees (turning on the spot counts); "
+             "per episode: mean over its seeds; arm: mean over episodes, 95% CI = home-clustered bootstrap (10,000, "
+             "seed 12601). A straight drive is 0; the robot's top turn rate is 0.4 rad/s x 0.25 s = 5.7 deg per step. "
+             "Extra column (direction): left/right flips per 100 turning steps (|change| > 0.5 deg); a steady turn is 0, "
+             "alternating left-right every step is 100.", "",
+             "| arm | runs | zigzag (deg / step) | median run | left/right flips per 100 turning steps |",
+             "|---|---|---|---|---|"]
+    for arm in args.arms:
+        per: Dict[str, List[Tuple[float, float]]] = {}
+        runs = []
+        for f in sorted((layout.base / args.subdir / "logs" / arm).glob("*.jsonl")):
+            z = heading_change_deg(steplog.read(f))
+            runs.append(z)
+            per.setdefault(parse_run_id(f.name)[0], []).append(z)
+        ids = sorted(per)
+        boot = [cluster_bootstrap(np.array([np.mean([z[k] for z in per[i]]) for i in ids]), [home[i] for i in ids],
+                                  10_000, 12601) for k in (0, 1)]
+        (m, lo, hi, _), (fm, flo, fhi, _) = boot
+        med = float(np.median([z[0] for z in runs]))
+        res[arm] = {"runs": len(runs), "episodes": len(ids), "mean_deg": m, "ci": [lo, hi], "median_run_deg": med,
+                    "flips_per_100": fm, "flips_ci": [flo, fhi]}
+        lines.append(f"| {arm} | {len(runs)} | {m:.2f} [{lo:.2f}, {hi:.2f}] | {med:.2f} | {fm:.1f} [{flo:.1f}, {fhi:.1f}] |")
+    write_text_atomic(layout.base / f"{args.out}.md", "\n".join(lines) + "\n")
+    write_text_atomic(layout.base / f"{args.out}.json", json.dumps(res, indent=1) + "\n")
+    print("\n".join(lines), flush=True)
+
+
 def main(argv: Optional[List[str]] = None) -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -362,7 +453,7 @@ def main(argv: Optional[List[str]] = None) -> None:
     q.add_argument("--out", required=True)
     q = sub.add_parser("fairness")
     q.add_argument("--config", type=Path, required=True)
-    q.add_argument("--groups", nargs="+", required=True, help="<subdir>:<set>:<arm>,<arm>...")
+    q.add_argument("--groups", nargs="+", help="<subdir>:<set>:<arm>,<arm>...[:<seeds>] (default: the run plan)")
     q = sub.add_parser("live-check")
     q.add_argument("--config", type=Path, required=True)
     q.add_argument("--full", required=True, help="subdir of the full (no-stop) runs")
@@ -370,9 +461,23 @@ def main(argv: Optional[List[str]] = None) -> None:
     q.add_argument("--arm", required=True)
     q.add_argument("--tau", type=float, required=True)
     q.add_argument("--out", required=True)
+    q = sub.add_parser("zigzag")
+    q.add_argument("--config", type=Path, required=True)
+    q.add_argument("--subdir", default="runs/exam")
+    q.add_argument("--set", default="exam")
+    q.add_argument("--arms", nargs="+", required=True)
+    q.add_argument("--out", default="tables_extra/zigzag", help="below out_dir, without extension")
+    q = sub.add_parser("rescore-check")
+    q.add_argument("--config", type=Path, required=True)
+    q.add_argument("--subdir", required=True)
+    q.add_argument("--set", required=True)
+    q.add_argument("--arms", nargs="+", required=True)
+    q.add_argument("--n", type=int, default=20)
+    q.add_argument("--seed", type=int, default=12801)
+    q.add_argument("--out", required=True)
     args = p.parse_args(argv)
     {"dev-choices": cmd_dev_choices, "score": cmd_score, "same-as-p11": cmd_same_as_p11,
-     "fairness": cmd_fairness, "live-check": cmd_live_check}[args.cmd](args)
+     "fairness": cmd_fairness, "live-check": cmd_live_check, "rescore-check": cmd_rescore_check, "zigzag": cmd_zigzag}[args.cmd](args)
 
 
 if __name__ == "__main__":

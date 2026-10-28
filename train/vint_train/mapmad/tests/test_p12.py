@@ -130,3 +130,48 @@ def test_suite_compare(tmp_path):
     assert all(r["pass"] for r in res.values()) and len(res) == 2
     np.savez(tmp_path / "b" / "search" / "scores.npz", x=np.array([1.0, 2.0]), ids=np.array(["s1", "s2"]))
     assert not compare_dirs(tmp_path / "a", tmp_path / "b")["search/scores.npz"]["pass"]
+
+
+# --- fairness checker (post-chain fix: a call's own seeds) ------------------------------------------------------------
+def test_fairness_uses_the_calls_seeds(tmp_path, monkeypatch):
+    """A 1-seed call (trim / unseeable set) is complete with seed 0 only; without the call's seeds the same runs would
+    count as missing seeds 1-2 (the 846 false alarms of the first chain pass)."""
+    import argparse
+
+    import yaml
+
+    from mapmad_sim import config as mconfig
+    from mapmad_sim.episodes import fingerprint
+    from vint_train.mapmad.closed_loop import p12_score
+
+    out = tmp_path / "outputs"
+    base = out / "p12_test"
+    eps = [{"episode_id": f"e{i}", "home": "00800-x", "target": {"instances": []}} for i in range(2)]
+    fp = fingerprint(eps)
+    (base / "set").mkdir(parents=True)
+    (base / "set" / "episodes.json").write_text(json.dumps({"fingerprint": fp, "episodes": eps}))
+    w = tmp_path / "w.pth"
+    w.write_bytes(b"w")
+    from mapmad_sim.arm_table import file_sha256
+
+    cfg = {"out_dir": "p12_test", "run": {"seeds": 3}, "sets": {"s": {"folder": "set"}},
+           "checkpoints": {"c": {"path": str(w), "sha256": file_sha256(w), "config": str(w)}},
+           "arms": {"N": {"policy": "nomad", "checkpoint": "c", "target": "none"}}}
+    cfg_file = tmp_path / "cfg.yaml"
+    cfg_file.write_text(yaml.safe_dump(cfg))
+    monkeypatch.setenv("MAPMAD_OUTPUTS", str(out))
+    logs = base / "runs" / "logs" / "N"
+    logs.mkdir(parents=True)
+    for e in eps:
+        (logs / f"{e['episode_id']}__s0.jsonl").write_text(
+            json.dumps({"episodes_fingerprint": fp, "weights_sha256": file_sha256(w)}) + "\n")
+
+    def run(groups):
+        p12_score.cmd_fairness(argparse.Namespace(config=cfg_file, groups=groups))
+        return json.loads((base / "checks" / "fairness.json").read_text())
+
+    assert run(["runs:s:N:0"])["pass"]  # the call ran seed 0 only: complete
+    bad = run(["runs:s:N"])  # read as all 3 seeds: seeds 1-2 "missing"
+    assert not bad["pass"] and bad["n_problems"] == 4
+    (logs / "e0__s0.jsonl").write_text(json.dumps({"episodes_fingerprint": "x", "weights_sha256": file_sha256(w)}) + "\n")
+    assert run(["runs:s:N:0"])["n_problems"] == 1  # a wrong fingerprint is still caught

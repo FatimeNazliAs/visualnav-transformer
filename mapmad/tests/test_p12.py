@@ -168,21 +168,83 @@ def test_set_ids_unique_and_clean():
     assert search_set_ok([ep(1, "chair", 0), ep(2, "chair", 0)]) is None
 
 
-def test_plan_calls_order_and_trims(tmp_path, monkeypatch):
-    sys.path.insert(0, str(REPO / "train/scripts/mapmad_p12"))
-    import p12_plan
+def test_plan_calls_order_and_trims(tmp_path):
+    from mapmad_sim.run_plan import RunPlan
 
     out = tmp_path / "out"
     base = out / "p12_search_exam"
     (base / "exam_set").mkdir(parents=True)
     (base / "exam_set/episodes.json").write_text(json.dumps({"episodes": [{"episode_id": f"e{i}"} for i in range(10)]}))
     (base / "P12_DEV_CHOICES.json").write_text(json.dumps({"headline": "v2", "tau": 0.5}))
-    plan = p12_plan.Plan(str(config.CONFIG_DIR / "p12_exam.yaml"), str(out))
-    labels = [c[0] for c in plan.calls("exam")]
+    plan = RunPlan.load(config.CONFIG_DIR / "p12_exam.yaml", out)
+    labels = [c.label for c in plan.calls("exam")]
     assert labels == ["exam_pair", "exam_N", "exam_V1", "exam_F", "exam_other", "exam_MT", "exam_Nfish"]
-    assert plan.calls("exam")[0][5] == ["M2", "M2h"]
+    assert plan.calls("exam")[0].arms == ("M2", "M2h") and plan.headline_pair() == ("M2", "M2h")
     assert plan.runs(plan.calls("exam")[0]) == 60 and plan.runs(plan.calls("exam")[3]) == 10  # F: 1 run each
     plan.trims = ["drop_nfish", "ovon_n_1seed", "drop_explore_v1", "other_hidden_1seed"]
-    labels = [c[0] for c in plan.calls("exam")]
-    assert "exam_Nfish" not in labels and ("exam_other_h", "0") in [(c[0], c[4]) for c in plan.calls("exam")]
-    assert "X_V1" not in plan.calls("explore")[0][5]
+    labels = [c.label for c in plan.calls("exam")]
+    assert "exam_Nfish" not in labels and ("exam_other_h", (0,)) in [(c.label, c.seeds) for c in plan.calls("exam")]
+    assert "X_V1" not in plan.calls("explore")[0].arms
+    assert plan.stage_arms("ovon", ("M2", "M2h", "N", "F")) == ["M2", "M2h", "N", "F"]
+    oh = [c for c in plan.calls("exam") if c.label == "exam_other_h"][0]
+    assert plan.arm_seeds(oh, "M21h") == [0]  # a 1-seed call: the fairness check expects seed 0 only
+
+
+def test_plan_trims_in_order_until_under_budget(tmp_path):
+    from mapmad_sim.run_plan import RunPlan
+
+    out = tmp_path / "out"
+    base = out / "p12_search_exam"
+    for folder in ("exam_set", "ovon_set", "explore_set", "unseeable_set"):
+        (base / folder).mkdir(parents=True)
+        (base / folder / "episodes.json").write_text(json.dumps({"episodes": [{"episode_id": f"e{i}"} for i in range(10)]}))
+    (base / "P12_DEV_CHOICES.json").write_text(json.dumps({"headline": "v21", "tau": 0.5}))
+    plan = RunPlan.load(config.CONFIG_DIR / "p12_exam.yaml", out)
+    full = sum(plan.total(s) for s in ("exam", "ovon", "explore", "unseeable"))
+    res = plan.apply_trims(1.0, 1, full - 1)  # just over budget: the first trim only
+    assert res["trims"] == ["drop_nfish"] and res["estimate_s"] < full
+    assert RunPlan.load(config.CONFIG_DIR / "p12_exam.yaml", out).apply_trims(1.0, 1, 0)["trims"] == list(
+        __import__("mapmad_sim.run_plan", fromlist=["TRIMS"]).TRIMS)
+
+
+# --- arm wiring (clean-up candidate 2) ----------------------------------------------------------------------------
+def load_train_config(path: str):
+    """A train config with its base_config chain merged (only what arm_wire reads: the `map` block)."""
+    import yaml
+
+    from mapmad_sim.run_layout import merge
+
+    c = yaml.safe_load(Path(path).read_text())
+    base = c.pop("base_config", None)
+    return merge(load_train_config(str(Path(path).parent / base)), c) if base else c
+
+
+GOLDEN = json.loads((Path(__file__).parent / "data" / "p12_arm_wire_golden.json").read_text())
+
+
+@pytest.mark.parametrize("arm", sorted(GOLDEN["arms"]))
+def test_arm_wire_equals_the_chains_runs(tmp_path, arm):
+    """search_wire.arm_wire rebuilds the settings every arm ran with in the chain (run_info.*.json, commit d539317):
+    the runner, the video replay and the F check build them only through it."""
+    from mapmad_sim.search_wire import arm_wire
+
+    t, _ = table(tmp_path)
+    t.base.mkdir(parents=True)
+    (t.base / "P12_DEV_CHOICES.json").write_text(json.dumps({"headline": GOLDEN["headline"], "tau": GOLDEN["tau"]}))
+    g = GOLDEN["arms"][arm]
+    w = arm_wire(t, arm, load_train_config, tuple(g["recog"]) if g["recog"] else None)
+    assert json.loads(json.dumps(w.search_v2)) == g["search_v2"]
+    assert w.extra == g["extra"] and json.loads(json.dumps(w.camera)) == g["camera"]
+
+
+def test_arm_wire_rules(tmp_path):
+    from mapmad_sim.search_wire import arm_wire
+
+    t, _ = table(tmp_path)
+    with pytest.raises(SystemExit):
+        arm_wire(t, "M21", load_train_config)  # a recogniser arm without a sidecar address
+    with pytest.raises(SystemExit):
+        arm_wire(t, "F", load_train_config, ("h", 1))  # F's tau before the dev decision
+    assert arm_wire(t, "F", load_train_config, ("h", 1), tau=0.6).search_v2["teacher"]["tau"] == 0.6
+    assert arm_wire(t, "F_truth", load_train_config).search_v2["teacher"]["tau"] == 1.0  # truth "seen": no tau
+    assert arm_wire(t, "Nfish", load_train_config).camera["name"] == "fish045"

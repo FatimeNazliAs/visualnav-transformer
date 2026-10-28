@@ -434,6 +434,11 @@ through the sidecar, every control step, into Phase 8's fusion), the rule-stop v
 layer's strongest cell >= tau as the seen mark). Sets: `scripts/make_p12_sets.py` (plan 8.7 builder on ObjectNav v2 val;
 unseeable, OVON with semantic matching, exploration, Qwen3-VL subset). The recogniser container is recreated from this
 worktree with `docker/run_containers.sh recog-down` + `recog`.
+Two more single answers (phase-end clean-up): `mapmad_sim/run_plan.py` = which closed-loop calls a stage makes (arms,
+seeds, trims; the chain, the fairness check, the tables and the video picks all read it), and
+`search_wire.arm_wire` = one arm's server settings (search_v2, V1's extra map, camera; the runner, the video replay and
+the F check all build them through it; `tests/data/p12_arm_wire_golden.json` = the chain's recorded settings per arm).
+`scripts/p12_video_pose_check.py`: the rendered videos replay exactly the logged poses (floor fill only on hole frames).
 
 ```bash
 # sets (GPU): candidates per worker (exam + OVON), then the freeze (exit 3 = a bin < 40 -> automatic stop)

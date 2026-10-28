@@ -44,8 +44,8 @@ from mapmad_sim import config as mapmad_config  # noqa: E402
 from mapmad_sim.arm_table import Arm, ArmTable  # noqa: E402
 from mapmad_sim.episodes import load_episodes  # noqa: E402
 from mapmad_sim.run_info import save_run_info  # noqa: E402
-from mapmad_sim.run_layout import RunLayout, read_config, run_id, try_claim, write_text_atomic  # noqa: E402
-from mapmad_sim.search_wire import camera_wire, datagen_config, search_settings  # noqa: E402
+from mapmad_sim.run_layout import RunLayout, run_id, try_claim, write_text_atomic  # noqa: E402
+from mapmad_sim.search_wire import arm_wire, datagen_config  # noqa: E402
 from vint_train.mapmad.closed_loop.exam_runner import noise_seed  # noqa: E402
 from vint_train.mapmad.closed_loop.policy import Policy  # noqa: E402
 from vint_train.mapmad.closed_loop.run_arms import deterministic_torch  # noqa: E402
@@ -54,7 +54,6 @@ from vint_train.mapmad.config import load_config  # noqa: E402
 
 RETRIES = 2
 INFRA_ERRORS = (OSError, EOFError, ConnectionError)
-V2_TRAIN_CONFIG = "repo:train/config/mapmad_v2.yaml"  # window size / resolutions of the online map v2 (every arm)
 MAP_LAYERS_V1 = ("obstacle", "explored", "heat")
 
 
@@ -90,13 +89,6 @@ class Policies:
             ck = self.table.verify(key)
             self.ckpts[key] = {"path": str(ck.path), "sha256": ck.sha256, "config": str(ck.config), "key": ck.key}
         return self.ckpts[key]
-
-    def train_cfg(self, name: str) -> Dict[str, Any]:
-        """The train config of the arm's network (mapmad_v2.yaml for arms without a v2 network: window numbers)."""
-        a = self.arm(name)
-        if a.policy == "mapmad_v2":
-            return self.get(name).cfg
-        return load_config(str(self.table.resolve(V2_TRAIN_CONFIG)))
 
     def get(self, name: str) -> Policy:
         if name not in self.cache:
@@ -188,16 +180,6 @@ def move_leftover(folder: Path, token: str) -> None:
         os.replace(folder, dest)
 
 
-def tau_of(layout: RunLayout, asked: Optional[float]) -> float:
-    """Arm F's tau: --tau, else P12_DEV_CHOICES.json `tau` (written by the dev decisions before any exam run)."""
-    if asked is not None:
-        return float(asked)
-    ch = ArmTable.from_layout(layout).choices()
-    if ch is None:
-        raise SystemExit("arm F needs tau: P12_DEV_CHOICES.json does not exist yet (or pass --tau for a DRY run)")
-    return float(ch["tau"])
-
-
 def with_heat_box(episode: Dict[str, Any]) -> Dict[str, Any]:
     """V1's online map needs a heat box (online_map.heat_target); its heat layer is zeroed (map_zero), so the box
     only has to exist: the usable instance whose view point is the target point (else the first one)."""
@@ -210,45 +192,19 @@ def with_heat_box(episode: Dict[str, Any]) -> Dict[str, Any]:
 
 
 class Wire:
-    """The per-arm server settings: search_v2 (+ Phase 12 target / rule / teacher) and extra outputs (V1's map)."""
+    """The per-arm server settings (search_wire.arm_wire): search_v2, extra outputs (V1's map), camera."""
 
-    def __init__(self, layout: RunLayout, policies: Policies, arms: List[str], recog_host: str,
-                 recog_port: Optional[int], tau: Optional[float]) -> None:
-        cfg = layout.cfg
-        dg = datagen_config(cfg)
+    def __init__(self, table: ArmTable, arms: List[str], recog_host: str, recog_port: Optional[int],
+                 tau: Optional[float]) -> None:
+        recog = (recog_host, int(recog_port)) if recog_port is not None else None
         self.base: Dict[str, Dict[str, Any]] = {}
         self.extra: Dict[str, Dict[str, Any]] = {}
         self.cameras: Dict[str, Dict[str, Any]] = {}
         for name in arms:
-            a = policies.arm(name)
-            sv = search_settings(dg, policies.train_cfg(name)["map"])
-            if cfg.get("policies"):  # Phase 12
-                run = cfg["run"]
-                sv["rule"] = run["rule_stop"]
-                target: Dict[str, Any] = {"source": a.target}
-                if a.target == "recogniser":
-                    if recog_port is None:
-                        raise SystemExit(f"arm {name} needs a recogniser sidecar (--recog-port)")
-                    r = policies.table.recogniser(a.recogniser)
-                    target["recogniser"] = {"host": recog_host, "port": int(recog_port), "model": r["model"],
-                                            "threshold": float(r["threshold"]), "p99": float(r["p99"]),
-                                            "vlm": bool(r["vlm"])}
-                sv["target"] = target
-                if a.policy == "frontier":
-                    f = cfg["policies"]["frontier"]
-                    sv["teacher"] = {"spec": dg["teacher"], "seen": a.teacher_seen, "mode": a.teacher_mode,
-                                     "mark_radius_m": float(f["mark_radius_m"]),
-                                     "min_views": int(run["rule_stop"]["min_views"]),
-                                     "tau": tau_of(layout, tau) if (a.teacher_seen == "layer" and
-                                                                    a.teacher_mode == "search") else 1.0}
-                if a.policy == "mapmad_v1":
-                    ms = cfg["map_settings"]
-                    self.extra[name] = {"map": True, "map_settings": {
-                        "builder": read_config(mapmad_config.CONFIG_DIR / ms["builder"])["map"],
-                        "crop": load_config(str(policies.table.resolve(ms["crop"])))["map"]}}
-            self.base[name] = sv
-            cam = policies.table.camera_name(a)
-            self.cameras[name] = camera_wire(cam) if cam.endswith(".yaml") else {"name": cam, **cfg["cameras"][cam]}
+            w = arm_wire(table, name, load_config, recog, tau)
+            self.base[name], self.cameras[name] = w.search_v2, w.camera
+            if w.extra is not None:
+                self.extra[name] = w.extra
 
 
 def main() -> None:
@@ -287,7 +243,7 @@ def main() -> None:
     policies = Policies(layout, torch.device("cuda"))
     for arm in args.arms:
         policies.get(arm)  # build and sha256-check every network before the first episode
-    wire = Wire(layout, policies, args.arms, args.recog_host, args.recog_port, args.tau)
+    wire = Wire(policies.table, args.arms, args.recog_host, args.recog_port, args.tau)
     data_dir = mapmad_config.paths()["mapmad_data"] / cfg["rollouts"]["data_folder"] if args.save_drives else None
     tag = f"{'+'.join(args.arms)}.shard{args.shard}"
     if len(tag) > 120:

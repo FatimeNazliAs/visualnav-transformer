@@ -83,7 +83,7 @@ main() {
     }
     headline_interim() {  # headline pair numbers -> driver/headline_interim.txt (STATUS.md)
         run_bg dx "" "python -m vint_train.mapmad.closed_loop.p12_score score --config $CFG --subdir runs/exam --set exam \
-            --arms $(python3 "$SCRIPTS/p12_plan.py" "$HCFG" calls exam | head -1 | cut -d'|' -f6) && \
+            --arms $(python3 "$SCRIPTS/p12_plan.py" "$HCFG" pair) && \
             python -m vint_train.mapmad.closed_loop.p12_tables --config $CFG --out tables_interim" >> "$P12/driver/interim.log" 2>&1 \
             && grep -a -E '^\| (M2|M2h|M21|M21h) |headline' "$P12/tables_interim/tables.md" | head -4 | tr '\n' ' ' \
             > "$P12/driver/headline_interim.txt"
@@ -231,7 +231,7 @@ main() {
     STEP="4 timing"
     status step="$STEP"
     local first_eps hm
-    hm="$(python3 "$SCRIPTS/p12_plan.py" "$HCFG" calls exam | head -1 | cut -d'|' -f6)"
+    hm="$(python3 "$SCRIPTS/p12_plan.py" "$HCFG" pair)"
     first_eps="$(python3 -c "import json,sys; print(' '.join(e['episode_id'] for e in json.load(open(sys.argv[1]))['episodes'][:4]))" "$P12/exam_set/episodes.json")"
     local n_first pair_runs n_exam t_total
     n_first=$(echo $first_eps | wc -w)
@@ -287,15 +287,14 @@ EOF
     # --- 10. scores + fairness + tables ------------------------------------------------------------------------------------
     STEP="10 tables"
     status step="$STEP" gpus="" subdir="" arms=""
-    local groups=() stage line label subdir set recog seeds arms n
+    local stage line label subdir set recog seeds arms n
     for stage in exam ovon explore unseeable qwen; do
         while IFS='|' read -r label subdir set recog seeds arms n; do
-            groups+=("$subdir:$set:${arms// /,}")
             run_bg dx "" "python -m vint_train.mapmad.closed_loop.p12_score score --config $CFG --subdir $subdir --set $set \
                 --arms $arms" >> "$P12/driver/tables.log" 2>&1 || stop "scoring $label failed (driver/tables.log)"
         done < <(python3 "$SCRIPTS/p12_plan.py" "$HCFG" calls "$stage")
     done
-    run_bg dx "" "python -m vint_train.mapmad.closed_loop.p12_score fairness --config $CFG --groups ${groups[*]} && \
+    run_bg dx "" "python -m vint_train.mapmad.closed_loop.p12_score fairness --config $CFG && \
         python -m vint_train.mapmad.closed_loop.p12_tables --config $CFG && \
         python -m vint_train.mapmad.closed_loop.p12_figures --config $CFG" >> "$P12/driver/tables.log" 2>&1 \
         || stop "tables failed (driver/tables.log)"

@@ -196,6 +196,11 @@ class LimoSim:
         if math.isnan(self.floor_below_feet):
             raise ValueError(f"{self.home}: no floor found under {np.round(position, 3).tolist()}")
 
+    def move_to(self, position: Sequence[float], yaw: float) -> None:
+        """Put the robot on a pose it reached by driving (replays of logged runs): as drive(), a failed floor probe
+        (a hole in the mesh) keeps the last good floor height instead of raising."""
+        self._set_pose(np.asarray(position, dtype=np.float64), yaw)
+
     def _set_pose(self, position: np.ndarray, yaw: float) -> None:
         from habitat_sim.utils.common import quat_from_angle_axis
 

@@ -8,7 +8,8 @@ Drives: 2 seeded (seed 12301) search drives with an approach of the Phase 8 test
 (never exam homes). Each drive is replayed pose by pose through the server (as p11_map_parity.py, "poses" mode: the
 robot is put on every saved pose; the generator's bump events are applied after the move they belong to). At every
 frame the agent's decision -- mode, goal, next path point -- must equal the drive's saved teacher_mode, goal_xy and
-next_point_xy (NaN = no goal). Result: <out_dir>/checks/f_check.json; exit 3 when a frame differs.
+next_point_xy (NaN = no goal). The arm's settings come from search_wire.arm_wire (as every exam arm's). Result:
+<out_dir>/checks/f_check.json (--out); exit 3 when a frame differs.
 """
 
 import argparse
@@ -21,13 +22,16 @@ from typing import Any, Dict, List
 import numpy as np
 
 from mapmad_sim import config, objectnav
+from mapmad_sim.arm_table import ArmTable
 from mapmad_sim.robot import Move
 from mapmad_sim.run_layout import RunLayout, write_text_atomic
-from mapmad_sim.search_wire import camera_wire, datagen_config, search_settings
+from mapmad_sim.search_wire import arm_wire
 from mapmad_sim.sidecar_server import SimService, limo_factory
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from p11_map_parity import TRAIN_MAP, episode_of  # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "train"))
+from p11_map_parity import episode_of  # noqa: E402
+from vint_train.mapmad.config import load_config  # noqa: E402
 
 DRIVE_SEED = 12301
 N_DRIVES = 2
@@ -99,21 +103,18 @@ def main() -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--gpu", type=int, required=True)
     p.add_argument("--config", type=Path, default=config.CONFIG_DIR / "p12_exam.yaml")
+    p.add_argument("--out", default="checks/f_check.json", help="below out_dir")
     args = p.parse_args()
     layout = RunLayout.load(args.config)
-    dg = datagen_config(layout.cfg)
-    arm = layout.cfg["arms"]["F_truth"]
-    settings = dict(search_settings(dg, TRAIN_MAP), target={"source": arm["target"]},
-                    teacher={"spec": dg["teacher"], "seen": arm["teacher_seen"], "mode": "search", "tau": 1.0,
-                             "mark_radius_m": layout.cfg["policies"]["frontier"]["mark_radius_m"]})
-    camera = camera_wire(layout.cfg["camera"])
+    w = arm_wire(ArmTable.from_layout(layout), "F_truth", load_config)  # arm F_truth exactly as the exam wires arms
+    settings, camera = w.search_v2, w.camera
     drives = dev_search_drives(N_DRIVES, DRIVE_SEED)
     rows = []
     for d in drives:
         rows.append(check_drive(config.paths()["mapmad_data"] / "habitat_mapmad_v2" / d, args.gpu, settings, camera))
         print(json.dumps(rows[-1]), flush=True)
     ok = len(rows) == N_DRIVES and all(r["pass"] for r in rows)
-    write_text_atomic(layout.base / "checks" / "f_check.json",
+    write_text_atomic(layout.base / args.out,
                       json.dumps({"pass": ok, "drives": rows, "seed": DRIVE_SEED,
                                   "rule": "F_truth's decision (mode, goal, next point) = the Phase 8 teacher's at every "
                                           "frame of 2 Phase 8 dev-home search drives (pose replay)"}, indent=1) + "\n")
