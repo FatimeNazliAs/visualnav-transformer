@@ -1,0 +1,115 @@
+# MapMaD Phase 13 "VLFM port check" (naz_mapmad_vlfm): the ORIGINAL VLFM code (bdaiinstitute/vlfm, MIT,
+# commit 584ed56) with its own install recipe, to re-run it on 100 HM3D v2 val ObjectNav episodes (report-only).
+#
+# VLFM README recipe -> what this image does:
+#   python 3.9 conda env                              -> same (miniforge, env /opt/conda/envs/vlfm)
+#   torch==1.12.1+cu113, torchvision==0.13.1+cu113    -> same (cu113 SASS for sm_86 runs on Ada sm_89)
+#   GroundingDINO @ eeba084 + salesforce-lavis==1.0.2 -> same; GroundingDINO's CUDA op is compiled with nvcc 11.3
+#                                                        (TORCH_CUDA_ARCH_LIST=8.6, no GPU at build time)
+#   pip install -e .[habitat]                         -> habitat-sim 0.2.4 from the official aihabitat conda package
+#                                                        (headless+bullet) instead of a source build from git;
+#                                                        habitat-lab/baselines 0.2.420230405 from pip (same);
+#                                                        VLFM's git dependencies pinned to the last commit on or
+#                                                        before VLFM's commit date (2025-01-07); vlfm itself with
+#                                                        --no-deps after all its listed deps are installed.
+#   git clone yolov7 inside the repo                  -> same, pinned commit a207844
+#   weights in data/                                  -> symlinks into /model_cache/vlfm (host model cache, mounted)
+# Unpinned transitive packages are frozen to /opt/vlfm/pip_freeze.txt at build time.
+#
+# Build context = mapmad/docker (nothing is copied from it):
+#   mapmad/docker/run_containers.sh vlfm-build
+FROM docker.io/nvidia/cuda:11.3.1-cudnn8-devel-ubuntu20.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates curl wget git build-essential \
+        libegl1 libgl1 libglvnd0 libopengl0 libgomp1 libglib2.0-0 libsm6 libxext6 libxrender1 libjpeg-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# NVIDIA EGL vendor file (same reason as Dockerfile.habitat: the host has none, without it EGL falls back to Mesa).
+RUN mkdir -p /usr/share/glvnd/egl_vendor.d \
+    && printf '{"file_format_version": "1.0.0", "ICD": {"library_path": "libEGL_nvidia.so.0"}}\n' \
+        > /usr/share/glvnd/egl_vendor.d/10_nvidia.json
+
+ARG MINIFORGE_VERSION=24.3.0-0
+RUN curl -fsSL -o /tmp/miniforge.sh \
+        https://github.com/conda-forge/miniforge/releases/download/${MINIFORGE_VERSION}/Miniforge3-${MINIFORGE_VERSION}-Linux-x86_64.sh \
+    && bash /tmp/miniforge.sh -b -p /opt/conda && rm /tmp/miniforge.sh
+
+# habitat-sim 0.2.4 (headless + bullet), the official conda build for python 3.9
+RUN /opt/conda/bin/conda create -y -n vlfm -c conda-forge -c aihabitat python=3.9 \
+        "aihabitat::habitat-sim=0.2.4=py3.9_headless_bullet_linux_f179b584bcd713c5a2a998132211e2cae881d6d1" \
+    && /opt/conda/bin/conda clean -afy
+ENV PATH=/opt/conda/envs/vlfm/bin:/opt/conda/bin:$PATH \
+    CUDA_HOME=/usr/local/cuda \
+    PIP_NO_CACHE_DIR=1
+
+# Top-level pins: VLFM's pyproject + README, LAVIS/GroundingDINO's own pins. Applied to every pip call below.
+RUN printf '%s\n' \
+        "torch==1.12.1+cu113" "torchvision==0.13.1+cu113" "numpy==1.26.4" \
+        "transformers==4.26.0" "timm==0.4.12" "opencv-python==4.5.5.64" "opencv-python-headless==4.5.5.64" \
+        "salesforce-lavis==1.0.2" "supervision==0.6.0" \
+        "habitat-lab==0.2.420230405" "habitat-baselines==0.2.420230405" \
+        "flask==2.3.3" "werkzeug==2.3.8" "seaborn==0.12.2" "open3d==0.17.0" \
+        "spacy==3.7.5" \
+        > /opt/constraints.txt
+# spacy (a LAVIS dependency) >= 3.8 has no python 3.9 wheels and fails to build from source -> pinned 3.7.5;
+# PIP_PREFER_BINARY keeps every other transitive package on wheels too.
+ENV PIP_CONSTRAINT=/opt/constraints.txt \
+    PIP_PREFER_BINARY=1
+
+RUN pip install torch==1.12.1+cu113 torchvision==0.13.1+cu113 \
+        --extra-index-url https://download.pytorch.org/whl/cu113 \
+    && python -c "import torch; assert torch.version.cuda == '11.3', torch.version.cuda; print('torch', torch.__version__)"
+
+# VLFM itself (pinned commit) + yolov7 inside it + GroundingDINO inside it (VLFM reads GroundingDINO/... from cwd)
+ARG VLFM_COMMIT=584ed56008754fde7997d904983607def8328322
+ARG GDINO_COMMIT=eeba084341aaa454ce13cb32fa7fd9282fc73a67
+ARG YOLOV7_COMMIT=a207844b1ce82d204ab36d87d496728d3d2348e7
+RUN git clone https://github.com/bdaiinstitute/vlfm.git /opt/vlfm && git -C /opt/vlfm checkout ${VLFM_COMMIT} \
+    && git clone https://github.com/WongKinYiu/yolov7.git /opt/vlfm/yolov7 && git -C /opt/vlfm/yolov7 checkout ${YOLOV7_COMMIT} \
+    && git clone https://github.com/IDEA-Research/GroundingDINO.git /opt/vlfm/GroundingDINO \
+    && git -C /opt/vlfm/GroundingDINO checkout ${GDINO_COMMIT}
+
+# GroundingDINO with its CUDA op (needs torch present at build: no build isolation). setuptools' `develop` spawns a
+# nested `pip install -e . --use-pep517`; PIP_NO_BUILD_ISOLATION=0 (pip's inverted env flag = isolation off)
+# reaches that nested call too. The op is compiled in place first, so the editable install only links it.
+RUN cd /opt/vlfm/GroundingDINO \
+    && TORCH_CUDA_ARCH_LIST="8.6" python setup.py build_ext --inplace \
+    && TORCH_CUDA_ARCH_LIST="8.6" PIP_NO_BUILD_ISOLATION=0 pip install --no-build-isolation -e . \
+    && python -c "import torch, groundingdino._C; print('groundingdino._C ok')"
+
+RUN pip install salesforce-lavis==1.0.2
+
+# VLFM's listed dependencies (pyproject `dependencies` + `[habitat]` minus habitat-sim, which conda installed)
+RUN pip install \
+        "flask==2.3.3" "seaborn==0.12.2" "open3d==0.17.0" "transformers==4.26.0" "timm==0.4.12" \
+        "opencv-python==4.5.5.64" "numpy==1.26.4" \
+        "frontier_exploration @ git+https://github.com/naokiyokoyama/frontier_exploration.git@8b4cb9329f67d150feb1b5f88c8f6ac581b95698" \
+        "mobile_sam @ git+https://github.com/ChaoningZhang/MobileSAM.git@34bbbfdface3c18e5221aa7de6032d7220c6c6a1" \
+        "depth_camera_filtering @ git+https://github.com/naokiyokoyama/depth_camera_filtering@39d6e2f391c8b2198a67ad96f94bf6da0acd48a0" \
+        "habitat-lab==0.2.420230405" "habitat-baselines==0.2.420230405" \
+    && cd /opt/vlfm && pip install --no-deps -e . \
+    && pip freeze > /opt/vlfm/pip_freeze.txt \
+    && python -c "import habitat_sim, habitat, habitat_baselines, lavis, groundingdino, mobile_sam, frontier_exploration, vlfm; print('habitat-sim', habitat_sim.__version__)"
+
+# data/: pointnav_weights.pth comes with the repo; the detector weights live in the mounted model cache;
+# scene_datasets points at the launcher's scene root (HM3D v0.2 val, mounted read-only);
+# dummy_policy.pth is generated as VLFM's run.py asks.
+# The conda env's libstdc++ (GLIBCXX_3.4.29, needed by conda's llvmlite/numba) must win over Ubuntu 20.04's.
+ENV LD_LIBRARY_PATH=/opt/conda/envs/vlfm/lib:/usr/local/nvidia/lib:/usr/local/nvidia/lib64
+RUN cd /opt/vlfm \
+    && ln -s /model_cache/vlfm/mobile_sam.pt data/mobile_sam.pt \
+    && ln -s /model_cache/vlfm/groundingdino_swint_ogc.pth data/groundingdino_swint_ogc.pth \
+    && ln -s /model_cache/vlfm/yolov7-e6e.pt data/yolov7-e6e.pt \
+    && ln -s /scene_root data/scene_datasets \
+    && python -m vlfm.utils.generate_dummy_policy \
+    && chmod -R a+rwX /opt/vlfm
+
+# Model downloads at run time (BLIP-2 / BERT tokenizer) go to the mounted model cache.
+ENV HF_HOME=/model_cache/vlfm/hf \
+    TORCH_HOME=/model_cache/vlfm/torch \
+    HOME=/tmp \
+    PYTHONUNBUFFERED=1
+WORKDIR /opt/vlfm
+CMD ["bash"]

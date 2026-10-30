@@ -1,0 +1,14 @@
+# DRY copy of mapmad_v21b.yaml (never results): the DRY hidden-DAgger folders, a tiny epoch, DRY outputs.
+base_config: mapmad_v21b.yaml
+run_name: v21b_s1
+logs_root: /outputs/mapmad/p13_dry/chain
+epoch_samples: 512
+eval_samples: 64
+
+map:
+  dagger_hidden:
+    data_folder: /mapmad_data/habitat_mapmad_v2_dagger_hidden_dry
+    train: /mapmad_data/splits/habitat_mapmad_v2_dagger_hidden_dry/train/
+    test: /mapmad_data/splits/habitat_mapmad_v2_dagger_hidden_dry/test/
+    index_dir: /mapmad_data/p13_dry_index
+    search_phase_only: true

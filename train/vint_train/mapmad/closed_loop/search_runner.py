@@ -68,11 +68,13 @@ def reached(value: Optional[float], limit: float) -> bool:
 def run_search_episode(sim, policy: Policy, episode: Dict[str, Any], arm: str, run: SearchSettings, seed_index: int,
                        seed: int, log_path: Path, fingerprint: str, search_v2: Dict[str, Any], camera: Dict[str, Any],
                        header_extra: Optional[Dict[str, Any]] = None, save_dir: Optional[Path] = None,
-                       outputs_extra: Optional[Dict[str, Any]] = None, rec_ms: Optional[List[float]] = None
-                       ) -> Tuple[Dict[str, Any], List[float]]:
+                       outputs_extra: Optional[Dict[str, Any]] = None, rec_ms: Optional[List[float]] = None,
+                       dets_path: Optional[Path] = None) -> Tuple[Dict[str, Any], List[float]]:
     """Drive one episode; writes log_path (and the drive to save_dir); returns (result line, policy ms per step).
     search_v2 = search_v2.search_settings(...) + {"noise_seed", "record"} (+ Phase 12 "target", "rule", "teacher");
-    outputs_extra = more server outputs (V1: "map" + "map_settings"); rec_ms collects the recogniser's round trips."""
+    outputs_extra = more server outputs (V1: "map" + "map_settings"); rec_ms collects the recogniser's round trips;
+    dets_path (Phase 13, search_v2 "log_dets") receives one line per frame {"step", "dets"} (written like the log:
+    <dets>.partial, renamed at the end)."""
     first = sim.reset(episode, camera["hfov_deg"], goal_photo=False, topdown_m_per_px=run.topdown_m_per_px,
                       outputs={"search_v2": search_v2, **(outputs_extra or {})}, camera=camera)
     if first.navmesh_sha256 != episode["navmesh_sha256"]:
@@ -98,6 +100,11 @@ def run_search_episode(sim, policy: Policy, episode: Dict[str, Any], arm: str, r
     policy_ms: List[float] = []
     partial = partial_path(log_path)
     partial.parent.mkdir(parents=True, exist_ok=True)
+    dets_file = None
+    if dets_path is not None and "dets" in extras:
+        partial_path(dets_path).parent.mkdir(parents=True, exist_ok=True)
+        dets_file = open(partial_path(dets_path), "w")
+        dets_file.write(json.dumps({"step": 0, "dets": extras["dets"]}, sort_keys=True) + "\n")
     with open(partial, "w") as log:
         def write(line: Dict[str, Any]) -> None:
             log.write(json.dumps(clean(line), sort_keys=True) + "\n")
@@ -140,6 +147,8 @@ def run_search_episode(sim, policy: Policy, episode: Dict[str, Any], arm: str, r
                     line["house_seen"] = house.update(state["position"], state["yaw"])
                 if rec_ms is not None:
                     rec_ms.append(float(extras["timing"]["rec_ms"]))
+            if dets_file is not None:
+                dets_file.write(json.dumps({"step": step, "dets": extras["dets"]}, sort_keys=True) + "\n")
             write(line)
         if success and run.stop_at_success:
             path_at_success = path_m
@@ -160,6 +169,9 @@ def run_search_episode(sim, policy: Policy, episode: Dict[str, Any], arm: str, r
                           rule_stop_success=rule_stop_step is not None and reached(state["vp_geodesic_m"], run.success_m))
         write(result)
     os.replace(partial, log_path)
+    if dets_file is not None:
+        dets_file.close()
+        os.replace(partial_path(dets_path), dets_path)
     log = steplog.read(log_path)
     result["stuck_streaks"] = len(steplog.stuck_streaks(log, run.stuck_steps))
     if save_dir is not None:

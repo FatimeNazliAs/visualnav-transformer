@@ -21,6 +21,9 @@ id> in the Phase 8 drive format; a folder left by an interrupted run (no summary
 --stop-file: the runner takes no new run once this file exists (GPU withdrawal, §8 rule 4); its current run finishes.
 --recog-port (Phase 12): the recogniser sidecar of this pair (host --recog-host); arm F's tau comes from
 P12_DEV_CHOICES.json (or --tau, DRY runs).
+--itm-port (Phase 13 arm VF, policy `vf`): the BLIP-2 ITM server of this GPU (host --itm-host, mapmad_recog.itm_server);
+arm VF steers with frontier_policy.VFPolicy (FrontierPolicy + its extras in the step log), its decisions come from the
+simulator server (mapmad_sim.search_vf.VFAgent).
 Writes below <outputs>/<out_dir>/<subdir>: logs/, summaries/, timing/, progress.<tag>.log, run_info.<tag>.json.
 """
 
@@ -138,11 +141,17 @@ class Policies:
         teacher = datagen_config(self.layout.cfg)["teacher"]
         return FrontierPolicy(float(teacher["face_tolerance_deg"]), **self.limits)
 
+    def _build_vf(self, a: Arm) -> Policy:
+        from vint_train.mapmad.closed_loop.frontier_policy import VFPolicy
+
+        teacher = datagen_config(self.layout.cfg)["teacher"]
+        return VFPolicy(float(teacher["face_tolerance_deg"]), **self.limits)
+
     def header(self, name: str) -> Dict[str, Any]:
         """Log-header fields of the arm (Phase 11 arms: exactly Phase 11's fields)."""
         a = self.arm(name)
-        if a.policy == "frontier":
-            return {"policy_type": "frontier", "target": a.target, "recogniser": a.recogniser}
+        if a.policy in ("frontier", "vf"):
+            return {"policy_type": a.policy, "target": a.target, "recogniser": a.recogniser}
         c = self._checkpoint(a.checkpoint)
         out = {"weights_sha256": c["sha256"], "checkpoint": c["path"], "maps": bool(a.maps)}
         if self.layout.cfg.get("policies"):  # Phase 12 configs
@@ -195,13 +204,14 @@ class Wire:
     """The per-arm server settings (search_wire.arm_wire): search_v2, extra outputs (V1's map), camera."""
 
     def __init__(self, table: ArmTable, arms: List[str], recog_host: str, recog_port: Optional[int],
-                 tau: Optional[float]) -> None:
+                 tau: Optional[float], itm_host: str = "naz_mapmad_recog", itm_port: Optional[int] = None) -> None:
         recog = (recog_host, int(recog_port)) if recog_port is not None else None
+        itm = (itm_host, int(itm_port)) if itm_port is not None else None
         self.base: Dict[str, Dict[str, Any]] = {}
         self.extra: Dict[str, Dict[str, Any]] = {}
         self.cameras: Dict[str, Dict[str, Any]] = {}
         for name in arms:
-            w = arm_wire(table, name, load_config, recog, tau)
+            w = arm_wire(table, name, load_config, recog, tau, itm)
             self.base[name], self.cameras[name] = w.search_v2, w.camera
             if w.extra is not None:
                 self.extra[name] = w.extra
@@ -216,6 +226,8 @@ def main() -> None:
     p.add_argument("--port", type=int, required=True)
     p.add_argument("--recog-host", default="naz_mapmad_recog")
     p.add_argument("--recog-port", type=int, help="Phase 12: this pair's recogniser sidecar")
+    p.add_argument("--itm-host", default="naz_mapmad_recog")
+    p.add_argument("--itm-port", type=int, help="Phase 13 arm VF: this GPU's BLIP-2 ITM server")
     p.add_argument("--tau", type=float, help="arm F's tau (DRY runs; else P12_DEV_CHOICES.json)")
     p.add_argument("--live-rule-tau", type=float, help="check runs only: the robot stops at the first rule value >= tau")
     p.add_argument("--shard", type=int, default=0, help="names this runner's files")
@@ -243,7 +255,7 @@ def main() -> None:
     policies = Policies(layout, torch.device("cuda"))
     for arm in args.arms:
         policies.get(arm)  # build and sha256-check every network before the first episode
-    wire = Wire(policies.table, args.arms, args.recog_host, args.recog_port, args.tau)
+    wire = Wire(policies.table, args.arms, args.recog_host, args.recog_port, args.tau, args.itm_host, args.itm_port)
     data_dir = mapmad_config.paths()["mapmad_data"] / cfg["rollouts"]["data_folder"] if args.save_drives else None
     tag = f"{'+'.join(args.arms)}.shard{args.shard}"
     if len(tag) > 120:
@@ -282,7 +294,7 @@ def main() -> None:
                 try:
                     result, ms = run_search_episode(sim, policies.get(arm), ep, arm, run, k, seed, layout.log(arm, rid),
                                                     fingerprint, sv, wire.cameras[arm], policies.header(arm), save_dir,
-                                                    wire.extra.get(arm), rec_ms)
+                                                    wire.extra.get(arm), rec_ms, layout.dets(arm, rid))
                     break
                 except INFRA_ERRORS + (RuntimeError,) as exc:
                     if isinstance(exc, RuntimeError) and not str(exc).startswith("simulator server"):

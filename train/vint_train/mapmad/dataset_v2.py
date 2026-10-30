@@ -20,6 +20,8 @@ The distance loss counts only shown photos (train_loop.py).
 DAgger union (Phase 11, `attach_dagger`, dataset_dagger.py): a search_map draw is uniform over the Phase 8 search
 samples plus the DAgger samples (the seen pool over both sources' seen frames); without an attached DaggerDataset the
 draws are exactly the above.
+Hidden DAgger (Phase 13, `attach_dagger_hidden`): an explore draw is, with probability hidden_q (equal-count rule,
+dataset_dagger.py), a uniform draw from the maps-hidden DAgger samples; without it the draws are exactly the above.
 """
 
 from typing import Any, Dict, Optional, Tuple
@@ -44,6 +46,19 @@ class MapMaDV2Dataset(MapMaDDataset):
         self.mode_p = M.habitat_mode_table(habitat_modes, M.HABITAT_MODES_V2)
 
     dagger = None  # Phase 11: an attached DaggerDataset joins the search_map pool (attach_dagger)
+    dagger_hidden = None  # Phase 13: an attached HiddenDaggerDataset joins the explore draws (attach_dagger_hidden)
+    hidden_q = 0.0
+
+    def attach_dagger_hidden(self, hidden: "MapMaDV2Dataset") -> None:
+        """Phase 13 equal-count rule (module docstring): needs the map-DAgger set attached first."""
+        if self.dagger is None:
+            raise ValueError("the hidden-DAgger set needs the map-DAgger set attached first (equal-count rule)")
+        p = dict(zip(M.HABITAT_MODES_V2, self.mode_p))
+        n8, nd = len(self.pools["search"]), len(self.dagger.pools["search"])
+        q = p["search_map"] * nd / (n8 + nd) / p["explore"]
+        if not 0.0 < q <= 1.0 or len(hidden.pools["explore"]) == 0:
+            raise ValueError(f"equal-count rule: q = {q} (needs 0 < q <= 1) and hidden samples ({len(hidden.pools['explore'])})")
+        self.dagger_hidden, self.hidden_q = hidden, float(q)
 
     def attach_dagger(self, dagger: "MapMaDV2Dataset") -> None:
         """Phase 11 union (module docstring): search_map draws become uniform over this split's search samples and the
@@ -132,6 +147,10 @@ class MapMaDV2Dataset(MapMaDDataset):
         if self.dagger is not None and mode.name == "search_map":
             source, drive, t = self._union_draw(rng)
             return source.habitat_sample(drive, t, mode, rng)
+        if self.dagger_hidden is not None and mode.name == "explore" and rng.random() < self.hidden_q:
+            pool = self.dagger_hidden.pools["explore"]
+            drive, t, _ = self.dagger_hidden.index_to_data[int(pool[int(rng.integers(len(pool)))])]
+            return self.dagger_hidden.habitat_sample(drive, t, mode, rng)
         drive, t, _ = self.index_to_data[self.pool_index(i, mode, rng)]
         return self.habitat_sample(drive, t, mode, rng)
 

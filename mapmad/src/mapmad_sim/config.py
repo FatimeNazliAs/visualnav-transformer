@@ -8,6 +8,8 @@ import yaml
 
 CONFIG_DIR = Path(__file__).resolve().parents[2] / "configs"
 SPLITS = ("minival", "val", "train")
+MP3D_SPLIT = "mp3d"  # Phase 13: every MP3D home runs with split "mp3d" and home = its scene id (e.g. "2azQ1b91cZZ")
+MP3D_DATASET_CONFIG = CONFIG_DIR / "mp3d.scene_dataset_config.json"  # habitat-starter's: semantic frames line up
 
 
 def load_yaml(path: Path) -> Dict[str, Any]:
@@ -56,6 +58,33 @@ def hm3d_sim_settings(split: str, home: str, scenes: Optional[Path] = None, **se
 
     return SimSettings(scene=str(hm3d_scene(split, home, scenes)),
                        scene_dataset_config=str(hm3d_scene_dataset_config(split, scenes)), **settings)
+
+
+def is_mp3d(split: str) -> bool:
+    return split == MP3D_SPLIT
+
+
+def scene_id(home: str) -> str:
+    """The scene id of a home: HM3D "00800-TEEsavR23oF" -> "TEEsavR23oF"; an MP3D home is its scene id already."""
+    return home.split("-", 1)[1] if "-" in home else home
+
+
+def mp3d_scene(home: str, scenes: Optional[Path] = None) -> Path:
+    """The mesh of one MP3D home, e.g. /mp3d/2azQ1b91cZZ/2azQ1b91cZZ.glb (+ .house and _semantic.ply next to it)."""
+    scenes = scenes or paths()["mp3d_scenes"]
+    return scenes / home / f"{home}.glb"
+
+
+def sim_settings(split: str, home: str, **settings: Any):
+    """SimSettings of one home: HM3D (hm3d_sim_settings) or, for split "mp3d", the MP3D mesh with our copy of
+    habitat-starter's mp3d.scene_dataset_config.json (without it the semantic picture does not line up with the
+    colour and depth pictures: Phase 13 check, 161 of 162 official view points see their goal with it, 10 without).
+    The shipped MP3D .navmesh is never used: LimoSim always rebuilds the floor map for LIMO."""
+    if not is_mp3d(split):
+        return hm3d_sim_settings(split, home, **settings)
+    from habitat_starter import SimSettings
+
+    return SimSettings(scene=str(mp3d_scene(home)), scene_dataset_config=str(MP3D_DATASET_CONFIG), **settings)
 
 
 def labelled_homes(split: str, scenes: Optional[Path] = None) -> list:

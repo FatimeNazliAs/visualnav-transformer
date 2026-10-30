@@ -17,6 +17,14 @@ in each drive folder).
 
 Config (train config `map.dagger`): data_folder, train (split folder with traj_names.txt), frontier_cache, index_dir.
 
+Phase 13 (v2.1b, `map.dagger_hidden`: data_folder, train, test, index_dir, search_phase_only): the maps-hidden DAgger
+round's drives (v2 drove with both maps hidden; same labeller). A `HiddenDaggerDataset` serves the `explore` mode only
+(photo and maps hidden: no map is built, so it needs no frontier cache); with `search_phase_only` its samples are the
+labelled frames BEFORE the drive's first true sight (mapmad_meta.json `first_in_view_step`; none = every frame).
+Equal-count rule (`MapMaDV2Dataset.attach_dagger_hidden`, p13_rules.md §4): an explore draw takes a hidden-DAgger
+sample with probability q = p(search_map) x s / p(explore), s = the map-DAgger share of the search_map pool, so the
+hidden-DAgger draws per epoch equal the map-DAgger draws in expectation (the mode shares stay 45/20/20/15).
+
     python -m vint_train.mapmad.dataset_dagger prepare --config config/mapmad_v21.yaml --out <json>
 builds the DAgger sample index, its LMDB image cache and reports the union shares (chain step "data index");
     python -m vint_train.mapmad.dataset_dagger frontier --config config/mapmad_v21.yaml --out <json>
@@ -104,11 +112,65 @@ class DaggerDataset(MapMaDV2Dataset):
         return self.habitat_sample(drive, t, M.BY_NAME["search_map"], self.rng(key))
 
 
-def build_dagger_dataset(config: Dict[str, Any], split: str = "train", train: bool = True) -> DaggerDataset:
-    """The DaggerDataset of a train config's `map.dagger` block (the v2 Habitat entry's other settings)."""
+class HiddenDaggerDataset(DaggerDataset):
+    """Phase 13: labelled frames of the maps-hidden rollouts, served in the explore mode (module docstring)."""
+
+    def __init__(self, *, hidden_cfg: Dict[str, Any], **kwargs: Any) -> None:
+        self.map_cfg_hidden = dict(hidden_cfg)  # read by _index_path / _build_index during the base __init__
+        super().__init__(**kwargs)
+
+    def _index_path(self) -> str:
+        path = super()._index_path()
+        tag = "_search" if self.map_cfg_hidden.get("search_phase_only") else ""
+        return path[:-len("_dagger.pkl")] + f"_dagger_hidden{tag}.pkl"
+
+    def _build_index(self, use_tqdm: bool = False):
+        """(drive, t, 0) for every labelled frame with full context, before the first true sight if search_phase_only."""
+        samples, goals = [], []
+        begin = self.index_context_size * self.waypoint_spacing
+        only_search = bool(self.map_cfg_hidden.get("search_phase_only"))
+        for drive in self.traj_names:
+            n = len(self._get_trajectory(drive)["position"])
+            goals += [(drive, t) for t in range(n)]
+            _, valid = load_labels(self.data_folder, drive)
+            end = first_sight(self.data_folder, drive) if only_search else None
+            samples += [(drive, int(t), 0) for t in np.flatnonzero(valid) if t >= begin and (end is None or t < end)]
+        return samples, goals
+
+    def _init_maps(self, map_cfg: Dict[str, Any], train: bool) -> None:
+        self.labels = {drive: load_labels(self.data_folder, drive)[0] for drive in self.traj_names}
+        self.seen_p = 0.0
+        self.pools = {"explore": np.arange(len(self.index_to_data))}
+
+    def habitat_sample(self, drive: str, t: int, mode: M.Mode, rng: np.random.Generator,
+                       goal_offset: Optional[int] = None, options: MapOptions = MapOptions()) -> Tuple[torch.Tensor, ...]:
+        """An explore sample at labelled frame t (photo and maps hidden) with the label as its action target."""
+        if mode.name != "explore":
+            raise ValueError(f"hidden-DAgger samples serve the explore mode only, not {mode.name}")
+        base = self.photo_part(drive, t, mode, rng, goal_offset)
+        out = base + (self.empty_map(), torch.tensor(mode.goal_mask), self.map_mask_tensor(mode), torch.tensor(mode.id))
+        return out[:2] + (self.label_actions(drive, t),) + out[3:]
+
+    def get(self, i: int, key: int) -> Tuple[torch.Tensor, ...]:
+        drive, t, _ = self.index_to_data[i]
+        return self.habitat_sample(drive, t, M.BY_NAME["explore"], self.rng(key))
+
+
+def first_sight(data_folder: str, drive: str) -> Optional[int]:
+    """The drive's first true-sight frame (mapmad_meta.json `first_in_view_step`; None = never seen)."""
+    with open(os.path.join(data_folder, drive, "mapmad_meta.json")) as f:
+        v = json.load(f).get("first_in_view_step")
+    return None if v is None else int(v)
+
+
+def build_dagger_dataset(config: Dict[str, Any], split: str = "train", train: bool = True,
+                         hidden: bool = False) -> DaggerDataset:
+    """The DaggerDataset of a train config's `map.dagger` block (the v2 Habitat entry's other settings); hidden=True:
+    the HiddenDaggerDataset of `map.dagger_hidden` (Phase 13)."""
     d = config["datasets"]["habitat_mapmad_v2"]
-    g = config["map"]["dagger"]
-    return DaggerDataset(
+    g = config["map"]["dagger_hidden" if hidden else "dagger"]
+    extra: Dict[str, Any] = {"hidden_cfg": g} if hidden else {}
+    return (HiddenDaggerDataset if hidden else DaggerDataset)(**extra,
         map_cfg=config["map"], habitat_modes=config["habitat_modes"], goal_mask_prob=config["goal_mask_prob"],
         seed=config["seed"], train=train, exclude_drives=None, index_dir=g["index_dir"],
         data_folder=g["data_folder"], data_split_folder=g[split], dataset_name="habitat_mapmad_v2",
@@ -133,6 +195,20 @@ def union_report(main: MapMaDV2Dataset) -> Dict[str, Any]:
         s8, sd = len(main.pools["seen"]), len(main.dagger.pools["seen"])
         out.update(phase8_seen=int(s8), dagger_seen=int(sd), dagger_seen_share=sd / (s8 + sd))
     return out
+
+
+def hidden_report(main: MapMaDV2Dataset, epochs: int, samples_per_epoch: int, habitat_share: float) -> Dict[str, Any]:
+    """Phase 13: the equal-count rule's numbers (p13_rules.md §4): q, expected draws per epoch of both DAgger sets, and
+    the hidden set's repeat factor over the run (expected draws / distinct samples; > 1 = drawn with replacement)."""
+    n8, nd, nh = len(main.pools["search"]), len(main.dagger.pools["search"]), len(main.dagger_hidden.pools["explore"])
+    p = dict(zip(M.HABITAT_MODES_V2, main.mode_p))
+    hab = samples_per_epoch * habitat_share
+    map_draws, hid_draws = hab * p["search_map"] * nd / (n8 + nd), hab * p["explore"] * main.hidden_q
+    return {"hidden_samples": int(nh), "hidden_drives": len(main.dagger_hidden.traj_names), "hidden_q": main.hidden_q,
+            "map_dagger_samples": int(nd), "map_dagger_share_of_search": nd / (n8 + nd),
+            "expected_draws_per_epoch": {"map_dagger": round(map_draws), "hidden_dagger": round(hid_draws)},
+            "hidden_repeat_factor": round(hid_draws * epochs / max(nh, 1), 3), "habitat_draws_per_epoch": round(hab),
+            "search_phase_only": bool(main.dagger_hidden.map_cfg_hidden.get("search_phase_only"))}
 
 
 def dagger_loss(cfg: Dict[str, Any], checkpoints: Dict[str, str], n: int, seed: int, device) -> Dict[str, Any]:
@@ -214,6 +290,12 @@ def main(argv: Optional[List[str]] = None) -> None:
     rep = union_report(main_ds)
     test = build_dagger_dataset(cfg, "test", train=False)
     rep.update(dagger_test_samples=len(test), dagger_test_drives=len(test.traj_names))
+    if cfg["map"].get("dagger_hidden"):  # Phase 13: the equal-count rule's numbers
+        w = cfg["dataset_weights"]
+        hab = float(w["habitat_mapmad_v2"]) / sum(float(v) for k, v in w.items() if not k.startswith("_"))
+        rep["hidden"] = hidden_report(main_ds, int(cfg["epochs"]), int(cfg["epoch_samples"]), hab)
+        htest = build_dagger_dataset(cfg, "test", train=False, hidden=True)
+        rep["hidden"].update(test_samples=len(htest), test_drives=len(htest.traj_names))
     os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
     with open(args.out, "w") as f:
         json.dump(rep, f, indent=1)

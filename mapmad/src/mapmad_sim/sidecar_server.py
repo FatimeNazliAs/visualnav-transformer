@@ -43,6 +43,17 @@ def limo_factory(gpu: int, seed: int = 0) -> RobotFactory:
     return make
 
 
+def dets_record(dets: Any) -> list:
+    """Phase 13: recogniser detections -> [{"box": [x0, y0, x1, y1] px or None, "point", "score" (raw), "value" (map
+    value)}] rounded to 2 / 6 digits (the step log's own rounding is 6 digits)."""
+    out = []
+    for d in dets:
+        out.append({"box": None if d.box is None else [round(float(v), 2) for v in d.box],
+                    "point": None if d.point is None else [round(float(v), 2) for v in d.point],
+                    "score": round(float(d.raw_score), 6), "value": round(float(d.score), 6)})
+    return out
+
+
 class SimService:
     """Answers protocol requests; keeps one home loaded and reloads it only when home, camera FOV, the need for a
     depth camera or the Phase 7 camera setting (`camera` at reset; absent = robot_limo.yaml's camera) change.
@@ -66,6 +77,14 @@ class SimService:
     "teacher" = {spec, tau, seen, mode, mark_radius_m} -> every reply carries "teacher" (arm F's decision); every
     reply carries "timing" = {"rec_ms"} (recogniser round trip; timing only, never in a step log) and `state` the
     frame's detection count "n_dets".
+
+    Phase 13 arm VF ("vf" = search_wire.vf_wire block in the search_v2 settings): search_vf.VFAgent decides every
+    step (its ITM server at vf.itm, connection kept across episodes); its decision goes out as "teacher" (so
+    closed_loop/frontier_policy.py steers it as arm F) and its extras as "vf" (cosine, chosen frontier, its value).
+
+    Phase 13 ("log_dets": true in the search_v2 settings): every reply also carries "dets" (dets_record: the
+    recogniser's boxes and scores of the frame; [] for other target sources), which the runner writes to a file of
+    its own beside the step log.
     """
 
     def __init__(self, factory: RobotFactory) -> None:
@@ -81,6 +100,8 @@ class SimService:
         self.target_source: Optional[Any] = None  # Phase 12: search_exam.TargetSource (kept across episodes)
         self.rule: Optional[Any] = None  # Phase 12: search_exam.RuleSpec of the episode
         self.agent: Optional[Any] = None  # Phase 12: search_exam.FrontierAgent (arm F)
+        self.itm: Optional[Any] = None  # Phase 13: search_vf.ITMSource (arm VF; kept across episodes)
+        self.vf: Optional[Any] = None  # Phase 13: search_vf.VFAgent (arm VF)
 
     def handle(self, msg: Dict[str, Any]) -> Dict[str, Any]:
         cmd = msg["cmd"]
@@ -127,7 +148,7 @@ class SimService:
         self.online_map = None
         self.search = None
         self.episode = episode
-        self.rule, self.agent = None, None
+        self.rule, self.agent, self.vf = None, None, None
         if searching:
             from mapmad_sim.search_v2 import SearchMap, SearchSpec, instances_of
 
@@ -142,6 +163,8 @@ class SimService:
                 self.rule = RuleSpec.from_wire(sv.get("rule"))
                 if sv.get("teacher"):
                     self.agent = FrontierAgent(FrontierSpec.from_wire(sv["teacher"]))
+            if sv.get("vf"):
+                self.vf = self._vf_agent(sv["vf"], episode)
         extra: Dict[str, Any] = {}
         if outputs.get("map") or outputs.get("grid"):  # Phase 5 online map (v1 tensor / planner grid)
             from mapmad_sim.depth_map import MapSpec
@@ -172,6 +195,16 @@ class SimService:
         t = episode["target"]
         return source, self.target_source, t.get("prompt") or PROMPTS[t["category"]]
 
+    def _vf_agent(self, wire: Dict[str, Any], episode: Dict[str, Any]) -> Any:
+        """Phase 13: arm VF's agent of the episode (search_vf.VFAgent), its ITM connection kept across episodes."""
+        from mapmad_sim.search_vf import ITMSource, VFAgent, VFSpec, vf_word
+
+        spec = VFSpec.from_wire(wire)
+        if self.itm is None:
+            self.itm = ITMSource()
+        self.itm.ensure(spec.itm)
+        return VFAgent(spec, self.itm, VFAgent.text(spec.value, vf_word(episode)), self.search.fmap.shape)
+
     def observation(self) -> Dict[str, Any]:
         """The picture at the current pose; with an online map also its new frame and the requested map outputs."""
         obs = self.robot.observe()
@@ -185,12 +218,13 @@ class SimService:
         if self.search is not None:
             self.search.add_frame(self.robot, obs)
             out["maps"] = self.search.windows(self.pose2d())
-            if self.rule is not None or self.agent is not None:
-                out.update(self.exam_outputs())
+            if self.rule is not None or self.agent is not None or self.vf is not None:
+                out.update(self.exam_outputs(obs))
         return out
 
-    def exam_outputs(self) -> Dict[str, Any]:
-        """Phase 12: the rule-stop value, arm F's decision and the recogniser's timing of the frame just added."""
+    def exam_outputs(self, obs: Optional[Dict[str, np.ndarray]] = None) -> Dict[str, Any]:
+        """Phase 12: the rule-stop value, arm F's decision and the recogniser's timing of the frame just added
+        (Phase 13 arm VF: its decision as "teacher", its extras as "vf", the ITM round trip as timing "itm_ms")."""
         from mapmad_sim.search_exam import rule_value
 
         pose, s = self.pose2d(), self.search
@@ -202,8 +236,19 @@ class SimService:
             out["rule"] = {"value": v, "cell": list(cell) if cell is not None else None}
         if self.agent is not None:
             out["teacher"] = self.agent.step(s, pose)
+        if self.vf is not None:
+            from mapmad_sim.search_vf import CameraView
+
+            view = CameraView(obs["depth"], self.robot.camera_transform(), float(self.robot.spec.hfov_deg),
+                              float(s.spec.map_spec.max_depth_m))
+            out["teacher"] = self.vf.step(s, pose, obs["rgb"], view)
+            out["vf"] = out["teacher"].pop("vf")
         src = self.target_source
         out["timing"] = {"rec_ms": src.last_ms if (src is not None and s.source == "recogniser") else 0.0}
+        if self.vf is not None:
+            out["timing"]["itm_ms"] = self.itm.last_ms
+        if self.outputs["search_v2"].get("log_dets"):  # Phase 13: this frame's recogniser boxes + scores
+            out["dets"] = dets_record(s.last_dets if s.source == "recogniser" else [])
         return out
 
     def pose2d(self) -> Tuple[float, float, float]:
@@ -252,6 +297,9 @@ class SimService:
         if self.target_source is not None:
             self.target_source.close()
             self.target_source = None
+        if self.itm is not None:
+            self.itm.close()
+            self.itm = None
 
 
 def serve(listener: socket.socket, service: SimService, key: str) -> None:

@@ -139,7 +139,8 @@ def navmesh_sha256(pathfinder: Any) -> str:
 
 
 class LimoSim:
-    """One HM3D home with the virtual LIMO in it. Use as a context manager or call close()."""
+    """One HM3D home (or, Phase 13, an MP3D home: split "mp3d") with the virtual LIMO in it. Use as a context manager
+    or call close()."""
 
     def __init__(self, split: str, home: str, spec: RobotSpec, semantic: bool = False, depth: bool = False,
                  gpu: int = 0, seed: int = 0) -> None:
@@ -149,7 +150,7 @@ class LimoSim:
         from mapmad_sim import config
 
         self.split, self.home, self.spec = split, home, spec
-        settings = config.hm3d_sim_settings(split, home, width=spec.width, height=spec.height, hfov=spec.hfov_deg,
+        settings = config.sim_settings(split, home, width=spec.width, height=spec.height, hfov=spec.hfov_deg,
                                             sensor_height=spec.camera_height_m, depth_sensor=depth,
                                             semantic_sensor=semantic, gpu_device_id=gpu, seed=seed)
         cfg = make_cfg(settings)

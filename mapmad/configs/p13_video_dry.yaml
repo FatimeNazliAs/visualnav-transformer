@@ -1,0 +1,98 @@
+# Phase 13 step 13.1 DRY material for the checkable video renderer (mapmad/scripts/p13_videos.py): the
+# p12_exam.yaml structure with two arms (M21, F), the exam set of Phase 12 (read only), 120 steps per run and the
+# recogniser's boxes logged per frame (run.log_dets). P12_DEV_CHOICES.json is copied into out_dir (tau for arm F).
+# Never an exam result: development runs only.
+out_dir: p13_dry/video_dev
+datagen: p8_datagen_v3a.yaml
+camera: camera_fair.yaml
+
+sets:
+  exam:                               # Phase 12's exam set, read only (same noise seeds: seed_salt mapmad-p12)
+    folder: ../../p12_search_exam/exam_set
+    split: val
+    objectnav_split: val
+    homes: all
+    id_prefix: p12e
+    seed_salt: mapmad-p12
+
+set_rules:                            # exam_set.SetRules (Phase 5 / 11 numbers; goal-photo fields unused)
+  start_snap_max_m: 0.2
+  view_point_max_snap_m: 0.2
+  same_storey_dy_m: 0.5
+  distance_m: [3.0, 15.0]
+  bins_m: [3.0, 6.0, 10.0, 15.0]
+  goal_photo_min_share: 0.05
+  target_point_max_m: 1.0
+  floor_names: [floor, carpet, rug, mat, doormat]
+  goal_photo_box_m: null
+
+run:
+  success_m: 0.2                      # walking distance to the nearest usable view point of ANY instance
+  max_steps: 120                      # DRY: 120 steps (the exam drives 1,000)
+  stop_at_success: false              # block item 4: every run 1,000 steps; oracle and rule stop scored from the log
+  stuck_steps: 100
+  seeds: 3
+  seed_salt: mapmad-p12               # default; each set names its own
+  topdown_m_per_px: 0.05
+  rule_stop:                          # block item 4: logged every step, judged with tau afterwards
+    ahead_m: 1.0
+    half_angle_deg: 30.0
+    min_views: 2
+  house_seen:                         # v2 plan 8.8: a floor cell is seen if in view, <= 3.0 m, line of sight
+    max_m: 3.0
+    cell_m: 0.1
+  revisit_cell_m: 0.5
+  success_at: [500]
+  log_dets: true                      # Phase 13: the recogniser's boxes + scores of every frame (dets file per run)
+
+policy:                               # mapmad_v2 arms: Phase 5 MapMaD arm settings (Phase 11)
+  num_samples: 8
+  sample_index: 0
+  waypoint_index: 1
+  context_spacing: 5
+  step_m: 0.25
+
+policies:                             # the other policy types
+  nomad: {num_samples: 8, sample_index: 0, waypoint_index: 2, context_spacing: 1}     # Phase 5 arm A
+  mapmad_v1: {num_samples: 8, sample_index: 0, waypoint_index: 1, context_spacing: 5, step_m: 0.25}   # Phase 5 C
+  frontier: {lookahead_m: 0.5, mark_radius_m: 1.0}   # v1 planner steering; goal = nearest free cell <= 1 m of the mark
+
+map_settings:                         # V1's online map (Phase 5): Phase 2 builder + the v1 train config's crop
+  builder: p2_datagen.yaml
+  crop: repo:train/config/mapmad_p4_C.yaml
+
+checkpoints:                          # sha256 checked before every run (arm_table.ArmTable.verify)
+  v2:
+    path: p10_v2_train/runs/v2_s1_2026_10_21_08_42_50/ema_19.pth
+    sha256: 6d2492f19f7f1a5ccadea3f120b66a78b04bb5e88d10ca701fc523e0f9aee984
+    config: repo:train/config/mapmad_v2.yaml
+  v21:
+    path: p11_dagger/runs/v21_s1_2026_10_23_06_11_59/ema_9.pth
+    sha256: ebaabe28c490567cbd453ae426332864ca1ef22961bf1fabae59bb62bdb7c74f
+    config: repo:train/config/mapmad_v21.yaml
+  v1:
+    path: p4_train/C_2026_10_11_05_21_43/ema_19.pth
+    sha256: 8093c6dba5f91bce48903e74ad9128fde50cccbf9a8f587f9aec8b288bffd9e2
+    config: repo:train/config/mapmad_p4_C.yaml
+  official:
+    path: weights/official/nomad.pth
+    sha256: 70f79b8262527e20e56ced64a3e3d7ef91855bc9e7c3fa348d78edcb83c6a333
+    config: weights/official/nomad.yaml
+  headline: {from_choice: headline}   # v2 or v21 by block item 1 (P12_DEV_CHOICES.json)
+
+recognisers:                          # block item 2 (Phase 9 choice.json R1 / R2)
+  yoloe: {model: yoloe, threshold: 0.01, p99: 0.7878322374820708, vlm: false}
+  qwen3vl: {model: qwen3vl, threshold: 0.0, p99: 1.0, vlm: true}
+
+cameras:                              # N-fish only (Phase 7 fish045); every other arm: camera_fair.yaml
+  fish045: {lens: fisheye, height_m: 0.45, pitch_deg: 0.0, hfov_deg: 66.5,
+            double_sphere: {fx: 117.591603, fy: 117.591603, cx: 82.192118, cy: 54.023754, xi: 0.8, alpha: 0.72,
+                            width: 160, height: 120, circle_px: 96.909709}}
+
+arms:                                 # as in p12_exam.yaml
+  M21: {checkpoint: v21, maps: true, target: recogniser, recogniser: yoloe, pair: v21, label: "MapMaD v2.1"}
+  F: {policy: frontier, target: recogniser, recogniser: yoloe, label: "map + frontier"}
+
+videos:                               # render-plan / same-run test: 2 picks with runs + 1 pick without (missing run)
+  list: video_list_dev.json           # below out_dir (written by hand for the DRY test, picks[].name / .episode)
+  arms: [M21, F]

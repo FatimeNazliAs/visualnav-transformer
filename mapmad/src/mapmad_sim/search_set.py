@@ -48,9 +48,10 @@ def dev_episode_id(home: str, category: str, objectnav_id: str) -> str:
 
 def set_episode_id(prefix: str, home: str, category: str, objectnav_id: str) -> str:
     """<prefix>-<home5>-<category>-<id> (p11d / p12e; OVON: p12o-<split>); a category's spaces, dots and other
-    characters become "_" (ids name files: no "__" and no ".")."""
+    characters become "_" (ids name files: no "__" and no "."). An MP3D home (Phase 13: no "-" in its name) keeps its
+    whole scene id: p13b-2azQ1b91cZZ-chair-12."""
     cat = "_".join(w for w in re.split(r"[^A-Za-z0-9]+", category) if w)
-    return f"{prefix}-{home[:5]}-{cat}-{objectnav_id}"
+    return f"{prefix}-{home[:5] if '-' in home else home}-{cat}-{objectnav_id}"
 
 
 def rollout_sample_id(home: str, n: int) -> str:

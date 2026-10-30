@@ -55,3 +55,16 @@ class FrontierPolicy(Policy):
             v, w = pd_controller(np.array([fwd, left]), self.max_v, self.max_w, self.dt)
         info["aim_m"] = [round(fwd, 4), round(left, 4)]
         return Command(v, w, info)
+
+
+class VFPolicy(FrontierPolicy):
+    """Phase 13 arm VF (mapmad_sim.search_vf.VFAgent decides on the simulator side): FrontierPolicy's steering
+    unchanged; the step log's policy info also carries the agent's extras (obs.extras["vf"]: ITM cosine of the frame,
+    chosen frontier, its value, number of frontiers, mark active)."""
+
+    name = "vf"
+
+    def act(self, obs: Observation) -> Command:
+        cmd = super().act(obs)
+        cmd.info["vf"] = obs.extras.get("vf")
+        return cmd

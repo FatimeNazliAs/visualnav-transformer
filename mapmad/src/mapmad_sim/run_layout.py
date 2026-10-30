@@ -121,6 +121,10 @@ class RunLayout:
     def log(self, arm: str, episode_id: str) -> Path:
         return self.root / "logs" / arm / f"{episode_id}.jsonl"
 
+    def dets(self, arm: str, episode_id: str) -> Path:
+        """Phase 13: the recogniser's boxes and scores of every frame of a run (beside its step log, never in it)."""
+        return self.root / "dets" / arm / f"{episode_id}.jsonl"
+
     def logs(self, arm: Optional[str] = None):
         """Every step log (of one arm), sorted."""
         return sorted((self.root / "logs").glob(f"{arm or '*'}/*.jsonl"))

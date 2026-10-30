@@ -4,6 +4,8 @@
 hm3d_scenes: /hm3d                    # HM3D v0.2 homes (read-only): /hm3d/<split>/<id>/<id>.basis.glb
 hm3d_semantics: /hm3d_semantics       # our extracted HM3D Semantics v0.2 copy (read-only)
 objectnav: /objectnav                 # ObjectNav HM3D v2 episodes (read-only): /objectnav/<split>/...
+mp3d_scenes: /mp3d                   # Phase 13: MP3D homes (read-only copy): /mp3d/<scene>/<scene>.glb (+ .house, _semantic.ply)
+mp3d_objectnav: /mp3d_objectnav      # Phase 13: ObjectNav MP3D episodes (read-only): /mp3d_objectnav/<train|val>/content/<scene>.json.gz
 habitat_starter: /opt/habitat-starter # toolbox inside the image (its data/ is mounted read-only)
 mapmad_data: /mapmad_data             # generated practice drives
 outputs: /outputs/mapmad              # results, one folder per phase (p0_setup, ...)

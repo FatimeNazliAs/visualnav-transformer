@@ -29,11 +29,14 @@ class Goal:
 def content_file(split: str, home: str, root: Optional[Path] = None) -> Path:
     """The goal file of a home, e.g. content_file("train", "00081-5biL7VEkByM") -> .../train/content/5biL7VEkByM.json.gz."""
     root = root or config.paths()["objectnav"]
-    return root / split / "content" / f"{home.split('-', 1)[1]}.json.gz"
+    return root / split / "content" / f"{config.scene_id(home)}.json.gz"
 
 
 def category_of(key: str) -> str:
-    """'<scene>.basis.glb_tv_monitor' -> 'tv_monitor', '<scene>.basis.glb_chair' -> 'chair'."""
+    """'<scene>.basis.glb_tv_monitor' -> 'tv_monitor', '<scene>.basis.glb_chair' -> 'chair' (MP3D, Phase 13:
+    '<scene>.glb_chest_of_drawers' -> 'chest_of_drawers')."""
+    if ".glb_" in key and ".basis.glb_" not in key:  # MP3D (Phase 13); HM3D / OVON keys keep the rule below
+        return key.split(".glb_", 1)[1]
     return "tv_monitor" if key.endswith("tv_monitor") else key.rsplit("_", 1)[-1]
 
 

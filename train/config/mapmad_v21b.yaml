@@ -1,0 +1,19 @@
+# MapMaD v2.1b (Phase 13 step 13.4, kickoff §3 items 2-3, p13_rules.md §4): v2.1's recipe with BOTH DAgger sets.
+# From v2 ema_19 (weights; the EMA starts from them too), Phase 11 recipe exactly (mapmad_v21.yaml: two lr groups,
+# pretrained 1e-5 / map encoders 1e-4, warm-up over epoch 1 + cosine, batch 256, 10 x 200,000 samples, seed 1, modes
+# 45/20/20/15, GoStanford 50/50). Data: map-DAgger (Phase 11, 524,409 samples) in search_map as in v2.1, plus the
+# maps-hidden DAgger round (13.3: v2 drove with both maps hidden on the same rollout set, same labeller), search-phase
+# states only (before the first true sight), served in the explore mode (photo and maps hidden) with the same number
+# of draws per epoch as map-DAgger (equal-count rule, dataset_dagger.py). ema_9 fixed in advance; no dev pick.
+base_config: mapmad_v21.yaml
+run_name: v21b_s1
+run_label: v21b_s1
+logs_root: /outputs/mapmad/p13_claim
+
+map:
+  dagger_hidden:
+    data_folder: /mapmad_data/habitat_mapmad_v2_dagger_hidden
+    train: /mapmad_data/splits/habitat_mapmad_v2_dagger_hidden/train/
+    test: /mapmad_data/splits/habitat_mapmad_v2_dagger_hidden/test/
+    index_dir: /mapmad_data/p13_index
+    search_phase_only: true

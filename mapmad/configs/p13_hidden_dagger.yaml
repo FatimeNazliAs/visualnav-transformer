@@ -1,0 +1,66 @@
+# Phase 13 step 13.3 — the maps-hidden DAgger round (kickoff §3 item 2-3, p13_rules.md §3): v2 ema_19 drives with BOTH
+# maps hidden on Phase 11's rollout set (fingerprint 8e3428c7...), recorded as Phase 8 drives, labelled by the Phase 11
+# labeller (re-ask look-ahead, frozen blacklist, collision streak >= 20 skipped first). Everything as Phase 11's
+# rollouts (configs/p11_dagger.yaml: run settings, noise salt, seed index 0, target layer = sim truth + Phase 8 noise,
+# stop at the success zone) except the arm (maps hidden) and where the drives go. Phase 11 style config (no
+# `policies` block): run_search builds exactly Phase 11's server settings. Read by run_search, p11_labels.py.
+out_dir: p13_claim/hidden_dagger
+datagen: p8_datagen_v3a.yaml
+camera: camera_fair.yaml
+
+sets:
+  rollout:                            # Phase 11's frozen rollout set (1,448 episodes, 145 labelled train homes), reused
+    folder: ../../p11_dagger/rollouts/set
+    seed_salt: mapmad-p11             # = Phase 11's rollouts: the same diffusion + target-layer noise per episode
+
+set_rules:
+  start_snap_max_m: 0.2
+  view_point_max_snap_m: 0.2
+  same_storey_dy_m: 0.5
+  distance_m: [3.0, 15.0]
+  bins_m: [3.0, 6.0, 10.0, 15.0]
+  goal_photo_min_share: 0.05
+  target_point_max_m: 1.0
+  floor_names: [floor, carpet, rug, mat, doormat]
+  goal_photo_box_m: null
+
+run:                                  # = p11_dagger.yaml `run`
+  success_m: 0.2
+  max_steps: 1000
+  stuck_steps: 100
+  seeds: 3
+  seed_salt: mapmad-p11
+  topdown_m_per_px: 0.05
+
+policy:
+  num_samples: 8
+  sample_index: 0
+  waypoint_index: 1
+  context_spacing: 5
+  step_m: 0.25
+
+checkpoints:
+  v2:
+    path: p10_v2_train/runs/v2_s1_2026_10_21_08_42_50/ema_19.pth
+    sha256: 6d2492f19f7f1a5ccadea3f120b66a78b04bb5e88d10ca701fc523e0f9aee984
+    config: repo:train/config/mapmad_v2.yaml
+
+arms:
+  v2h: {checkpoint: v2, maps: false, seeds: [0]}   # the hidden-DAgger driver (maps hidden, Phase 11 rollout seed 0)
+
+rollouts:                             # = p11_dagger.yaml `rollouts` (labeller numbers), own data folder
+  data_folder: habitat_mapmad_v2_dagger_hidden   # below <mapmad_data>
+  splits: splits/habitat_mapmad_v2_dagger_hidden # below <mapmad_data>: train/ test/ traj_names.txt
+  seed_index: 0
+  collision_skip_steps: 20
+  label_steps: 40
+  label_every: 5
+  label_replan: true
+  skip_order: collision_first
+  label_check_drives: 50
+  label_check_seed: 11301
+  label_check_max_median_m: 0.25      # report only in Phase 13 (kickoff 13.3)
+  label_check_max_wp1_median_m: 0.10
+  max_teacher_fail_share: 0.40        # Phase 11's automatic stop; Phase 13: recorded (p13_rules §3), no stop
+  sheet_states: 10
+  sheet_seed: 11401

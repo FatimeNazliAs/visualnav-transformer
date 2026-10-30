@@ -51,3 +51,20 @@ Don't edit `run_containers.sh` while it runs (bash reads scripts as it goes).
   (`pip install --user`) when it creates the container. Never install by hand.
 - **Sidecar (Phase 1):** the simulator server listens only on `mapmad-net`; never publish its port with `-p`
   (its messages are pickle).
+
+## VLFM port check (Phase 13, report-only)
+
+Runs the **original** VLFM code (bdaiinstitute/vlfm @ `584ed56`, MIT) with its own settings on 100 seeded HM3D v2
+val ObjectNav episodes, to compare its success rate with the paper's HM3D number (63.6 % SR).
+
+- Image `naz-mapmad-vlfm:0.1` from `Dockerfile.vlfm` (CUDA 11.3 devel + miniforge, Python 3.9, torch 1.12.1+cu113,
+  habitat-sim 0.2.4 conda, habitat-lab/baselines 0.2.420230405, GroundingDINO @ eeba084 with its CUDA op,
+  LAVIS 1.0.2). Every deviation from VLFM's README recipe is listed at the top of the Dockerfile.
+- Container `naz_mapmad_vlfm`: `run_containers.sh vlfm-build | vlfm | vlfm-down`. Mounts HM3D (`/hm3d`) and the
+  ObjectNav v2 episodes (`/objectnav`) read-only, the scene root (`$VLFM_SCENE_ROOT` -> `/scene_root`, the HM3D
+  v0.2 layout VLFM's episodes expect), `$MODEL_CACHE` (`/model_cache`; detector weights in `vlfm/`, BLIP-2 and
+  BERT downloads land in `vlfm/torch` and `vlfm/hf`) and `$NOMAD_OUTPUTS` (`/outputs`).
+- Launcher (unattended, resumable): `train/scripts/mapmad_p13/vlfm_port.sh <gpu> <n|all> <out_dir>`. It starts the
+  container if needed, starts VLFM's 4 model servers on per-GPU ports (12181+100*gpu ... +3), runs `vlfm.run` on
+  the not-yet-finished episodes, writes `results.jsonl` + `summary.json`, and stops only its own processes.
+- Episode list: `$NOMAD_OUTPUTS/mapmad/p13_claim/vlfm_port/episodes_100.json` (+ `.sha256`, checked at start).

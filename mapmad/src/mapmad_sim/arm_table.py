@@ -8,7 +8,8 @@
 An arm (config `arms:` entry) = a policy + its weights + what it is shown + what draws its map's target layer:
 - policy: `mapmad_v2` (MapMaDV2Inference, Phase 5 MapMaD settings), `nomad` (official NoMaD explore, Phase 5 arm A
   settings), `mapmad_v1` (Phase 4 checkpoint, one map token, Phase 5 MapMaD settings), `frontier` (arm F: the explorer
-  teacher on the robot's own map, steered as the v1 planner arm; no weights, deterministic);
+  teacher on the robot's own map, steered as the v1 planner arm; no weights, deterministic), `vf` (Phase 13 arm VF:
+  VLFM's BLIP-2 value-map frontier choice on the same map, F's marks; search_vf.py; no weights, deterministic);
 - checkpoint: a key of `checkpoints:` (none for `frontier`);
 - maps: MapMaD v2 sees its near + far windows (False = both hidden, NoMaD's own computation);
 - map_zero: v1 map layers given as 0 (V1: ["heat"]);
@@ -32,7 +33,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-POLICIES = ("mapmad_v2", "nomad", "mapmad_v1", "frontier")
+POLICIES = ("mapmad_v2", "nomad", "mapmad_v1", "frontier", "vf")
+NO_WEIGHTS = ("frontier", "vf")  # map-based arms without a network (Phase 13 "vf": VLFM-style, search_vf.py)
 TARGETS = ("truth_noisy", "recogniser", "none")
 CHOICES_FILE = "P12_DEV_CHOICES.json"  # Phase 12: the dev decisions (headline, deltas, tau), below out_dir
 
@@ -71,10 +73,13 @@ class Arm:
             raise ValueError(f"arm {self.name}: target {self.target!r} not in {TARGETS}")
         if (self.target == "recogniser") != (self.recogniser is not None):
             raise ValueError(f"arm {self.name}: target 'recogniser' needs a recogniser (and only it)")
-        if (self.policy == "frontier") == (self.checkpoint is not None):
-            raise ValueError(f"arm {self.name}: every policy but 'frontier' needs a checkpoint")
-        if self.policy == "frontier" and self.target == "none" and self.teacher_mode == "search":
+        if (self.policy in NO_WEIGHTS) == (self.checkpoint is not None):
+            raise ValueError(f"arm {self.name}: every policy but {NO_WEIGHTS} needs a checkpoint")
+        if self.policy in NO_WEIGHTS and self.target == "none" and self.teacher_mode == "search":
             raise ValueError(f"arm {self.name}: a searching frontier arm needs a target layer")
+        if self.policy == "vf" and (self.target != "recogniser" or self.teacher_seen != "layer"
+                                    or self.teacher_mode != "search"):
+            raise ValueError(f"arm {self.name}: a vf arm searches with a recogniser's layer marks")
         if self.teacher_seen not in ("layer", "truth") or self.teacher_mode not in ("search", "explore"):
             raise ValueError(f"arm {self.name}: teacher_seen layer|truth, teacher_mode search|explore")
         if "__" in self.name or "." in self.name or "/" in self.name:
@@ -91,7 +96,7 @@ class Arm:
     @property
     def deterministic(self) -> bool:
         """No random numbers: its seed-index-0 run stands for every seed index (Phase 5 planner rule)."""
-        return self.policy == "frontier"
+        return self.policy in NO_WEIGHTS
 
 
 @dataclass

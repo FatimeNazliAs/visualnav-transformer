@@ -1,4 +1,4 @@
-"""Object and surface labels of one labelled HM3D home, looked up at robot poses (needs LimoSim(semantic=True)).
+"""Object and surface labels of one labelled HM3D (or MP3D, Phase 13) home, looked up at robot poses (needs LimoSim(semantic=True)).
 
 One place for the label questions Phases 1, 2 and 5 ask (before Phase 5 the drive sampler built a whole Phase 1
 EpisodeBuilder just to reach these):
@@ -13,7 +13,15 @@ from typing import Any, Dict, Optional, Sequence, Tuple
 
 import numpy as np
 
+from mapmad_sim.config import is_mp3d
 from mapmad_sim.objects import name_matches, object_box
+
+
+def category_name(obj: Any, mpcat40: bool) -> str:
+    """Lower-case category name of a semantic object: HM3D's free text, or MP3D's mpcat40 category (Phase 13)."""
+    if obj.category is None:
+        return ""
+    return (obj.category.name("mpcat40") if mpcat40 else obj.category.name()).lower()
 
 
 class SceneLabels:
@@ -23,9 +31,11 @@ class SceneLabels:
         self.robot = robot
         objects = [o for o in robot.sim.semantic_scene.objects if o is not None]
         self.objects: Dict[int, Any] = {o.semantic_id: o for o in objects}
-        self.names: Dict[int, str] = {o.semantic_id: (o.category.name().lower() if o.category is not None else "")
-                                      for o in objects}
-        self.floor_ids = {i for i, n in self.names.items() if name_matches(n, floor_names)}
+        mp3d = is_mp3d(getattr(robot, "split", ""))
+        self.names: Dict[int, str] = {o.semantic_id: category_name(o, mp3d) for o in objects}
+        raw = {o.semantic_id: category_name(o, False) for o in objects}
+        # MP3D (Phase 13): names = mpcat40 categories; the floor = mpcat40 "floor" or a raw name in floor_names
+        self.floor_ids = {i for i, n in self.names.items() if name_matches(n, floor_names) or name_matches(raw[i], floor_names)}
 
     def box(self, object_id: int) -> Optional[Tuple[np.ndarray, np.ndarray]]:
         """(centre, size) of the object's world box, or None if the home has no such object."""

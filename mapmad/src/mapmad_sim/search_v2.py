@@ -96,6 +96,7 @@ class SearchMap:
         # Phase 12 (search_exam.py): what draws the noisy layer; truth_noisy = Phase 11 exactly
         self.source, self.recogniser, self.prompt = source, recogniser, prompt
         self.n_dets = 0  # detections drawn into the noisy layer this frame (recogniser: kept detections)
+        self.last_dets: List[Any] = []  # Phase 13: the recogniser's detections of this frame (boxes + scores, logged)
 
     # --- frame t --------------------------------------------------------------------------------------------------
     def add_frame(self, robot: Any, obs: Dict[str, np.ndarray]) -> int:
@@ -117,6 +118,7 @@ class SearchMap:
             dets = self.recogniser.detect(obs["rgb"], depth, self.prompt)
             noisy = recogniser_scores(dets, cells, depth.shape)
             self.n_dets = len(dets)
+            self.last_dets = dets
         elif self.source == "none":  # no target layer at all (no false marks either)
             noisy, self.n_dets = {}, 0
         self.fusions["clean"].update(t, cells.view, sc.clean)

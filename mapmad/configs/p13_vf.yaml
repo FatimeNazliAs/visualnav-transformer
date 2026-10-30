@@ -1,0 +1,21 @@
+# Phase 13 arm VF ("VLFM-style", report only): VLFM's frontier choice (BLIP-2 ITM value map) on MapMaD's online map.
+# Read by search_wire.arm_wire (both containers) and mapmad_recog.itm_server (naz_mapmad_recog).
+# Every VLFM number below names its source line in the original VLFM code (MIT; copy in
+# /outputs/mapmad/p13_claim/vlfm_port/vlfm_src_probe/vlfm/).
+
+blip2_itm:                            # mapmad_recog.itm_server: the ITM model (VLFM vlm/blip2itm.py: LAVIS
+  hf: Salesforce/blip2-itm-vit-g      # blip2_image_text_matching "pretrain", match_head="itc" = this HF port, ITC cosine)
+  revision: 520bf73fd0ef6ccce791cd3f06908040aef2d8cc   # pinned HF commit (downloaded 2026-10-28)
+  cache: /model_cache/hf              # HF_HOME inside naz_mapmad_recog (= /mnt/shared_disk/nazli/model_cache/hf)
+  dtype: float16                      # whole model fp16 on cuda:0 (LAVIS: ViT fp16, Q-Former fp32; see itm_server)
+  max_words: 50                       # LAVIS blip_caption "eval" text processor (pre_caption)
+
+vf:                                   # search_vf.VFSpec (sent at reset as search_v2["vf"]["value_map"])
+  prompt: "Seems like there is a {target} ahead."   # base_objectnav_policy.py:377 (target_object -> the episode word)
+  min_confidence: 0.25                # value_map.py:40  cone edge confidence (cos^2 remapped to [0.25, 1])
+  decision_threshold: 0.35            # value_map.py:41  new confidence < this and < old -> ignored
+  use_max_confidence: false           # base_objectnav_policy.py:381 (VLFMConfig) -> weighted-average fusion
+  value_radius_m: 0.5                 # itm_policy.py:266 sort_waypoints(frontiers, 0.5): median of seen values within
+  stick_margin: 0.01                  # itm_policy.py:119 keep the last frontier if value + 0.01 > last value
+  stick_radius_m: 0.5                 # itm_policy.py:111 "last frontier" = the same point or the nearest within 0.5 m
+  local_px_per_m: 20                  # base_map.py:15 VLFM's map resolution: the FOV cone is drawn at 5 cm

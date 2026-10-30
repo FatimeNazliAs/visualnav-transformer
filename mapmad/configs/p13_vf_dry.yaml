@@ -1,0 +1,13 @@
+# Phase 13 arm VF -- DRY smoke config (150 steps, one HM3D exam episode, run twice for determinism). Not an exam
+# config: p12_exam.yaml's structure (extends) with its own out_dir, the Phase 12 exam set, and the VF arm.
+extends: p12_exam.yaml
+out_dir: p13_dry/vf_smoke
+sets:
+  exam:
+    folder: ../../p12_search_exam/exam_set
+run:
+  max_steps: 150
+policies:
+  vf: {config: p13_vf.yaml}           # VLFM's value-map numbers (search_wire.vf_wire)
+arms:
+  VF: {policy: vf, target: recogniser, recogniser: yoloe, label: "VLFM-style (BLIP-2 value map, F's marks)"}

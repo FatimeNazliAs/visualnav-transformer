@@ -7,7 +7,8 @@
 #   mapmad/docker/run_containers.sh down      # stop + remove naz_mapmad and naz_mapmad_habitat only
 #
 # Single steps: network | habitat | nomad | recog-build | recog (Phase 9 recogniser sidecar) | recog-down (stop + remove
-# naz_mapmad_recog only; Phase 12 recreates it from this worktree: recog-down, then recog).
+# naz_mapmad_recog only; Phase 12 recreates it from this worktree: recog-down, then recog) | vlfm-build | vlfm |
+# vlfm-down (Phase 13 VLFM port check, naz_mapmad_vlfm only).
 # Host paths and container names come from paths.env (override with env vars), e.g. a second worktree:
 #   HABITAT_CONTAINER=naz_mapmad_habitat_p9 mapmad/docker/run_containers.sh habitat
 set -euo pipefail
@@ -57,6 +58,8 @@ cmd_habitat() {
         -v "$HM3D_SCENES":/hm3d:ro \
         -v "$HM3D_SEMANTICS":/hm3d_semantics:ro \
         -v "$OBJECTNAV_V2":/objectnav:ro \
+        -v "$MP3D_SCENES":/mp3d:ro \
+        -v "$MP3D_OBJECTNAV":/mp3d_objectnav:ro \
         -v "$MAPMAD_DATA":/mapmad_data \
         -v "$NOMAD_OUTPUTS":/outputs \
         -v "$HABITAT_STARTER/data":/opt/habitat-starter/data:ro \
@@ -111,6 +114,33 @@ cmd_recog_down() {
     if exists "$RECOG_CONTAINER"; then run docker rm -f "$RECOG_CONTAINER"; else echo "$RECOG_CONTAINER not present"; fi
 }
 
+# Phase 13 VLFM port check: original VLFM code in its own image (Dockerfile.vlfm). The model servers and the
+# evaluation run inside it via train/scripts/mapmad_p13/vlfm_port.sh, which also calls vlfm / vlfm-down.
+cmd_vlfm_build() {
+    run docker build -f "$HERE/Dockerfile.vlfm" -t "$VLFM_IMAGE" "$HERE"
+}
+
+cmd_vlfm() {
+    if exists "$VLFM_CONTAINER"; then echo "$VLFM_CONTAINER exists"; return; fi
+    make_host_dirs
+    mkdir -p "$MODEL_CACHE/vlfm" "$VLFM_SCENE_ROOT"
+    # --init: PID 1 reaps the model servers the launcher stops (`sleep infinity` would leave zombies)
+    run docker run -d --init --name "$VLFM_CONTAINER" \
+        --gpus all -e NVIDIA_DRIVER_CAPABILITIES=compute,utility,graphics \
+        "${USER_ARGS[@]}" --shm-size 8g \
+        -v "$REPO":/app/visualnav-transformer "${GIT_ARGS[@]}" \
+        -v "$HM3D_SCENES":/hm3d:ro \
+        -v "$OBJECTNAV_V2":/objectnav:ro \
+        -v "$VLFM_SCENE_ROOT":/scene_root:ro \
+        -v "$MODEL_CACHE":/model_cache \
+        -v "$NOMAD_OUTPUTS":/outputs \
+        "$VLFM_IMAGE" sleep infinity
+}
+
+cmd_vlfm_down() {
+    if exists "$VLFM_CONTAINER"; then run docker rm -f "$VLFM_CONTAINER"; else echo "$VLFM_CONTAINER not present"; fi
+}
+
 cmd_up() { cmd_network; cmd_habitat; cmd_nomad; }
 
 cmd_down() {
@@ -133,5 +163,8 @@ case "${1:-}" in
     recog-build) cmd_recog_build ;;
     recog) cmd_recog ;;
     recog-down) cmd_recog_down ;;
+    vlfm-build) cmd_vlfm_build ;;
+    vlfm) cmd_vlfm ;;
+    vlfm-down) cmd_vlfm_down ;;
     *) sed -n '2,10p' "$0"; exit 1 ;;
 esac
