@@ -1,6 +1,7 @@
 """Phase 13 checkable videos (step 13.1): one video per (arm, episode) of a finished closed-loop run, made from its
 step log and its recogniser "dets" file, with automatic checks that the video shows exactly what was logged.
-Inside naz_mapmad_habitat, from /app/visualnav-transformer (a YOLOE sidecar on --recog-port, started by the caller):
+Inside naz_mapmad_habitat, from /app/visualnav-transformer (a YOLOE sidecar on --recog-port, started by the caller;
+arm VF also needs a BLIP-2 ITM server on --itm-port, because its replay runs the VF agent as in the exam):
 
     python mapmad/scripts/p13_videos.py render --config <phase config> --subdir <run subdir> --arms A B ... \
         --episodes E1 E2 ... --seed-index 0 --gpu G --recog-port P --out <folder>     # resumable
@@ -484,7 +485,8 @@ def render_one(service: SimService, boxes: TrueBoxes, layout: RunLayout, table: 
         raise SystemExit(f"{dets_path}: {len(dets)} frames, the log has {len(steps_log) + 1}")
     run = layout.cfg["run"]
     score = score_run(log, episode, run, tau)
-    w = arm_wire(table, arm, load_config, (RECOG_HOST, args.recog_port), tau)
+    itm = (RECOG_HOST, args.itm_port) if args.itm_port else None  # arm VF: its replay asks the BLIP-2 ITM server
+    w = arm_wire(table, arm, load_config, (RECOG_HOST, args.recog_port), tau, itm)
     rep = replay(service, boxes, log_path, episode, w, int(run["rule_stop"]["min_views"]))
     steps = rep["steps"]
     hits = [ve.hit(dets[t], steps[t]["true"]) for t in range(len(steps))]
@@ -823,6 +825,7 @@ def main() -> None:
     p.add_argument("--seed-index", type=int, default=0)
     p.add_argument("--gpu", type=int, default=0)
     p.add_argument("--recog-port", type=int)
+    p.add_argument("--itm-port", type=int, help="render / render-plan: the BLIP-2 ITM server (needed by arm VF)")
     p.add_argument("--out", type=Path, required=True, help="render/check: the video folder; same-run: the JSON report")
     p.add_argument("--shard", default="0/1", help="render-plan: k/n = only videos k, k + n, ... (one call per GPU, "
                    "each with its own sidecar and --out the same folder)")

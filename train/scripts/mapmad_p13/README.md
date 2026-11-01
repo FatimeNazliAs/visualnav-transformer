@@ -18,6 +18,7 @@ copy in `mapmad/configs/p13_rules.md`); configs `mapmad/configs/p13_claim.yaml`,
 | `p13_estimate.py` | exam estimate from the 24 timing runs (HM3D) and the dev runs (MP3D, F, VF) |
 | `p13_status.py` | `STATUS.md` (first line = what to paste on return; step, done/total, GPUs, mode, fallbacks, last error, STOP question); `count <subdir> <arms>` |
 | `render_videos.sh` | Part 3: renders the 13.1 videos the chain's render lost (two shards shared one YOLOE server; now one server per shard, in the chain too) + the M21b / M21bh rule-pick videos (`p13_videos.py pick-rules`, `videos_rule/<set>/`); then `check --config` (every planned video must exist) |
+| `render_vf_videos.sh` | After the gate: arm VF's videos for the rule picks of `videos_rule/<set>/` from the exam logs (one YOLOE + one BLIP-2 ITM server per shard: VF's replay runs its agent); then `check` for M21b, M21bh, VF. `mapmad/scripts/p13_review_folder.py` then copies all checked videos into `videos_review/` (plain-word names, README for readers new to the project) |
 | `vlfm_port.sh` | the original VLFM on 100 HM3D v2 val episodes in its own container (`mapmad/docker/Dockerfile.vlfm`), if it could be set up |
 
 Closed-loop pairs: `mapmad/scripts/run_p13_pairs.sh` (= run_p12_pairs.sh, marks `MAPMAD_P13_OWNER`, `RECOG=yoloe+itm`

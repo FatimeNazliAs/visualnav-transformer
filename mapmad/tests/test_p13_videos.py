@@ -173,3 +173,26 @@ def test_video_plan_override_list_and_arms(tmp_path):
     assert p13_videos.video_plan(Layout()) == ([("random_01", "e1")], ["M21", "F"])
     picks, arms = p13_videos.video_plan(Layout(), tmp_path / "rule.json", ["M21b", "M21bh"])
     assert picks == [("rule_maps_stuck", "e2"), ("rule_maps_wrong_object", "e3")] and arms == ["M21b", "M21bh"]
+
+
+# --- review folder names (mapmad/scripts/p13_review_folder.py) -------------------------------------------------------
+def review():
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("p13_review_folder", REPO / "mapmad/scripts/p13_review_folder.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_review_names_from_events():
+    r = review()
+    ev = lambda *k: [{"kind": x, "how": h} for x, h in k]  # noqa: E731
+    man = {"category": "tv_monitor", "events": ev(("sight", None), ("oracle", None), ("rule", "right object"))}
+    assert r.what_happens(man) == ("reaches-tv-monitor", "stops-at-it")
+    man = {"category": "bed", "events": ev(("sight", None), ("rule", "wrong object"))}
+    assert r.what_happens(man) == ("sees-bed-never-reaches", "stops-at-a-wrong-object")
+    assert r.what_happens({"category": "bed", "events": []}) == ("never-sees-bed", "never-stops")
+    assert r.dataset("p13b-QUCTc6BB5sX-chair-7") == "MP3D" and r.dataset("p12e-00820-toilet-2") == "HM3D"
+    used = set()
+    assert [r.unique("a", used) for _ in range(3)] == ["a", "a_2", "a_3"]
