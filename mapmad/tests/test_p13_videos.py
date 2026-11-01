@@ -1,5 +1,5 @@
 """Phase 13 checkable videos (step 13.1): the pure parts of mapmad_sim/video_events.py (IoU rule, true boxes, first
-YOLOE hit, timeline events from a synthetic log through p12_score, box-equality check, same-run comparison)."""
+YOLOE box (any object / on a true target), timeline events from a synthetic log through p12_score, box-equality check, same-run comparison)."""
 
 import json
 import sys
@@ -71,9 +71,16 @@ def score(log, tau=0.45):
 def test_events_oracle_and_right_object_rule_stop():
     vps = [3.0, 2.0, 1.0, 0.5, 0.15, 0.1]
     log = synthetic_log([0.1, 0.2, 0.3, 0.4, 0.5], vps, [False, False, True, True, True, True])
-    ev = ve.timeline_events(score(log), 0.45, hit_step=2)
-    assert [(e.step, e.kind) for e in ev] == [(2, "sight"), (2, "hit"), (4, "oracle"), (5, "rule")]
+    ev = ve.timeline_events(score(log), 0.45, hit_step=2, box_step=1)
+    assert [(e.step, e.kind) for e in ev] == [(1, "box"), (2, "sight"), (2, "hit"), (4, "oracle"), (5, "rule")]
+    assert ev[0].text == "1st YOLOE box (any object) 1" and ev[2].text == "1st YOLOE box on a true target 2"
     assert ev[-1].how == "right object" and ev[-1].text == "rule stop 5: right object"
+
+
+def test_first_box_is_any_box():
+    dets = {0: [], 1: [{"box": None, "point": [1.0, 2.0]}], 2: [{"box": [0, 0, 5, 5]}], 3: [{"box": [9, 9, 12, 12]}]}
+    assert ve.first_box(dets) == 2
+    assert ve.first_box({0: [], 1: []}) is None
 
 
 def test_events_wrong_object_near_miss_outside():
@@ -102,26 +109,27 @@ LOGGED = [{"box": [0.0, 1.5, 100.25, 80.0], "point": None, "score": 0.6234, "val
 
 
 def test_compare_boxes_equal():
-    drawn = [{"box": [0.0, 1.5, 100.25, 80.0], "label": "couch 0.62", "thick": True},
-             {"box": [5.0, 6.0, 7.0, 8.0], "label": "couch 0.01", "thick": False}]
-    assert ve.compare_boxes(drawn, LOGGED, "couch", 0.45) is None
+    drawn = [{"box": [0.0, 1.5, 100.25, 80.0], "label": "sofa 0.62", "thick": True},
+             {"box": [5.0, 6.0, 7.0, 8.0], "label": "sofa 0.01", "thick": False}]
+    assert ve.compare_boxes(drawn, LOGGED, "sofa", 0.45) is None
+    assert ve.compare_boxes(drawn, LOGGED, "couch", 0.45) is not None  # the label is the category, not the prompt
 
 
 @pytest.mark.parametrize("change", ["order", "value", "label", "thick", "missing"])
 def test_compare_boxes_catches_differences(change):
-    drawn = [{"box": [0.0, 1.5, 100.25, 80.0], "label": "couch 0.62", "thick": True},
-             {"box": [5.0, 6.0, 7.0, 8.0], "label": "couch 0.01", "thick": False}]
+    drawn = [{"box": [0.0, 1.5, 100.25, 80.0], "label": "sofa 0.62", "thick": True},
+             {"box": [5.0, 6.0, 7.0, 8.0], "label": "sofa 0.01", "thick": False}]
     if change == "order":
         drawn.reverse()
     elif change == "value":
         drawn[0]["box"][2] = 100.3
     elif change == "label":
-        drawn[0]["label"] = "couch 0.63"
+        drawn[0]["label"] = "sofa 0.63"
     elif change == "thick":
         drawn[1]["thick"] = True
     else:
         drawn.pop()
-    assert ve.compare_boxes(drawn, LOGGED, "couch", 0.45) is not None
+    assert ve.compare_boxes(drawn, LOGGED, "sofa", 0.45) is not None
 
 
 def test_read_dets_needs_every_step(tmp_path):
@@ -146,3 +154,22 @@ def test_compare_runs_prefix_and_difference():
     moved = synthetic_log([0.1] * 2, [3.0] * 3, [False] * 3)
     moved[0]["start"]["position"] = [0.0, 0.0, 0.1]
     assert ve.compare_runs(moved, long)["first_differing_step"] == 0
+
+
+# --- video plan (render-plan / check --config) ---------------------------------------------------------------------
+def test_video_plan_override_list_and_arms(tmp_path):
+    sys.path.insert(0, str(REPO / "mapmad" / "scripts"))
+    import p13_videos
+
+    main = {"picks": [{"name": "random_01", "episode": "e1"}]}
+    rule = {"picks": [{"name": "rule_maps_stuck", "episode": "e2"}, {"name": "rule_maps_wrong_object", "episode": "e3"}]}
+    (tmp_path / "main.json").write_text(json.dumps(main))
+    (tmp_path / "rule.json").write_text(json.dumps(rule))
+
+    class Layout:
+        base = tmp_path
+        cfg = {"videos": {"list": "main.json", "arms": ["M2", "M21", "F"], "render_arms": ["M21", "F"]}}
+
+    assert p13_videos.video_plan(Layout()) == ([("random_01", "e1")], ["M21", "F"])
+    picks, arms = p13_videos.video_plan(Layout(), tmp_path / "rule.json", ["M21b", "M21bh"])
+    assert picks == [("rule_maps_stuck", "e2"), ("rule_maps_wrong_object", "e3")] and arms == ["M21b", "M21bh"]

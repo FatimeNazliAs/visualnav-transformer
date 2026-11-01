@@ -15,6 +15,7 @@ Phase 10 trains MapMaD v2 and checks it offline, unattended, in `screen`. Everyt
 | `p10_c_decide.py <p10>` | run C verdict: `C_IS_V2` / `RUN1_IS_V2` / `STOP` → `offline/c_ema19/decision.md` |
 | `p10_lib.sh` | shared bash functions (pinned `docker exec`, GPU wait, supervised training with one resume, offline checks) |
 | `gpu_watch.py <dir>` | GPU free check every 5 min (free = 4 consecutive checks without anyone else's process; Phase 9 counts as busy; our processes carry `MAPMAD_P10_OWNER`); `--check <gpu> <owner>` = instant check |
+| `gpu_place.py free\|usable\|clean\|pick` | the one GPU placement module (Phase 13): "which GPUs may <owner> take now?" = the watcher's `gpu_free.json` (re-read per call; older than 3 intervals = nothing free) + the live check; `pick --prefer` = one GPU, preferred first. Used by `mapmad_p13/p13_lib.sh` (one line per decision); tests: `vint_train/mapmad/tests/test_gpu_place.py` |
 | `p10_timing.py` | the timing step's decision: memory fallback (> 23.5 GiB or OOM), more workers (loader > 15%), budget stop (> 10.5 h) |
 | `p10_status.py` | writes `STATUS.md` from the chain/twin state and the main run's `metrics.jsonl` |
 | `g10_table.py <p10> main\|twin` | draft G10 table from the rows 1-2 check, the offline comparison and the GoStanford harness |

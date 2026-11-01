@@ -216,6 +216,20 @@ def cmd_tables(args: argparse.Namespace) -> None:
         md.append(f"| {k} | {r['set']} | {r['a']} - {r['b']} | " + (fmt(r["diff"], *r["home_ci"]) if r.get("n") else "-")
                   + f" | {r['p_raw']:.4f} | {r['p_holm']:.4f} | {'PASS' if r['pass'] else 'FAIL'} |")
     md += ["", f"**Row 1 reading (pre-set, kickoff §3 item 4):** {res['row1_reading']}", ""]
+    # rows 2-3 by exam-B home kind (report only; val = official MP3D episodes, test = generated view points + starts)
+    kinds, home_b = s.kind("examb"), s.home("examb")
+    md += ["## G13 rows 2-3 by exam-B home kind (report only, no Holm)", "",
+           "| row | homes | a - b | diff [home 95% CI] | [episode CI] | p raw (one-sided) | n |", "|---|---|---|---|---|---|---|"]
+    res["g13_rows_2_3_by_kind"] = {}
+    for kd in ("val", "test"):
+        keep = {e for e, h in home_b.items() if kinds.get(h) == kd}
+        for k, (st, a, b) in enumerate(G13_ROWS[1:], 2):
+            p = s.paired(st, a, b, keep=keep)
+            res["g13_rows_2_3_by_kind"][f"{kd}:{a}-{b}"] = p
+            md.append(f"| {k} | {kd} | {a} - {b} | {fmt(p['diff'], *p['home_ci'])} | {fmt(p['diff'], *p['episode_ci'])} | "
+                      f"{p['home_p_one_sided']:.4f} | {p['n']} eps / {p['homes']} homes |" if p.get("n") else
+                      f"| {k} | {kd} | {a} - {b} | - | - | - | 0 |")
+    md.append("")
     # reported comparisons (row 4)
     rep = [("hm3d", "M21bh", "M21"), ("hm3d", "M21bh", "M21h"), ("hm3d", "M21b", "M21"), ("examb", "M21bh", "M21h"),
            ("examb", "M21b", "M21"), ("hm3d", "VF", "F"), ("hm3d", "VF", "M21"), ("hm3d", "VF", "N"),
@@ -233,6 +247,21 @@ def cmd_tables(args: argparse.Namespace) -> None:
     bins = {0: "3-6 m", 1: "6-10 m", 2: "10-15 m"}
     arm_sets = {"hm3d": ["M21b", "M21bh", "M21", "M21h", "M2", "M2h", "N", "F", "MT", "V1", "VF"],
                 "examb": ["M21b", "M21bh", "M21", "M21h", "N", "F", "VF"], "dev": ["M21b", "M21bh", "F", "VF"]}
+    md += ["## All arms, both exam sets (oracle / rule success at tau 0.45, home 95% CI on oracle)", "",
+           "| arm | HM3D exam (300 eps) | exam B (MP3D) |", "|---|---|---|"]
+    res["arms_both_sets"] = {}
+    for a in arm_sets["hm3d"]:
+        cells = []
+        for st in ("hm3d", "examb"):
+            if not s.rows(st, a):
+                cells.append("not run")
+                continue
+            o, r = s.per_ep(st, a, "oracle_success"), s.per_ep(st, a, "rule_success")
+            m, lo, hi = mean_ci(o, s.home(st))
+            res["arms_both_sets"][f"{st}:{a}"] = {"oracle": m, "oracle_ci": [lo, hi], "rule": float(np.mean(list(r.values())))}
+            cells.append(f"{fmt(m, lo, hi)} / {np.mean(list(r.values())):.3f}")
+        md.append(f"| {a} ({NAMES.get(a, a)}) | " + " | ".join(cells) + " |")
+    md.append("")
     for st, arms in arm_sets.items():
         md += [f"## {st}: main", ""] + main_table(s, st, arms) + [""]
         if st == "examb":
@@ -244,11 +273,54 @@ def cmd_tables(args: argparse.Namespace) -> None:
         md += [f"## {st}: distance bins (oracle / rule success (episodes))", ""] + group_table(s, st, arms, "distance_bin", bins) + [""]
         md += [f"## {st}: categories", ""] + group_table(s, st, arms, "category", {}) + [""]
         md += [f"## {st}: search / approach", ""] + search_table(s, st, arms) + [""]
+    res["port_check"] = port = port_check(layout.base / "vlfm_port" / "run_100")
+    md += ["## VLFM port check (original code, 100 HM3D v2 val episodes; report only)", ""] + port_lines(port) + [""]
     out_dir.mkdir(parents=True, exist_ok=True)
     write_text_atomic(out_dir / "tables.md", "\n".join(md) + "\n")
     write_text_atomic(out_dir / "tables.json", json.dumps(res, indent=1, sort_keys=True, default=float) + "\n")
     g13_draft(layout.base, g13, res["row1_reading"])
     print("\n".join(md[:20]))
+
+
+PORT_RADII = (0.1, 0.15, 0.2, 0.25, 0.3)  # 0.1 = VLFM's / Habitat's success distance; 0.2 = our exam's success_m
+STOP_CAUSES = ("false_positive", "bad_stop_true_positive")  # VLFM's failure causes of a run that called STOP
+
+
+def port_check(run: Path) -> Dict[str, Any]:
+    """The port check's results.jsonl: success as run (Habitat, 0.1 m), the same stops re-scored at larger success
+    radii (a STOP whose distance_to_goal <= r), failure causes, and a binomial 95% CI (Wilson) of the success rate."""
+    f = run / "results.jsonl"
+    if not f.exists():
+        return {"n": 0}
+    r = [json.loads(x) for x in f.read_text().splitlines()]
+    n = len(r)
+
+    def wilson(k: int) -> List[float]:
+        p, z = k / n, 1.96
+        c, h = (p + z * z / (2 * n)) / (1 + z * z / n), z * np.sqrt(p * (1 - p) / n + z * z / (4 * n * n)) / (1 + z * z / n)
+        return [float(c - h), float(c + h)]
+
+    radii = {}
+    for rad in PORT_RADII:
+        k = sum(1 for x in r if x["success"] or (x["failure_cause"] in STOP_CAUSES and x["distance_to_goal"] <= rad))
+        radii[f"{rad:.2f}"] = {"success": k / n, "ci": wilson(k)}
+    causes: Dict[str, int] = {}
+    for x in r:
+        causes[x["failure_cause"]] = causes.get(x["failure_cause"], 0) + 1
+    return {"n": n, "spl": float(np.mean([x["spl"] for x in r])), "radii": radii, "causes": causes,
+            "stopped_within_0_2_m_but_failed": sum(1 for x in r if not x["success"] and x["failure_cause"] in STOP_CAUSES
+                                                   and x["distance_to_goal"] <= 0.2)}
+
+
+def port_lines(port: Dict[str, Any]) -> List[str]:
+    if not port.get("n"):
+        return ["not run"]
+    out = [f"{port['n']} episodes; SPL {port['spl']:.3f}; third-party HM3D v2 number for VLFM: 63.6% SR / 32.5 SPL "
+           "(VLFM paper, HM3D v1: 52.5% / 30.4).", "", "| success radius (stops re-scored) | success [Wilson 95% CI] |",
+           "|---|---|"]
+    out += [f"| {k} m{' (as run)' if k == '0.10' else ''} | {fmt(v['success'], *v['ci'])} |" for k, v in port["radii"].items()]
+    out += ["", "Failure causes (VLFM's own labels): " + ", ".join(f"{k} {v}" for k, v in sorted(port["causes"].items()))]
+    return out
 
 
 def read_check(base: Path, name: str) -> Dict[str, Any]:

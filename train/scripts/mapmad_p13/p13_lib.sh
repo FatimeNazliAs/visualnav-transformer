@@ -11,6 +11,7 @@ CFG="${P13_CFG:-/app/visualnav-transformer/mapmad/configs/p13_claim.yaml}"
 HCFG="$REPO/mapmad/configs/${CFG##*/}"   # the same config, host path (p12_plan.py)
 SCRIPTS="$REPO/train/scripts/mapmad_p13"
 WATCH="$REPO/train/scripts/mapmad_p10/gpu_watch.py"
+PLACE="$REPO/train/scripts/mapmad_p10/gpu_place.py"
 CHECK_S="${CHECK_S:-300}"
 export MAPMAD_OWNER_ENV=MAPMAD_P13_OWNER
 export P13_OUTPUTS="${P13_OUTPUTS:-${OUT_MOUNT}/mapmad}"
@@ -26,25 +27,18 @@ status() {  # key=value ... [--state S] -> driver/chain_state.json + STATUS.md
 
 pause() { sleep "$1" & wait $!; }  # a sleep that TERM can interrupt at once
 
-free_for() {  # -> GPUs free for us (20-min rule + rule 11: gpu_watch.py's gpu_free.json; DRY runs: P13_GPU_FREE)
-    if [[ -n "${P13_GPUS:-}" ]]; then echo "$P13_GPUS"; return; fi  # DRY runs only: fixed GPUs
-    python3 -c "import json,sys; print(' '.join(json.load(open(sys.argv[1]))['free'][sys.argv[2]]))" \
-        "${P13_GPU_FREE:-$P13/driver/gpu_free.json}" "$WHO" 2>/dev/null
-}
+# GPU placement: one module (mapmad_p10/gpu_place.py) answers "which GPUs may $WHO take now?" -- the watcher's free
+# list (20-min rule + rule 11; a stale file = nothing free; DRY runs: P13_GPUS / P13_GPU_FREE) and the live check.
+place() { python3 "$PLACE" "$@" --owner "$WHO" 2>> "$LOG"; }
+place_free() { place "$1" --free-file "${P13_GPU_FREE:-$P13/driver/gpu_free.json}" --fixed "${P13_GPUS:-}" "${@:2}"; }
+free_for() { place_free free; }        # -> GPUs free for us by the watcher (no live check)
+usable_now() { place_free usable; }    # -> GPUs free for us AND clean right now
+gpu_clean() { place clean "$1"; }      # live nvidia-smi right now: nobody else on GPU $1 (§8 rule 9)
 
-gpu_clean() {  # live nvidia-smi right now: nobody else on GPU $1 (§8 rule 9)
-    python3 "$WATCH" --check "$1" "$WHO" >> "$LOG" 2>&1
-}
-
-wait_gpu() {  # [preferred gpu] -> echoes a GPU free for 20 min AND clean right now; waits in CHECK_S
-    local prefer="${1:-}" g list
-    while true; do
-        list="$(free_for)"
-        for g in $prefer $list; do
-            if [[ " $list " == *" $g "* ]] && gpu_clean "$g"; then echo "$g"; return 0; fi
-        done
-        pause "$CHECK_S"
-    done
+wait_gpu() {  # [preferred gpu ...] -> echoes a GPU free for 20 min AND clean right now; waits in CHECK_S
+    local g
+    until g="$(place_free pick --prefer "$@")"; do pause "$CHECK_S"; done
+    echo "$g"
 }
 
 dx() {  # gpu ("" = CPU) command... -> docker exec in naz_mapmad, pinned + marked, from train/
@@ -162,7 +156,7 @@ closed_loop() {  # label subdir set total budget_s recog seeds arms... -> 0 all 
         for g in $(free_for); do
             [[ -n "${PIDS[$g]:-}" || "${ENDED[$g]:-}" == "$token" ]] && continue
             [[ -f "$P13/driver/STOP_gpu${g}_$token" ]] && continue
-            gpu_clean "$g" || continue
+            gpu_clean "$g" || continue  # live check only for GPUs not already ours (not usable_now: fewer nvidia-smi)
             nvidia-smi >> "$P13/driver/nvidia_smi.log" 2>&1
             say "GPU event: GPU $g taken by $label (free 20 min, rule 11, live check); ${PAIRS_PER_GPU:-3} pairs, recogniser $recog, token $token"
             GPU="$g" TOKEN="$token" OWNER="$WHO" STOP_FILE="$C/driver/STOP_gpu${g}_$token" PORT0="${CL_PORT0:-5560}" \
@@ -196,16 +190,7 @@ crash_rate_ok() {  # subdir total arms... -> 0 if crash records <= 1% of the ste
 # --- training (Phase 11's p11_lib.sh, unchanged except the folder) -----------------------------------------------------
 STALL_S="${STALL_S:-1800}"
 
-train_gpu() {  # [preferred gpu] -> a GPU free for 20 min AND clean now, preferring P13_TRAIN_GPUS (kickoff: GPU 1)
-    local g list
-    while true; do
-        list="$(free_for)"
-        for g in ${P13_TRAIN_GPUS:-1} $list; do
-            if [[ " $list " == *" $g "* ]] && gpu_clean "$g"; then echo "$g"; return 0; fi
-        done
-        pause "$CHECK_S"
-    done
-}
+train_gpu() { wait_gpu ${P13_TRAIN_GPUS:-1}; }  # -> a usable GPU, preferring P13_TRAIN_GPUS (kickoff: GPU 1)
 
 monitor_while() {  # pid log pattern -> refresh STATUS.md every 60 s; a log silent for STALL_S -> kill (= a crash)
     local pid="$1" log="$2" pattern="$3"

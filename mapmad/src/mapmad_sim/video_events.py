@@ -3,16 +3,20 @@
 - True target boxes of one camera frame (`true_boxes`): for every instance id of the episode's category that has at
   least one pixel in the frame's semantic picture, the bounding box of its pixels in pixel-edge coordinates
   [x0, y0, x1 + 1, y1 + 1] (the box covers the pixels fully, like the recogniser's boxes [x0, y0, x1, y1] in px).
-- First YOLOE hit on the true object (`first_hit`): the first step whose logged recogniser boxes (the dets file) include
+- First YOLOE box (any object) (`first_box`): the first step with any logged recogniser box (on whatever object).
+- First YOLOE box on a true target (`first_hit`): the first step whose logged recogniser boxes (the dets file) include
   one with intersection-over-union >= IOU_HIT (0.3) with any true target box of the same frame (`iou`: area of the
-  intersection / area of the union; boxes as [x0, y0, x1, y1]).
+  intersection / area of the union; boxes as [x0, y0, x1, y1]). It can come before the first true sight: a box on a
+  target smaller than true sight's 200 px counts here.
 - Timeline events (`timeline_events`) from p12_score.score_log's numbers of the run: first true sight (`in_view` first
-  True, simulator truth: an instance >= 200 px at <= 4 m), first YOLOE hit, oracle success (first step in the zone =
+  True, simulator truth: an instance >= 200 px at <= 4 m), first YOLOE box (any object), first YOLOE box on a true
+  target, oracle success (first step in the zone =
   within 0.2 m walking distance of a view point), rule stop at tau (first step >= 1 with rule_value >= tau; "right
   object" in the zone, else "wrong object" (triggering cell > 1.0 m from every target box), "near miss" (walking
   distance <= 1.2 m) or "outside").
 - Box check (`compare_boxes`): the boxes a video drew on a frame = the logged boxes of that step (exact list, order,
-  values; label = "<prompt> <raw score, 2 digits>"; thick = map value >= tau).
+  values; label = "<category> <raw score, 2 digits>", the episode's category name, not the YOLOE prompt word;
+  thick = map value >= tau).
 - Same-run check (`compare_runs`): two logs of one (arm, episode, seed) drove the same poses (start pose of the
   header, then position + yaw of every step, exact), over their common prefix of steps.
 """
@@ -30,7 +34,7 @@ Box = Sequence[float]
 
 @dataclass(frozen=True)
 class Event:
-    """One marker of the timeline: step, kind (sight | hit | oracle | rule), short text, and for the rule stop how it
+    """One marker of the timeline: step, kind (sight | box | hit | oracle | rule), short text, and for the rule stop how it
     ended (right object | wrong object | near miss | outside)."""
 
     step: int
@@ -68,6 +72,11 @@ def hit(dets: Sequence[Dict[str, Any]], trues: Sequence[Dict[str, Any]], thr: fl
     return any(d.get("box") is not None and iou(d["box"], t["box"]) >= thr for d in dets for t in trues)
 
 
+def first_box(dets_by_step: Dict[int, List[Dict[str, Any]]]) -> Optional[int]:
+    """The first step with any logged recogniser box (module docstring), or None."""
+    return next((t for t in sorted(dets_by_step) if any(d.get("box") is not None for d in dets_by_step[t])), None)
+
+
 def first_hit(dets_by_step: Dict[int, List[Dict[str, Any]]], trues_by_step: Dict[int, List[Dict[str, Any]]],
               thr: float = IOU_HIT) -> Optional[int]:
     """The first step with a hit (module docstring), or None."""
@@ -87,21 +96,22 @@ def read_dets(path: Path) -> Dict[int, List[Dict[str, Any]]]:
     return out
 
 
-def box_label(prompt: str, score: float) -> str:
-    """The text drawn on a recogniser box: prompt word + raw score (2 digits), e.g. "couch 0.62"."""
-    return f"{prompt} {score:.2f}"
+def box_label(category: str, score: float) -> str:
+    """The text drawn on a recogniser box: the category name (as in the title, not the YOLOE prompt word) + raw score
+    (2 digits), e.g. "sofa 0.62" (prompt "couch")."""
+    return f"{category} {score:.2f}"
 
 
-def expected_boxes(dets: Sequence[Dict[str, Any]], prompt: str, tau: float) -> List[Dict[str, Any]]:
+def expected_boxes(dets: Sequence[Dict[str, Any]], category: str, tau: float) -> List[Dict[str, Any]]:
     """What a frame must show for these logged detections: one drawn box per detection with a box, in log order."""
-    return [{"box": list(d["box"]), "label": box_label(prompt, d["score"]), "thick": d["value"] >= tau - 1e-12}
+    return [{"box": list(d["box"]), "label": box_label(category, d["score"]), "thick": d["value"] >= tau - 1e-12}
             for d in dets if d.get("box") is not None]
 
 
-def compare_boxes(drawn: Sequence[Dict[str, Any]], logged: Sequence[Dict[str, Any]], prompt: str,
+def compare_boxes(drawn: Sequence[Dict[str, Any]], logged: Sequence[Dict[str, Any]], category: str,
                   tau: float) -> Optional[str]:
     """None when the drawn boxes equal the logged ones exactly (module docstring), else what differs."""
-    want = expected_boxes(logged, prompt, tau)
+    want = expected_boxes(logged, category, tau)
     got = [{"box": list(d["box"]), "label": d["label"], "thick": bool(d["thick"])} for d in drawn]
     if len(got) != len(want):
         return f"{len(got)} boxes drawn, {len(want)} logged"
@@ -121,20 +131,24 @@ def rule_how(r: Dict[str, Any]) -> str:
     return "near miss" if r["near_miss"] else "outside"
 
 
-def timeline_events(score: Dict[str, Any], tau: float, hit_step: Optional[int]) -> List[Event]:
-    """The run's timeline markers in step order (module docstring); score = p12_score.score_log(log, taus=[tau])."""
+def timeline_events(score: Dict[str, Any], tau: float, hit_step: Optional[int],
+                    box_step: Optional[int] = None) -> List[Event]:
+    """The run's timeline markers in step order (module docstring); score = p12_score.score_log(log, taus=[tau]);
+    hit_step = first_hit, box_step = first_box."""
     ev = []
     if score.get("first_sight") is not None:
         ev.append(Event(int(score["first_sight"]), "sight", f"1st true sight {score['first_sight']}"))
+    if box_step is not None:
+        ev.append(Event(int(box_step), "box", f"1st YOLOE box (any object) {box_step}"))
     if hit_step is not None:
-        ev.append(Event(int(hit_step), "hit", f"1st YOLOE hit {hit_step}"))
+        ev.append(Event(int(hit_step), "hit", f"1st YOLOE box on a true target {hit_step}"))
     if score.get("oracle_step") is not None:
         ev.append(Event(int(score["oracle_step"]), "oracle", f"at view spot {score['oracle_step']}"))
     r = (score.get("rule") or {}).get(f"{tau:.2f}") or {}
     if r.get("step") is not None:
         how = rule_how(r)
         ev.append(Event(int(r["step"]), "rule", f"rule stop {r['step']}: {how}", how))
-    order = {"sight": 0, "hit": 1, "oracle": 2, "rule": 3}
+    order = {"sight": 0, "box": 1, "hit": 2, "oracle": 3, "rule": 4}
     return sorted(ev, key=lambda e: (e.step, order[e.kind]))
 
 

@@ -151,25 +151,31 @@ main() {
     if [[ ! -f "$P13/checks/video_check.json" ]]; then
         local gs="" vg
         until [[ -n "$gs" ]]; do  # every GPU free for us now (both: 2 render shards each)
-            for vg in $(free_for); do gpu_clean "$vg" && gs="$gs $vg"; done
+            gs="$(usable_now)"
             [[ -n "$gs" ]] || pause "$CHECK_S"
         done
         status gpus="$gs" --state RUNNING
         local nsh=$(( 2 * $(echo $gs | wc -w) )) k=0 rpids=()
-        say "GPU event: GPU(s)$gs for the video render ($nsh shards; one YOLOE server per GPU, port 5790 + GPU)"
+        # one YOLOE server PER SHARD (port 5790 + shard): the server takes one client at a time; two shards on one
+        # server made the second time out (Phase 13 real chain: every M21 and F video lost)
+        say "GPU event: GPU(s)$gs for the video render ($nsh shards; one YOLOE server per shard, port 5790 + shard)"
         : "${VKEY:=$(python3 -c 'import secrets; print(secrets.token_hex(32))')}"
         for vg in $gs; do
-            docker exec -d -e MAPMAD_SIDECAR_KEY="$VKEY" -e CUDA_VISIBLE_DEVICES="$vg" -e HOME=/model_cache/home \
-                -e MAPMAD_P13_OWNER="$WHO" naz_mapmad_recog python -m mapmad_recog.server --model yoloe \
-                --port $(( 5790 + vg )) --text-reuse-out "$C/videos/text_reuse_yoloe_gpu$vg.json"
+            for s in 0 1; do
+                docker exec -d -e MAPMAD_SIDECAR_KEY="$VKEY" -e CUDA_VISIBLE_DEVICES="$vg" -e HOME=/model_cache/home \
+                    -e MAPMAD_P13_OWNER="$WHO" naz_mapmad_recog python -m mapmad_recog.server --model yoloe \
+                    --port $(( 5790 + k )) --text-reuse-out "$C/videos/text_reuse_yoloe_shard$k.json"
+                k=$(( k + 1 ))
+            done
         done
+        k=0
         render_shards() {
             local vg s pids=() bad=0 p
             for vg in $gs; do
                 for s in 0 1; do
                     docker exec -e MAPMAD_SIDECAR_KEY="$VKEY" -e MAPMAD_P13_OWNER="$WHO" -w /app/visualnav-transformer \
                         naz_mapmad_habitat python mapmad/scripts/p13_videos.py render-plan --config "$CFG" \
-                        --subdir videos_rerun --gpu "$vg" --recog-port $(( 5790 + vg )) --out "$C/videos" \
+                        --subdir videos_rerun --gpu "$vg" --recog-port $(( 5790 + k )) --out "$C/videos" \
                         --shard "$k/$nsh" >> "$P13/driver/videos_shard$k.log" 2>&1 &
                     pids+=($!); k=$(( k + 1 ))
                 done
@@ -179,8 +185,8 @@ main() {
         }
         run_limit $(( VIDEO_BUDGET * 2 )) "p13_videos.py" render_shards
         code=$?
-        for vg in $gs; do kill_inside "mapmad_recog.server --model yoloe --port $(( 5790 + vg ))"; done
-        run_bg dh "python mapmad/scripts/p13_videos.py check --out $C/videos --report $C/checks/video_check.json" \
+        kill_inside "mapmad_recog.server --model yoloe --port 579"
+        run_bg dh "python mapmad/scripts/p13_videos.py check --config $CFG --out $C/videos --report $C/checks/video_check.json" \
             >> "$P13/driver/videos.log" 2>&1
         (( code == 0 )) || say "videos: render failed or cut at the time limit (exit $code, driver/videos_shard*.log): reported, no stop"
         fallback "13.1: rendered 12 picks x the 4 review arms (M21, M21h, N, F) in the chain (budget); M2, M2h, V1, MT re-run and logged, renderable later"

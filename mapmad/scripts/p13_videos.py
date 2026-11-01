@@ -6,7 +6,11 @@ Inside naz_mapmad_habitat, from /app/visualnav-transformer (a YOLOE sidecar on -
         --episodes E1 E2 ... --seed-index 0 --gpu G --recog-port P --out <folder>     # resumable
     python mapmad/scripts/p13_videos.py render-plan --config mapmad/configs/p13_claim.yaml --subdir videos_rerun \
         --gpu G --recog-port P --out <folder> [--shard k/n]   # videos.list picks x videos.arms, set video
-    python mapmad/scripts/p13_videos.py check --out <folder> [--report <json>]       # boxes + poses
+        [--list <video list> --arms A B --set S]               # another list (pick-rules) / arms / set
+    python mapmad/scripts/p13_videos.py pick-rules --config <c> --set hm3d --subdir runs/hm3d --maps M21b \
+        --hidden M21bh --f-scores <F scores.jsonl> --out <list.json>  # Phase 12's 4 rule picks for another pair
+    python mapmad/scripts/p13_videos.py check --out <folder> [--report <json>] [--config <c> [--list ..] [--arms ..]]
+        # boxes + poses; with --config also: every planned video exists
     python mapmad/scripts/p13_videos.py same-run --new <logs root> --old <logs root> (--arms ... --episodes ... |
         --config <config with a videos block>) --out <json> [--seed-index 0]
 
@@ -19,19 +23,22 @@ map; the semantic camera of the replay gives the true target boxes.
 Frame (1920 x 1080; real time: one 0.25 s step = 6 frames at 24 fps):
 - top band (100 px): episode id, home, find: '<category>', the arm's full name; step, time and the events so far;
 - left: the camera (320 x 240 x 3 = 960 x 720, nearest neighbour) with this frame's recogniser boxes from the dets file
-  (orange, label "<prompt> <raw score>", thick when the box's map value >= tau) and the true target boxes (green,
+  (orange, label "<category> <raw score>" with the title's category name, the YOLOE prompt word in the legend; thick
+  when the box's map value >= tau) and the true target boxes (green,
   "TRUE <category> #<id>": bounding box of the instance's pixels in the replay's semantic picture); below it the legend;
 - right: the whole storey north up (fixed, 760 px): unknown, floor not seen yet (faint), explored, obstacles, the target
   layer (value > 0: colour scale up to tau; >= tau yellow; "rule-ready" = >= tau and seen from >= 2 views, red), the
   true objects (green boxes) with their view points (green discs of 0.2 m = the success zone), start, path, robot,
   the rule's best cell of the step (magenta ring) and, from the rule stop on, the triggering cell (magenta X);
 - under the map: the timeline of the whole run (max_steps): rule value with the tau line, a strip where simulator truth
-  sees a target, a strip where a YOLOE box is on a true target (IoU >= 0.3), markers (first true sight, first YOLOE hit,
-  at a target view spot = oracle success, rule stop: right object / wrong object / near miss / outside), the cursor.
+  sees a target, a strip where a YOLOE box is on a true target (IoU >= 0.3), markers (first true sight, first YOLOE box
+  (any object), first YOLOE box on a true target, at a target view spot = oracle success, rule stop: right object /
+  wrong object / near miss / outside), the cursor.
 - scored moments (oracle success step, rule stop step): a 2 s freeze, everything but the camera and the map dimmed, a
-  large caption ("at a target view spot (sim truth)"; "rule stop: right object / wrong object / ...").
-Event rules: mapmad_sim/video_events.py (first YOLOE hit: IoU >= 0.3 between a logged box and a true box of the same
-frame) and closed_loop/p12_score.score_log (sight, oracle, rule stop and how it ended).
+  large caption ("at a target view spot (sim truth)"; "rule stop: right object / wrong object / ..."); after the
+  oracle success (the scored moment) the rest of the run is dimmed below the top band, with a note.
+Event rules: mapmad_sim/video_events.py (first YOLOE box (any object); first YOLOE box on a true target: IoU >= 0.3
+between a logged box and a true box of the same frame) and closed_loop/p12_score.score_log (sight, oracle, rule stop and how it ended).
 
 Outputs in --out: <name>.mp4 (render: <episode>__s<k>__<arm>_<file name>; render-plan: <pick name>__<arm>; H.264
 CRF 23, faststart), small/<name>.mp4 (<= 1280 px wide, CRF 31, faststart), <name>.manifest.json (inputs + sha256s,
@@ -84,6 +91,7 @@ from vint_train.mapmad.closed_loop import video  # noqa: E402
 SIZE = (1920, 1080)
 FPS, REPEAT = 24, 6  # one 0.25 s control step = 6 frames at 24 fps: real time
 FREEZE = 2 * FPS  # a scored moment is held 2 s
+DIM = 0.45  # brightness of the frames after the oracle success (below the top band)
 CRF, SMALL_CRF, SMALL_W = 23, 31, 1280
 STEP_S = 0.25
 HEAD = 100
@@ -101,7 +109,8 @@ OUTSIDE_PX, FLOOR_PX, EXPL_PX, OBST_PX = (20, 20, 20), (52, 52, 64), (105, 105, 
 HIGH_C, READY_C, VP_C, PATH_C, RULE_C = (255, 230, 0), (255, 40, 40), (0, 120, 50), (0, 210, 255), (255, 0, 255)
 HOW_C = {"right object": RIGHT_C, "wrong object": WRONG_C, "near miss": NEAR_C, "outside": WRONG_C}
 font = lru_cache(maxsize=None)(_font)  # the TrueType font at px pixels, loaded once per size
-KIND_C = {"sight": SIGHT_C, "hit": YOLO, "oracle": ORACLE_C}
+BOX_C = (255, 205, 130)  # first YOLOE box (any object): lighter than YOLO
+KIND_C = {"sight": SIGHT_C, "box": BOX_C, "hit": YOLO, "oracle": ORACLE_C}
 
 
 # --- inputs -------------------------------------------------------------------------------------------------------
@@ -271,7 +280,7 @@ def inside_x(x: int, s: str, px: int = 20) -> int:
     return max(0, min(x, CAM[0] - 8 - int(font(px).getlength(s))))
 
 
-def camera_panel(rgb: np.ndarray, dets: List[Dict[str, Any]], trues: List[Dict[str, Any]], prompt: str, category: str,
+def camera_panel(rgb: np.ndarray, dets: List[Dict[str, Any]], trues: List[Dict[str, Any]], category: str,
                  tau: float, text: Writer, y0: int) -> Tuple[np.ndarray, List[Dict[str, Any]]]:
     """The camera x3 with the logged recogniser boxes and the true boxes; returns (picture, the boxes drawn: logged
     box, label, thick -- what `check` compares with the dets file)."""
@@ -286,7 +295,7 @@ def camera_panel(rgb: np.ndarray, dets: List[Dict[str, Any]], trues: List[Dict[s
     for d in dets:
         if d.get("box") is None:
             continue
-        label, thick = ve.box_label(prompt, d["score"]), d["value"] >= tau - 1e-12
+        label, thick = ve.box_label(category, d["score"]), d["value"] >= tau - 1e-12
         x0, y_0, x1, y1 = (int(round(v * k)) for v in d["box"])
         cv2.rectangle(img, (x0, y_0), (x1, y1), YOLO, 7 if thick else 2)
         text.add((inside_x(x0 + 6, label), y0 + y_0 + 4), label, 20, YOLO)
@@ -297,6 +306,12 @@ def camera_panel(rgb: np.ndarray, dets: List[Dict[str, Any]], trues: List[Dict[s
 # --- the timeline (under the map) ------------------------------------------------------------------------------------
 def step_x(t: int, n: int) -> int:
     return int(round(TL[0] + 10 + (TL[2] - 20) * t / max(n, 1)))
+
+
+def tl_label(e: ve.Event) -> str:
+    """The short timeline label of an event (the top band has the full text, same colour)."""
+    return {"sight": f"sight {e.step}", "box": f"YOLOE box {e.step}", "hit": f"YOLOE box on target {e.step}",
+            "oracle": f"view spot {e.step}", "rule": f"stop {e.step}: {e.how}"}[e.kind]
 
 
 def timeline_base(n: int, rule_values: List[float], tau: float, sees: List[bool], hits: List[bool],
@@ -327,14 +342,15 @@ def timeline_base(n: int, rule_values: List[float], tau: float, sees: List[bool]
         colour = HOW_C[e.how] if e.kind == "rule" else KIND_C[e.kind]
         x = sx(e.step)
         cv2.line(img, (x, top - 4), (x, 110), colour, 3)
-        wpx = int(text.fonts.setdefault(20, font(20)).getlength(e.text)) + 12
+        label = tl_label(e)
+        wpx = int(text.fonts.setdefault(18, font(18)).getlength(label)) + 12
         lx = min(max(x - wpx // 2, 0), w - wpx)
         r = next((k for k, end in enumerate(rows) if lx > end), len(rows))
-        if r == len(rows) and r < 3:
+        if r == len(rows) and r < 4:
             rows.append(0)
-        r = min(r, len(rows) - 1)  # 3 label rows at most
+        r = min(r, len(rows) - 1)  # 4 label rows at most
         rows[r] = lx + wpx
-        text.add((lx, 114 + 26 * r), e.text, 20, colour)
+        text.add((lx, 113 + 22 * r), label, 18, colour)
     return text.draw(img)
 
 
@@ -351,10 +367,10 @@ def legend_panel(category: str, prompt: str, tau: float) -> np.ndarray:
     w, h = CAM[0], SIZE[1] - HEAD - CAM[1]
     img = np.zeros((h, w, 3), np.uint8)
     text = Writer()
-    left = [("box2", YOLO, f"YOLOE box + raw score (‘{prompt} 0.42’)"), ("box7", YOLO, f"YOLOE box, map value ≥ tau {tau:.2f}"),
+    left = [("box2", YOLO, f"YOLOE box + raw score (‘{category} 0.42’)"), ("box7", YOLO, f"YOLOE box, map value ≥ tau {tau:.2f}"),
             ("box3", TRUE_C, f"TRUE {category} #id (simulator truth)"), ("strip", SIGHT_C, "timeline: sim truth sees a target"),
             ("strip", YOLO, "timeline: YOLOE box on a true target"), ("line", YOLO, "timeline: rule value; dashed = tau"),
-            ("none", None, "IoU ≥ 0.3 = on a true target")]
+            ("none", None, "IoU ≥ 0.3 = on a true target"), ("none", None, f"YOLOE prompt: ‘{prompt}’")]
     right = [("fill", FLOOR_PX, "floor, not seen yet"), ("fill", EXPL_PX, "explored"), ("fill", OBST_PX, "obstacle / wall"),
              ("grad", None, f"target layer, 0 … {tau:.2f}"), ("fill", HIGH_C, f"target value ≥ tau {tau:.2f}"),
              ("fill", READY_C, "rule-ready: ≥ tau, seen ≥ 2 views"), ("vp", None, "true object + view spots (0.2 m)"),
@@ -394,9 +410,13 @@ def caption(text: Writer, episode: Dict[str, Any], name: str, t: int, n: int, ev
     text.add((12, 8), f"{episode['episode_id']}  |  home {episode['home']}  |  find: ‘{episode['target']['category']}’"
                       f"  |  {name}", 30)
     x = text.add((12, 56), f"step {t} / {n}   time {t * STEP_S:6.2f} s", 26, (200, 200, 200)) + 30
-    for e in events:
-        if t >= e.step:
-            x = text.add((x, 56), e.text, 26, HOW_C[e.how] if e.kind == "rule" else KIND_C[e.kind]) + 26
+    shown = [e for e in events if t >= e.step]
+    one_row = x + sum(font(26).getlength(e.text) + 26 for e in shown) <= SIZE[0] - 12
+    px, y, x0 = (26, 56, x) if one_row else (20, 50, x)  # too many events: two rows of smaller text
+    for e in shown:
+        if x + font(px).getlength(e.text) > SIZE[0] - 12:
+            x, y = x0, y + 24
+        x = text.add((x, y), e.text, px, HOW_C[e.how] if e.kind == "rule" else KIND_C[e.kind]) + px
 
 
 def freeze_frame(frame: np.ndarray, kind: str, lines: List[str], colour: Tuple[int, int, int]) -> np.ndarray:
@@ -416,6 +436,16 @@ def freeze_frame(frame: np.ndarray, kind: str, lines: List[str], colour: Tuple[i
     text.add((24, y + 18), lines[0], 44, colour)
     for k, line in enumerate(lines[1:]):
         text.add((24, y + 84 + 40 * k), line, 26)
+    return text.draw(out)
+
+
+def dim_after(frame: np.ndarray, step: int) -> np.ndarray:
+    """A frame after the oracle success: everything below the top band dimmed, a note at the top of the camera."""
+    out = frame.copy()
+    out[HEAD:] = (out[HEAD:].astype(np.float32) * DIM).astype(np.uint8)
+    cv2.rectangle(out, (0, HEAD), (CAM[0] - 1, HEAD + 40), (15, 15, 15), -1)
+    text = Writer()
+    text.add((12, HEAD + 8), f"after the scored moment (at a target view spot, step {step}): dimmed", 22, ORACLE_C)
     return text.draw(out)
 
 
@@ -459,7 +489,8 @@ def render_one(service: SimService, boxes: TrueBoxes, layout: RunLayout, table: 
     steps = rep["steps"]
     hits = [ve.hit(dets[t], steps[t]["true"]) for t in range(len(steps))]
     hit_step = next((t for t, h in enumerate(hits) if h), None)
-    events = ve.timeline_events(score, tau, hit_step)
+    box_step = ve.first_box({t: dets[t] for t in range(len(steps))})
+    events = ve.timeline_events(score, tau, hit_step, box_step)
     rule_values = [float(log[0].get("start_rule", {}).get("value") or 0.0)] + [float(s["rule_value"] or 0.0) for s in steps_log]
     rule_cells = [None] + [s.get("rule_cell") for s in steps_log]
     sees = [bool(log[0]["start"].get("in_view"))] + [bool(s["in_view"]) for s in steps_log]
@@ -468,6 +499,7 @@ def render_one(service: SimService, boxes: TrueBoxes, layout: RunLayout, table: 
     tl = timeline_base(n_max, rule_values, tau, sees, hits, events)
     legend = legend_panel(cat, prompt, tau)
     rule_ev = next((e for e in events if e.kind == "rule"), None)
+    oracle_ev = next((e for e in events if e.kind == "oracle"), None)
     stop_cell = rule_cells[rule_ev.step] if rule_ev is not None else None
     freezes = {e.step: [] for e in events if e.kind in ("oracle", "rule")}
     for e in events:
@@ -479,7 +511,7 @@ def render_one(service: SimService, boxes: TrueBoxes, layout: RunLayout, table: 
     n_cells = rep["shape"][0] * rep["shape"][1]
     obst_f, expl_f, upd = rep["obstacle_first"], rep["explored_first"], rep["updates"]
     path = [log[0]["start"]["position"]]
-    frame = None
+    frame = shown = None
     for t, st in enumerate(steps):
         if t > 0:
             path.append(steps_log[t - 1]["position"])
@@ -492,7 +524,7 @@ def render_one(service: SimService, boxes: TrueBoxes, layout: RunLayout, table: 
         mp = map_panel(fv, base, episode, path, yaw, rc, stop_cell if (rule_ev and t >= rule_ev.step) else None)
         frame = np.zeros((SIZE[1], SIZE[0], 3), np.uint8)
         text = Writer()
-        cam, drawn = camera_panel(st["rgb"], dets[t], st["true"], prompt, cat, tau, text, HEAD)
+        cam, drawn = camera_panel(st["rgb"], dets[t], st["true"], cat, tau, text, HEAD)
         frame[HEAD:HEAD + CAM[1], :CAM[0]] = cam
         frame[HEAD + CAM[1]:, :CAM[0]] = legend
         mx, my = MAP_XY
@@ -503,9 +535,11 @@ def render_one(service: SimService, boxes: TrueBoxes, layout: RunLayout, table: 
         text.add((mx + 16, my + MAP - 46), "1 m", 18)
         caption(text, episode, name, t, n_max, events)
         frame = text.draw(frame)
+        dimmed = oracle_ev is not None and t > oracle_ev.step
+        shown = dim_after(frame, oracle_ev.step) if dimmed else frame
         for _ in range(REPEAT):
-            vw.write(frame)
-        table_rows.append([t, REPEAT, "step"])
+            vw.write(shown)
+        table_rows.append([t, REPEAT, "step_dimmed" if dimmed else "step"])
         drawn_all[str(t)] = drawn
         posed.append({"position": st["pose"][0], "yaw": st["pose"][1], "hole": st["hole"]})
         for e in freezes.get(t, []):
@@ -515,7 +549,7 @@ def render_one(service: SimService, boxes: TrueBoxes, layout: RunLayout, table: 
                 vw.write(fz)
             table_rows.append([t, FREEZE, f"freeze_{e.kind}"])
     for _ in range(FREEZE):  # hold the last frame 2 s
-        vw.write(frame)
+        vw.write(shown)
     table_rows.append([len(steps) - 1, FREEZE, "hold"])
     vw.close()
     small = Path(args.out) / "small" / out.name
@@ -533,7 +567,8 @@ def render_one(service: SimService, boxes: TrueBoxes, layout: RunLayout, table: 
            "log": str(log_path), "log_sha256": sha256(log_path), "dets": str(dets_path), "dets_sha256": sha256(dets_path),
            "max_steps": n_max, "steps": len(steps) - 1, "fps": FPS, "repeat": REPEAT, "freeze_frames": FREEZE,
            "size": list(SIZE), "crf": CRF, "small_crf": SMALL_CRF, "iou_hit": ve.IOU_HIT,
-           "events": [e.__dict__ for e in events], "first_yoloe_hit": hit_step,
+           "events": [e.__dict__ for e in events], "first_yoloe_box_any": box_step, "first_yoloe_box_on_target": hit_step,
+           "dimmed_after_step": oracle_ev.step if oracle_ev is not None else None,
            "score": {k_: score.get(k_) for k_ in ("oracle_success", "oracle_step", "first_sight")},
            "rule": (score.get("rule") or {}).get(f"{tau:.2f}"),
            "replay_check": {"frames": len(steps), "dets_equal_frames": int(replay_dets_same),
@@ -551,12 +586,14 @@ def render_one(service: SimService, boxes: TrueBoxes, layout: RunLayout, table: 
     return man
 
 
-def video_plan(layout: RunLayout) -> Tuple[List[Tuple[str, str]], List[str]]:
+def video_plan(layout: RunLayout, list_path: Optional[Path] = None,
+               arms: Optional[List[str]] = None) -> Tuple[List[Tuple[str, str]], List[str]]:
     """The config's `videos` block: ([(pick name, episode id)] of videos.list (below out_dir), the arms rendered =
-    videos.render_arms if given (Phase 13: the 4 review arms; budget), else videos.arms)."""
+    videos.render_arms if given (Phase 13: the 4 review arms; budget), else videos.arms). list_path / arms override
+    both (a pick-rules list)."""
     v = layout.cfg["videos"]
-    lst = json.loads((layout.base / v["list"]).read_text())
-    return [(p["name"], p["episode"]) for p in lst["picks"]], list(v.get("render_arms") or v["arms"])
+    lst = json.loads((Path(list_path) if list_path else layout.base / v["list"]).read_text())
+    return [(p["name"], p["episode"]) for p in lst["picks"]], list(arms or v.get("render_arms") or v["arms"])
 
 
 def render_all(args: argparse.Namespace, jobs: List[Tuple[str, str, str]]) -> None:
@@ -609,11 +646,49 @@ def cmd_render(args: argparse.Namespace) -> None:
 def cmd_render_plan(args: argparse.Namespace) -> None:
     """Videos <pick name>__<arm>.mp4 for every pick of videos.list x every arm of videos.arms (set `video` unless
     --set is given)."""
-    picks, arms = video_plan(RunLayout.load(args.config))
+    render_all(args, plan_jobs(args, *(int(x) for x in args.shard.split("/"))))
+
+
+def plan_jobs(args: argparse.Namespace, k: int = 0, n: int = 1) -> List[Tuple[str, str, str]]:
+    """render-plan's jobs (video name <pick>__<arm>, arm, episode id); --shard k/n = every n-th job from k."""
+    picks, arms = video_plan(RunLayout.load(args.config), args.list, args.arms)
     args.set = args.set or "video"
-    k, n = (int(x) for x in args.shard.split("/"))
     jobs = [(f"{name}__{a}", a, e) for name, e in picks for a in arms]
-    render_all(args, [j for i, j in enumerate(jobs) if i % n == k])  # --shard k/n: every n-th video from k
+    return [j for i, j in enumerate(jobs) if i % n == k]
+
+
+def cmd_pick_rules(args: argparse.Namespace) -> None:
+    """Phase 12's four rule picks (p12_videos.cmd_pick) for another maps / maps-hidden pair on one set: the first
+    episode of a seeded order (--seed) where (a) maps succeeds and hidden fails (oracle), (b) maps has a stuck streak,
+    (c) maps' rule stop (tau) is on a wrong object, (d) F succeeds and maps fails. Scores of seed index 0 from
+    <out_dir>/<subdir>/scores; F's from --f-scores (a scores file). Writes --out (a video list for render-plan --list)."""
+    layout = RunLayout.load(args.config)
+    tau = f"{float(ArmTable.from_layout(layout).choices()['tau']):.2f}"
+    eps, fp = load_episodes(layout.base / layout.cfg["sets"][args.set]["folder"] / "episodes.json")
+    ids = [e["episode_id"] for e in eps]
+    order = [ids[int(i)] for i in np.random.default_rng(args.seed).permutation(len(ids))]
+
+    def scores(f: Path) -> Dict[str, Dict[str, Any]]:
+        rows = [json.loads(x) for x in f.read_text().splitlines()]
+        return {r["episode_id"]: r for r in rows if r["seed_index"] == 0}
+
+    sdir = layout.base / args.subdir / "scores"
+    mp, hd, fs = scores(sdir / f"{args.maps}.jsonl"), scores(sdir / f"{args.hidden}.jsonl"), scores(args.f_scores)
+
+    def first(pred) -> Optional[str]:
+        return next((e for e in order if e in mp and pred(e)), None)
+
+    rules = {"maps_ok_hidden_fails": first(lambda e: mp[e]["oracle_success"] and e in hd and not hd[e]["oracle_success"]),
+             "maps_stuck": first(lambda e: mp[e]["stuck_streaks"] > 0),
+             "maps_wrong_object": first(lambda e: mp[e]["rule"][tau]["wrong_object"]),
+             "F_ok_maps_fails": first(lambda e: e in fs and fs[e]["oracle_success"] and not mp[e]["oracle_success"])}
+    out = {"seed": args.seed, "tau": tau, "set": args.set, "fingerprint": fp, "subdir": args.subdir, "seed_index": 0,
+           "maps": args.maps, "hidden": args.hidden, "f_scores": str(args.f_scores),
+           "picks": [{"name": f"rule_{n}", "episode": e, "why": n} for n, e in rules.items() if e is not None],
+           "rules_without_episode": [n for n, e in rules.items() if e is None]}
+    args.out.parent.mkdir(parents=True, exist_ok=True)
+    write_text_atomic(args.out, json.dumps(out, indent=1) + "\n")
+    print(json.dumps(out, indent=1))
 
 
 # --- check ------------------------------------------------------------------------------------------------------------
@@ -633,7 +708,7 @@ def check_boxes(man: Dict[str, Any], dets: Dict[int, List[Dict[str, Any]]], inde
     bad, rows = [], []
     for f in frames:
         t, kind = step_of_frame(man["frame_table"], f)
-        why = ve.compare_boxes(man["drawn"][str(t)], dets[t], man["prompt"], man["tau"])
+        why = ve.compare_boxes(man["drawn"][str(t)], dets[t], man["category"], man["tau"])
         rows.append({"frame": f, "step": t, "kind": kind, "boxes": len(man["drawn"][str(t)]), "ok": why is None})
         if why is not None:
             bad.append({"frame": f, "step": t, "why": why})
@@ -674,12 +749,19 @@ def cmd_check(args: argparse.Namespace) -> None:
         print(json.dumps({"video": man["video"], "pass": r["pass"], "boxes": r["boxes"]["pass"],
                           "poses": r["poses"]["pass"], "kept_floor_height": r["poses"]["kept_floor_height"],
                           "replay_check": man["replay_check"]}), flush=True)
+    # with --config: every planned video (render-plan's jobs) must exist (a crashed render shard is a failure)
+    have = {r["video"] for r in rows} | {m["video"] for m in missing}
+    not_rendered = [f"{v}.mp4" for v, _, _ in plan_jobs(args) if f"{v}.mp4" not in have] if args.config else []
+    ok &= not not_rendered
     res = {"pass": ok, "videos": len(rows), "check_seed": CHECK_SEED, "frames_per_video": CHECK_FRAMES,
+           "planned": len(have) + len(not_rendered) if args.config else None, "not_rendered": not_rendered,
            "kept_floor_height_total": sum(r["poses"]["kept_floor_height"] for r in rows),
            "not_reproducible": [dict(m, verdict="not reproducible", why="run log or dets file missing: no video")
                                 for m in missing],
            "summary": f"{sum(r['pass'] for r in rows)}/{len(rows)} videos pass (boxes + poses); "
-                      f"{len(missing)} not rendered (missing run: not reproducible)", "rows": rows}
+                      f"{len(missing)} not rendered (missing run: not reproducible)"
+                      + (f"; {len(not_rendered)} planned videos not rendered (render failed)" if not_rendered else ""),
+           "rows": rows}
     report = Path(args.report) if args.report else out / "video_check.json"
     write_text_atomic(report, json.dumps(res, indent=1) + "\n")
     print(json.dumps({k: res[k] for k in ("pass", "videos", "kept_floor_height_total", "summary")}), flush=True)
@@ -727,8 +809,13 @@ def cmd_same_run(args: argparse.Namespace) -> None:
 
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("cmd", choices=["render", "render-plan", "check", "same-run"])
-    p.add_argument("--config", type=Path)
+    p.add_argument("cmd", choices=["render", "render-plan", "check", "same-run", "pick-rules"])
+    p.add_argument("--config", type=Path, help="check: also require every render-plan video (with --list / --arms)")
+    p.add_argument("--list", type=Path, help="render-plan / check: a video list in place of videos.list")
+    p.add_argument("--maps", help="pick-rules: the maps-shown arm")
+    p.add_argument("--hidden", help="pick-rules: the maps-hidden arm")
+    p.add_argument("--f-scores", type=Path, help="pick-rules: F's scores file on the set")
+    p.add_argument("--seed", type=int, default=12501, help="pick-rules: the seeded episode order (Phase 12's)")
     p.add_argument("--subdir", help="render: the runs' subdir below out_dir (logs/ and dets/)")
     p.add_argument("--set", help="render / render-plan: the config's set of the episodes (default exam / video)")
     p.add_argument("--arms", nargs="+")
@@ -744,7 +831,7 @@ def main() -> None:
     p.add_argument("--old", type=Path, help="same-run: logs root of the Phase 12 runs (read only)")
     args = p.parse_args()
     {"render": cmd_render, "render-plan": cmd_render_plan, "check": cmd_check,
-     "same-run": cmd_same_run}[args.cmd](args)
+     "same-run": cmd_same_run, "pick-rules": cmd_pick_rules}[args.cmd](args)
 
 
 if __name__ == "__main__":
