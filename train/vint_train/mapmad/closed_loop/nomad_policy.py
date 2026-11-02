@@ -12,6 +12,8 @@ context_spacing (Phase 7 report-only extra; default 1 = the above exactly): the 
 last 3k + 1 control steps, and the policy waits until all of them exist.
 Frame queue (deployment `callback_obs`): append the newest picture, drop the oldest beyond context_size + 1; no
 padding: until 4 pictures exist, deployment publishes no waypoint and the robot stands (here: (0, 0)).
+Phase 14a `picker` (drive_switches.StickPicker, arm `pick: stick`; None = sample_index every step, as before): picks
+the sample among the 8 drawn; the step info then adds `sample`.
 """
 
 import random
@@ -63,6 +65,7 @@ class NomadPolicy(Policy):
 
     name = "nomad"
     log_all_samples = False  # True: every step's info also carries all sampled paths (`paths_all_m`, report only)
+    picker = None  # Phase 14a A1: drive_switches.StickPicker (None = sample_index)
 
     def __init__(self, weights: str, cfg: Dict[str, Any], device: torch.device, num_samples: int = 8,
                  sample_index: int = 0, waypoint_index: int = 2, max_v: float = 0.2, max_w: float = 0.4,
@@ -95,6 +98,8 @@ class NomadPolicy(Policy):
         np.random.seed(seed)
         torch.manual_seed(seed)
         self.generator = torch.Generator(device=self.device).manual_seed(seed)
+        if self.picker is not None:
+            self.picker.reset()
 
     def _pictures(self, arrays) -> torch.Tensor:
         return transform_images([PILImage.fromarray(a) for a in arrays], self.image_size, center_crop=False).to(self.device)
@@ -138,12 +143,17 @@ class NomadPolicy(Policy):
         if not self.ready(obs):  # deployment: no waypoint yet -> zero velocity
             return Command(0.0, 0.0, {"waiting_for_frames": len(obs.frames)})
         paths = self.sample_paths(obs)
-        waypoint = paths[self.sample_index][self.waypoint_index].astype(np.float64)
+        scale = self.metres_per_unit if self.cfg["normalize"] else 1.0
+        k = self.sample_index if self.picker is None else self.picker.pick(paths.astype(np.float64) * scale, obs.step)
+        waypoint = paths[k][self.waypoint_index].astype(np.float64)
         if self.cfg["normalize"]:
             waypoint = waypoint * self.metres_per_unit
         v, w = pd_controller(waypoint, self.max_v, self.max_w, 1.0 / self.rate_hz)
         info = {"waypoint_m": [float(waypoint[0]), float(waypoint[1])],
-                "path_m": (paths[self.sample_index] * self.metres_per_unit).round(4).tolist()}
+                "path_m": (paths[k] * self.metres_per_unit).round(4).tolist()}
+        if self.picker is not None:
+            self.picker.executed(float(np.clip(v, 0.0, self.max_v)), float(np.clip(w, -self.max_w, self.max_w)))
+            info["sample"] = k
         if self.log_all_samples:
             info["paths_all_m"] = (paths * self.metres_per_unit).round(4).tolist()
         return Command(v, w, info)

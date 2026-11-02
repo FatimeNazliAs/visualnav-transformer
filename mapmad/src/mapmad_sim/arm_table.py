@@ -20,7 +20,10 @@ An arm (config `arms:` entry) = a policy + its weights + what it is shown + what
 - seeds: the seed indices it runs (None = all of `run.seeds`); `seeds_not_headline`: the seeds when the arm is not
   part of the headline pair (Phase 12 block item 3: M2-h 3 seeds if headline, else 1);
 - teacher_seen (frontier only): `layer` (a target-layer cell >= tau seen from >= 2 views) or `truth` (Phase 8's
-  simulator-truth "seen", the F check); teacher_mode `search` | `explore`.
+  simulator-truth "seen", the F check); teacher_mode `search` | `explore`;
+- pick (Phase 14a, network arms): `sample0` (Phase 13: sample 0 every step) | `stick` (A1 "stick with your choice",
+  closed_loop/drive_switches.StickPicker); unstuck: `none` | `w4` (the W4 get-unstuck rule, drive_switches.Unstuck);
+  the numbers come from the config's `switches` block.
 A checkpoint (config `checkpoints:` entry) is {path, sha256, config} (paths below <outputs> or "repo:"), or
 {from_file: <json below out_dir>} (written by an earlier step: V2_FINAL.json, V21.json), or {from_choice: <key of
 P12_DEV_CHOICES.json>} (the dev decision names another checkpoint key, e.g. headline -> "v21"). Paths are resolved in
@@ -36,6 +39,8 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 POLICIES = ("mapmad_v2", "nomad", "mapmad_v1", "frontier", "vf")
 NO_WEIGHTS = ("frontier", "vf")  # map-based arms without a network (Phase 13 "vf": VLFM-style, search_vf.py)
 TARGETS = ("truth_noisy", "recogniser", "none")
+PICKS = ("sample0", "stick")  # Phase 14a A1
+UNSTUCK = ("none", "w4")  # Phase 14a W4
 CHOICES_FILE = "P12_DEV_CHOICES.json"  # Phase 12: the dev decisions (headline, deltas, tau), below out_dir
 
 
@@ -65,6 +70,8 @@ class Arm:
     teacher_mode: str = "search"
     label: str = ""
     pair: Optional[str] = None  # Phase 12: the checkpoint pair this arm belongs to (v2 | v21), for the headline rule
+    pick: str = "sample0"  # Phase 14a: which diffusion sample drives (PICKS)
+    unstuck: str = "none"  # Phase 14a: get-unstuck rule (UNSTUCK)
 
     def __post_init__(self) -> None:
         if self.policy not in POLICIES:
@@ -82,6 +89,10 @@ class Arm:
             raise ValueError(f"arm {self.name}: a vf arm searches with a recogniser's layer marks")
         if self.teacher_seen not in ("layer", "truth") or self.teacher_mode not in ("search", "explore"):
             raise ValueError(f"arm {self.name}: teacher_seen layer|truth, teacher_mode search|explore")
+        if self.pick not in PICKS or self.unstuck not in UNSTUCK:
+            raise ValueError(f"arm {self.name}: pick {PICKS}, unstuck {UNSTUCK}")
+        if self.policy in NO_WEIGHTS and (self.pick != "sample0" or self.unstuck != "none"):
+            raise ValueError(f"arm {self.name}: the driving switches are for network arms only")
         if "__" in self.name or "." in self.name or "/" in self.name:
             raise ValueError(f"arm {self.name}: no '__', '.' or '/' in an arm name (run ids and file names)")
 
@@ -92,6 +103,16 @@ class Arm:
             if s.get(k) is not None:
                 s[k] = tuple(s[k])
         return cls(name=name, **s)
+
+    @property
+    def switches(self) -> Dict[str, str]:
+        """Phase 14a: the driving switches that are on ({} = Phase 13's driving)."""
+        out = {}
+        if self.pick != "sample0":
+            out["pick"] = self.pick
+        if self.unstuck != "none":
+            out["unstuck"] = self.unstuck
+        return out
 
     @property
     def deterministic(self) -> bool:

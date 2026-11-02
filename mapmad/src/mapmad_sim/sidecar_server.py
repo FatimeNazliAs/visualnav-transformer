@@ -85,6 +85,11 @@ class SimService:
     Phase 13 ("log_dets": true in the search_v2 settings): every reply also carries "dets" (dets_record: the
     recogniser's boxes and scores of the frame; [] for other target sources), which the runner writes to a file of
     its own beside the step log.
+
+    Phase 14a ("log_evidence": true in the search_v2 settings): stop_evidence.EvidenceRecorder records every frame's
+    pose, view cells, recogniser masks -> cells and true target boxes -> cells; `save_evidence` writes them (plus the
+    first-seen maps and bump events) as one npz. `step` with "reverse": true lets v go below 0 (the get-unstuck rule
+    W4 only; without it the robot never reverses, as before).
     """
 
     def __init__(self, factory: RobotFactory) -> None:
@@ -102,6 +107,7 @@ class SimService:
         self.agent: Optional[Any] = None  # Phase 12: search_exam.FrontierAgent (arm F)
         self.itm: Optional[Any] = None  # Phase 13: search_vf.ITMSource (arm VF; kept across episodes)
         self.vf: Optional[Any] = None  # Phase 13: search_vf.VFAgent (arm VF)
+        self.evidence: Optional[Any] = None  # Phase 14a: stop_evidence.EvidenceRecorder of the episode
 
     def handle(self, msg: Dict[str, Any]) -> Dict[str, Any]:
         cmd = msg["cmd"]
@@ -114,12 +120,15 @@ class SimService:
         if cmd == "step":
             if self.robot is None or self.target is None:
                 raise RuntimeError("step before reset")
-            move = self.robot.drive(msg["v"], msg["w"])
+            move = self.robot.drive(msg["v"], msg["w"], allow_reverse=True) if msg.get("reverse") else \
+                self.robot.drive(msg["v"], msg["w"])
             if self.search is not None:
                 self.search.after_move(move, self.pose2d(), self.robot.spec.dt)
             return {**self.observation(), "state": self.state(), "move": asdict(move)}
         if cmd == "save":
             return self.save(msg["folder"], msg.get("meta") or {})
+        if cmd == "save_evidence":
+            return self.save_evidence(msg["path"])
         raise ValueError(f"unknown command {cmd!r}")
 
     def reset(self, episode: Dict[str, Any], hfov_deg: float, goal_photo: bool, m_per_px: float,
@@ -148,7 +157,7 @@ class SimService:
         self.online_map = None
         self.search = None
         self.episode = episode
-        self.rule, self.agent, self.vf = None, None, None
+        self.rule, self.agent, self.vf, self.evidence = None, None, None, None
         if searching:
             from mapmad_sim.search_v2 import SearchMap, SearchSpec, instances_of
 
@@ -165,6 +174,11 @@ class SimService:
                     self.agent = FrontierAgent(FrontierSpec.from_wire(sv["teacher"]))
             if sv.get("vf"):
                 self.vf = self._vf_agent(sv["vf"], episode)
+            if sv.get("log_evidence"):
+                from mapmad_sim.stop_evidence import EvidenceRecorder
+
+                self.evidence = EvidenceRecorder(self.search.fmap.shape, self.search.fmap.origin,
+                                                 self.search.spec.map_spec.resolution, episode["target"]["category_ids"])
         extra: Dict[str, Any] = {}
         if outputs.get("map") or outputs.get("grid"):  # Phase 5 online map (v1 tensor / planner grid)
             from mapmad_sim.depth_map import MapSpec
@@ -217,6 +231,10 @@ class SimService:
                 out["grid"] = self.online_map.grid(self.robot)
         if self.search is not None:
             self.search.add_frame(self.robot, obs)
+            if self.evidence is not None:
+                s = self.search
+                self.evidence.add(s.t, self.pose2d(), s.last_cells, s.last_dets if s.source == "recogniser" else [],
+                                  obs["semantic"])
             out["maps"] = self.search.windows(self.pose2d())
             if self.rule is not None or self.agent is not None or self.vf is not None:
                 out.update(self.exam_outputs(obs))
@@ -269,6 +287,13 @@ class SimService:
                 "frontier_ignore_trajectory_m": 0.0, "metric_waypoint_spacing": 0.05,
                 "frame_convention": "traj_data.pkl: X = -z, Y = -x of Habitat, yaw unchanged (mapmad_sim/frames.py)"}
         return {"bytes": self.search.write(Path(folder), full, e["target"]["category"])}
+
+    def save_evidence(self, path: str) -> Dict[str, Any]:
+        """Phase 14a: write the episode's stop evidence (stop_evidence.py) to `path` (inside this container)."""
+        if self.evidence is None:
+            raise RuntimeError("save_evidence without log_evidence")
+        s = self.search
+        return {"bytes": self.evidence.save(Path(path), s.fmap.first_seen, s.bump_log)}
 
     def state(self) -> Dict[str, Any]:
         geo = self.robot.geodesic(self.robot.position, self.target)

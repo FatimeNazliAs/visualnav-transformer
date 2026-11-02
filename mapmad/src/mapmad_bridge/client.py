@@ -73,10 +73,15 @@ class SimClient:
         return Frame(rgb=r["rgb"], state=r["state"], goal_rgb=r["goal_rgb"], topdown=r["topdown"],
                      navmesh_sha256=r["navmesh_sha256"], extras=extras_of(r))
 
-    def step(self, v: float, w: float) -> Frame:
-        """Drive (v m/s, w rad/s) for one control period (0.25 s) and observe."""
-        r = self._call("step", v=float(v), w=float(w))
+    def step(self, v: float, w: float, reverse: bool = False) -> Frame:
+        """Drive (v m/s, w rad/s) for one control period (0.25 s) and observe. reverse (Phase 14a, the get-unstuck rule
+        W4 only) lets v go below 0."""
+        r = self._call("step", v=float(v), w=float(w), **({"reverse": True} if reverse else {}))
         return Frame(rgb=r["rgb"], state=r["state"], move=r["move"], extras=extras_of(r))
+
+    def save_evidence(self, path: str) -> Dict[str, Any]:
+        """Phase 14a: the server writes the episode's stop evidence npz to `path` (inside the simulator container)."""
+        return self._call("save_evidence", path=str(path))
 
     def save(self, folder: str, meta: Dict[str, Any]) -> Dict[str, Any]:
         """Phase 11: the server writes the recorded search episode to `folder` (a path inside the simulator

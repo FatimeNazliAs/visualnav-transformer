@@ -97,6 +97,8 @@ class SearchMap:
         self.source, self.recogniser, self.prompt = source, recogniser, prompt
         self.n_dets = 0  # detections drawn into the noisy layer this frame (recogniser: kept detections)
         self.last_dets: List[Any] = []  # Phase 13: the recogniser's detections of this frame (boxes + scores, logged)
+        self.last_cells: Optional[Any] = None  # Phase 14a: this frame's target_layer.FrameCells (stop evidence)
+        self.bump_log: List[Any] = []  # Phase 14a: (frame, x, y) of every bumped cell (stop evidence, 14.3 maps)
 
     # --- frame t --------------------------------------------------------------------------------------------------
     def add_frame(self, robot: Any, obs: Dict[str, np.ndarray]) -> int:
@@ -110,6 +112,7 @@ class SearchMap:
                             self.spec.noise.max_depth_m)
         found = detect(obs["semantic"], depth, self.ids, self.spec.noise) if self.source != "none" else {}
         sc = frame_scores(t, found, cells, self.fmap.shape, self.spec.noise, self.rng)
+        self.last_cells = cells
         noisy = sc.noisy
         self.n_dets = sum(not d.missed for d in sc.detections) + (sc.false_mark is not None)
         if self.source == "recogniser":  # Phase 12: the recogniser's detections, through the same fusion
@@ -166,6 +169,7 @@ class SearchMap:
         flat, inside = self.fmap.cells(np.asarray([xy], dtype=np.float64))
         if inside[0] and not self.bumped.flat[flat[0]]:
             self.bumped.flat[flat[0]] = True
+            self.bump_log.append((self.t, float(xy[0]), float(xy[1])))
             if self.rec is not None:
                 self.rec.bump_events.append((self.t, float(xy[0]), float(xy[1])))
 

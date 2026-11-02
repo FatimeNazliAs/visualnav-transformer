@@ -86,6 +86,8 @@ def arm_wire(table: ArmTable, name: str, train_config: Callable[[str], Dict[str,
         sv["rule"] = run["rule_stop"]
         if run.get("log_dets"):  # Phase 13: the recogniser's boxes + scores of every frame (dets file per run)
             sv["log_dets"] = True
+        if run.get("log_evidence"):  # Phase 14a: the stop evidence of every frame (evidence npz per run)
+            sv["log_evidence"] = True
         target: Dict[str, Any] = {"source": a.target}
         if a.target == "recogniser":
             if recog is None:

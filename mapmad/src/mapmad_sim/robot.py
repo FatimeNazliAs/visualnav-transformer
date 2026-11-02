@@ -106,9 +106,10 @@ def horizontal_distance(a: Sequence[float], b: Sequence[float]) -> float:
     return float(math.hypot(a[0] - b[0], a[2] - b[2]))
 
 
-def clip_command(spec: RobotSpec, v: float, w: float) -> Tuple[float, float]:
-    """Speed limits: v in [0, max_v] (no reversing, as NoMaD's controller), |w| <= max_w."""
-    return float(np.clip(v, 0.0, spec.max_v)), float(np.clip(w, -spec.max_w, spec.max_w))
+def clip_command(spec: RobotSpec, v: float, w: float, allow_reverse: bool = False) -> Tuple[float, float]:
+    """Speed limits: v in [0, max_v] (no reversing, as NoMaD's controller), |w| <= max_w. allow_reverse (Phase 14a,
+    the get-unstuck rule W4 only): v in [-max_v, max_v]."""
+    return float(np.clip(v, -spec.max_v if allow_reverse else 0.0, spec.max_v)), float(np.clip(w, -spec.max_w, spec.max_w))
 
 
 def arc_step(yaw: float, v: float, w: float, dt: float) -> np.ndarray:
@@ -266,9 +267,10 @@ class LimoSim:
             return False
         return horizontal_distance(cam, snapped) <= self.free_radius
 
-    def drive(self, v: float, w: float) -> Move:
-        """Hold (v, w) for one control period, in sub-steps checked against the navmesh; see the module docstring."""
-        v, w = clip_command(self.spec, v, w)
+    def drive(self, v: float, w: float, allow_reverse: bool = False) -> Move:
+        """Hold (v, w) for one control period, in sub-steps checked against the navmesh; see the module docstring.
+        allow_reverse: see clip_command (Phase 14a W4)."""
+        v, w = clip_command(self.spec, v, w, allow_reverse)
         dt = self.spec.dt / self.spec.substeps
         position, yaw = self.position.copy(), self.yaw
         travelled = short = 0.0

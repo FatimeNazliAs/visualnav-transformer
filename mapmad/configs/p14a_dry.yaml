@@ -1,0 +1,8 @@
+# Phase 14a DRY runs (marked DRY, never results): p14a_finish.yaml with outputs below <outputs>/p14a_dry.
+extends: p14a_finish.yaml
+out_dir: p14a_dry
+sets:
+  p14d:
+    folder: ../p14a_finish/sets/p14d
+  practice:
+    file: ../p14a_finish/sets/practice.json

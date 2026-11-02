@@ -25,6 +25,9 @@ P12_DEV_CHOICES.json (or --tau, DRY runs).
 arm VF steers with frontier_policy.VFPolicy (FrontierPolicy + its extras in the step log), its decisions come from the
 simulator server (mapmad_sim.search_vf.VFAgent).
 Writes below <outputs>/<out_dir>/<subdir>: logs/, summaries/, timing/, progress.<tag>.log, run_info.<tag>.json.
+Phase 14a: arm switches `pick: stick` (A1) and `unstuck: w4` (W4) from the config's `switches` block
+(closed_loop/drive_switches.py; the log header adds `switches`); run.log_evidence -> every run also writes
+evidence/<arm>/<run>.npz (mapmad_sim/stop_evidence.py, written by the simulator server).
 """
 
 import os
@@ -96,8 +99,23 @@ class Policies:
     def get(self, name: str) -> Policy:
         if name not in self.cache:
             a = self.arm(name)
-            self.cache[name] = getattr(self, f"_build_{a.policy}")(a)
+            pol = getattr(self, f"_build_{a.policy}")(a)
+            if a.pick == "stick":  # Phase 14a A1
+                from vint_train.mapmad.closed_loop.drive_switches import StickPicker
+
+                st = self.layout.cfg["switches"]["stick"]
+                pol.picker = StickPicker(float(st["rho"]), int(st["reset_every"]), 1.0 / self.limits["rate_hz"])
+            self.cache[name] = pol
         return self.cache[name]
+
+    def unstuck(self, name: str) -> Optional[Any]:
+        """Phase 14a W4: a fresh drive_switches.Unstuck for the arm, or None."""
+        if self.arm(name).unstuck != "w4":
+            return None
+        from vint_train.mapmad.closed_loop.drive_switches import Unstuck, UnstuckSpec
+
+        return Unstuck(UnstuckSpec.from_config(self.layout.cfg["switches"]["w4"]), self.limits["max_w"],
+                       1.0 / self.limits["rate_hz"])
 
     def _build_mapmad_v2(self, a: Arm) -> Policy:
         from vint_train.mapmad.closed_loop.search_policy import MapMaDV2Policy
@@ -157,6 +175,8 @@ class Policies:
         if self.layout.cfg.get("policies"):  # Phase 12 configs
             out.update(policy_type=a.policy, checkpoint_key=c["key"], target=a.target, recogniser=a.recogniser,
                        map_zero=list(a.map_zero))
+        if a.switches:  # Phase 14a (absent for Phase 13's driving)
+            out["switches"] = a.switches
         return out
 
 
@@ -292,9 +312,11 @@ def main() -> None:
                 t0 = time.perf_counter()
                 rec_ms: List[float] = []
                 try:
+                    evidence = layout.root / "evidence" / arm / f"{rid}.npz" if sv.get("log_evidence") else None
                     result, ms = run_search_episode(sim, policies.get(arm), ep, arm, run, k, seed, layout.log(arm, rid),
                                                     fingerprint, sv, wire.cameras[arm], policies.header(arm), save_dir,
-                                                    wire.extra.get(arm), rec_ms, layout.dets(arm, rid))
+                                                    wire.extra.get(arm), rec_ms, layout.dets(arm, rid),
+                                                    policies.unstuck(arm), evidence)
                     break
                 except INFRA_ERRORS + (RuntimeError,) as exc:
                     if isinstance(exc, RuntimeError) and not str(exc).startswith("simulator server"):

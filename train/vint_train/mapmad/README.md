@@ -225,3 +225,10 @@ Phase 12 (the search exam; rules `/outputs/mapmad/p12_search_exam/p12_rules.md`,
 - `offline_suite.py` + `offline_eval run-suite` / `suite-compare` — the offline checks of a checkpoint as data
   (`config/mapmad_offline_suites.yaml`), one call, one `suite.json`; the §0.8 re-score is `suite-compare`.
 - Tests: `tests/test_p12.py`.
+
+## Phase 14a
+- `closed_loop/drive_switches.py` — A1 "stick with your choice" (`StickPicker`, used by `NomadPolicy.picker`) and the
+  W4 get-unstuck rule (`Unstuck`, driven by `search_runner.run_search_episode(unstuck=...)`); off = Phase 13 exactly.
+- `closed_loop/p14_stopbench.py` (every stop rule on the practice runs + the §4b pick), `p14_tables.py` (Qwen keep /
+  drop, driving tests, gate draft), `p14_checks.py` (same-as-Phase-13, determinism, fairness).
+- Tests: `tests/test_p14.py`.

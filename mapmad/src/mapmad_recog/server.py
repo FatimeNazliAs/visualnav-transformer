@@ -85,6 +85,14 @@ class RecogService:
                     "text_reuse": bool(self.text_reuse.get("reuse"))}
         if cmd == "detect":
             return self.detect(msg)
+        if cmd == "ask":  # Phase 14a: a VLM's short answer about pictures (the Qwen3-VL stop check)
+            if not hasattr(self.model, "ask"):
+                raise ValueError(f"model {self.key} cannot answer questions")
+            self.sync()
+            t0 = time.perf_counter()
+            text = self.model.ask([np.asarray(im, np.uint8) for im in msg["images"]], str(msg["question"]))
+            self.sync()
+            return {"text": text, "model_ms": (time.perf_counter() - t0) * 1e3}
         cuda = self.torch.cuda.is_available()
         if cmd == "stats":
             return {"peak_vram_mb": self.torch.cuda.max_memory_allocated() / 2**20 if cuda else 0.0,

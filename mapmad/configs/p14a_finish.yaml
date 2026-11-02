@@ -1,0 +1,77 @@
+# Phase 14a — Goal 2, Step 1: cheap checks so the robot can finish the search (kickoff 2026-11-02,
+# ~/.claude/plans/phase14_plan_goal2.md; rules frozen in /outputs/mapmad/p14a_finish/p14a_rules.md + .sha256, copy in
+# configs/p14a_rules.md). No training, no exam: MP3D practice set only (p13d dev set + new p14d episodes from the MP3D
+# train homes p13d does not use). Starts from Phase 13's config (Phase 13 harness numbers unchanged); Phase 12's
+# P12_DEV_CHOICES.json (tau 0.45; arm F's tau) is copied into <out_dir> unchanged.
+extends: p13_claim.yaml
+out_dir: p14a_finish
+
+sets:
+  hm3d: null                          # exams are never touched in 14a (kickoff §8)
+  video: null
+  examb: null
+  dev: null
+  p13d:                               # Phase 13's MP3D dev set (120 eps), frozen 5745b340..., Phase 13 noise seeds
+    folder: ../p13_claim/dev_set
+    seed_salt: mapmad-p13d
+  p14d:                               # 14.0: new episodes, MP3D train homes p13d does not use (kickoff §3 item 4)
+    folder: sets/p14d
+    id_prefix: p14d
+    total: 180
+    per_home: 12                      # kickoff 14.0 per-home cap
+    candidates_per_home: 1500         # seeded sample of each unused home's official train episodes (Phase 13: 30)
+    candidate_seed: 14001
+    draw_seed: 14002
+    report_min_per_bin: 0
+    seed_salt: mapmad-p14d            # kickoff §3 item 12
+  practice:                           # p13d ∪ p14d, home-level halves A / B (frozen in 14.0)
+    file: sets/practice.json
+    parts: [p13d, p14d]
+    split_seed: 14003
+
+run:
+  seeds: 1                            # kickoff §3 item 12: seed index 0 only
+  log_evidence: true                  # 14.1: per-look stop evidence of every frame (evidence/<arm>/<run>.jsonl)
+
+checkpoints:
+  v21b:                               # = p13_claim/V21B.json (Phase 13 key name kept: byte-identical p13d re-runs)
+    path: p13_claim/runs/v21b_s1_2026_10_30_17_02_10/ema_9.pth
+    sha256: 9ab0dbfb590b1ec481fb805e7b34f3b93cb858057bec377b1cdf6f4ddeec2c68
+    config: repo:train/config/mapmad_v21b.yaml
+    from_file: null                   # (Phase 13's V21B.json pointer removed; same file)
+
+switches:                             # 14.4 arm switches (kickoff 14.4; off = Phase 13 behaviour, byte-identical)
+  stick:                              # A1 "stick with your choice" (BID rho 0.5, IMLE periodic reset C 10)
+    rho: 0.5
+    reset_every: 10
+  w4:                                 # W4 get-unstuck rule (outside the network; reversing only inside it)
+    window_collisions: 20
+    min_collisions: 16
+    window_still: 40
+    min_move_m: 0.10
+    reverse_m: 0.25
+    reverse_v: 0.1
+    turn_step_deg: 10
+    max_per_100: 3
+
+videos: null
+
+arms:
+  M2: null
+  M2h: null
+  M21: null
+  M21h: null
+  MT: null
+  V1: null
+  # --- baseline arms (Phase 13 wiring exactly) ---
+  # M21b, M21bh, N, F, VF come from p13_claim.yaml unchanged
+  # --- 14.4 switch arms: network arms x {A1, W4, A1 + W4} ---
+  M21b_a1: {checkpoint: v21b, maps: true, target: recogniser, recogniser: yoloe, pick: stick, label: "MapMaD v2.1b + stick with your choice"}
+  M21bh_a1: {checkpoint: v21b, maps: false, target: recogniser, recogniser: yoloe, pick: stick, label: "MapMaD v2.1b, maps hidden + stick with your choice"}
+  N_a1: {policy: nomad, checkpoint: official, target: recogniser, recogniser: yoloe, pick: stick, label: "NoMaD explore + stick with your choice"}
+  M21b_w4: {checkpoint: v21b, maps: true, target: recogniser, recogniser: yoloe, unstuck: w4, label: "MapMaD v2.1b + get-unstuck rule"}
+  M21bh_w4: {checkpoint: v21b, maps: false, target: recogniser, recogniser: yoloe, unstuck: w4, label: "MapMaD v2.1b, maps hidden + get-unstuck rule"}
+  N_w4: {policy: nomad, checkpoint: official, target: recogniser, recogniser: yoloe, unstuck: w4, label: "NoMaD explore + get-unstuck rule"}
+  M21b_a1w4: {checkpoint: v21b, maps: true, target: recogniser, recogniser: yoloe, pick: stick, unstuck: w4, label: "MapMaD v2.1b + stick + get-unstuck"}
+  M21bh_a1w4: {checkpoint: v21b, maps: false, target: recogniser, recogniser: yoloe, pick: stick, unstuck: w4, label: "MapMaD v2.1b, maps hidden + stick + get-unstuck"}
+  N_a1w4: {policy: nomad, checkpoint: official, target: recogniser, recogniser: yoloe, pick: stick, unstuck: w4, label: "NoMaD explore + stick + get-unstuck"}

@@ -117,7 +117,7 @@ def test_bump_rule_marks_the_cell_ahead_only_for_a_stopped_forward_move():
     sm.fmap = FirstSeenMap(MapSpec(), (0.0, 0.0), (50, 50))
     sm.bumped = np.zeros((50, 50), bool)
     sm.spec = SearchSpec(MapSpec(), NoiseSpec())
-    sm.rec, sm.t = None, 3
+    sm.rec, sm.t, sm.bump_log = None, 3, []  # bump_log: Phase 14a (every bump, for the stop evidence)
     sm.after_move(_Move(0.2, 0.01, True), (1.05, 1.05, 0.0), 0.25)  # 0.01 m < half of 0.05 m: stopped -> bump
     assert sm.bumped[13, 10] and sm.bumped.sum() == 1  # cell under (1.35, 1.05)
     sm.after_move(_Move(0.2, 0.02, True), (1.05, 2.05, math.pi / 2), 0.25)
@@ -126,6 +126,7 @@ def test_bump_rule_marks_the_cell_ahead_only_for_a_stopped_forward_move():
     sm.after_move(_Move(0.0, 0.0, True), (2.0, 2.0, 0.0), 0.25)  # turning on the spot: nothing
     sm.after_move(_Move(0.2, 0.03, True), (2.0, 2.0, 0.0), 0.25)  # travelled >= half: no bump
     assert sm.bumped.sum() == 2
+    assert [b[0] for b in sm.bump_log] == [3, 3]
 
 
 # --- sets -----------------------------------------------------------------------------------------------------------

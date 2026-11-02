@@ -399,6 +399,18 @@ class _Vlm(Recogniser):
         self.last_text = text
         return vlm_dets(self.key, text, (h, w))[: self.max_det]
 
+    def ask(self, images: List[np.ndarray], question: str, max_new_tokens: int = 8) -> str:
+        """Phase 14a stop check: the model's short answer (greedy) to `question` about the pictures, in order."""
+        from PIL import Image
+
+        content = [{"type": "image", "image": Image.fromarray(np.ascontiguousarray(im, np.uint8))} for im in images]
+        messages = [{"role": "user", "content": content + [{"type": "text", "text": question}]}]
+        inputs = self.proc.apply_chat_template(messages, tokenize=True, add_generation_prompt=True, return_dict=True,
+                                               return_tensors="pt").to(self.device)
+        with self.torch.inference_mode():
+            gen = self.model.generate(**inputs, max_new_tokens=max_new_tokens, do_sample=False)
+        return self.proc.batch_decode(gen[:, inputs["input_ids"].shape[1]:], skip_special_tokens=True)[0]
+
 
 class MaskMaker:
     """MobileSAM through ultralytics (block item 5: box-only models -> MobileSAM masks): one call per item for all

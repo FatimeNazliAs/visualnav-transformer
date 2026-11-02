@@ -17,6 +17,11 @@ drives max_steps (1,000) and does not stop at the success zone; success / succes
 of that frame, search_exam.rule_value; the rule stop is judged from the log with tau, closed_loop/p12_score.py),
 `n_dets` (detections drawn into the target layer) and `house_seen` (house_seen.HouseSeen: house cells seen so far);
 the header adds `house_cells`. The recogniser's round-trip time goes to the timing file only (never into the log).
+
+Phase 14a (all optional; absent = Phase 13 exactly): `unstuck` (drive_switches.Unstuck, the W4 get-unstuck rule)
+drives instead of the policy while a manoeuvre runs (its step lines carry `policy.unstuck`; the result adds
+`unstuck_events` and `unstuck_steps`); `evidence_path` -> after the run the server writes the stop evidence npz there
+(stop_evidence.py; server setting `log_evidence`).
 """
 
 import json
@@ -33,7 +38,7 @@ import numpy as np
 from mapmad_bridge import steplog
 from mapmad_sim.run_layout import partial_path
 from vint_train.mapmad.closed_loop import metrics
-from vint_train.mapmad.closed_loop.policy import Observation, Policy
+from vint_train.mapmad.closed_loop.policy import Command, Observation, Policy
 from vint_train.mapmad.closed_loop.runner import clean
 
 
@@ -69,7 +74,8 @@ def run_search_episode(sim, policy: Policy, episode: Dict[str, Any], arm: str, r
                        seed: int, log_path: Path, fingerprint: str, search_v2: Dict[str, Any], camera: Dict[str, Any],
                        header_extra: Optional[Dict[str, Any]] = None, save_dir: Optional[Path] = None,
                        outputs_extra: Optional[Dict[str, Any]] = None, rec_ms: Optional[List[float]] = None,
-                       dets_path: Optional[Path] = None) -> Tuple[Dict[str, Any], List[float]]:
+                       dets_path: Optional[Path] = None, unstuck: Optional[Any] = None,
+                       evidence_path: Optional[Path] = None) -> Tuple[Dict[str, Any], List[float]]:
     """Drive one episode; writes log_path (and the drive to save_dir); returns (result line, policy ms per step).
     search_v2 = search_v2.search_settings(...) + {"noise_seed", "record"} (+ Phase 12 "target", "rule", "teacher");
     outputs_extra = more server outputs (V1: "map" + "map_settings"); rec_ms collects the recogniser's round trips;
@@ -81,6 +87,9 @@ def run_search_episode(sim, policy: Policy, episode: Dict[str, Any], arm: str, r
         raise FloorMapMismatch(f"{episode['episode_id']}: live floor map {first.navmesh_sha256[:12]} != the set's "
                                f"{episode['navmesh_sha256'][:12]}")
     policy.reset({"seed": seed, "episode_id": episode["episode_id"], "goal": "masked"})
+    if unstuck is not None:
+        unstuck.reset()
+    unstuck_steps = 0
     frames = deque([first.rgb], maxlen=policy.context_frames)
     extras, state = first.extras, first.state
     start_vp = state["vp_geodesic_m"]
@@ -122,13 +131,24 @@ def run_search_episode(sim, policy: Policy, episode: Dict[str, Any], arm: str, r
         rule_stop_step = None
         while not (success and run.stop_at_success) and rule_stop_step is None and step < run.max_steps:
             t0 = time.perf_counter()
-            cmd = policy.act(Observation(frames=list(frames), goal_image=None, step=step, extras=extras))
-            policy_ms.append((time.perf_counter() - t0) * 1000.0)
-            frame = sim.step(cmd.v, cmd.w)
+            manoeuvre = unstuck.command(step, extras) if unstuck is not None else None
+            if manoeuvre is not None:  # Phase 14a W4: the rule drives, the network is not asked
+                cmd = Command(manoeuvre[0], manoeuvre[1], manoeuvre[3])
+                unstuck_steps += 1
+                picker = getattr(policy, "picker", None)
+                if picker is not None:
+                    picker.reset()
+                frame = sim.step(cmd.v, cmd.w, reverse=manoeuvre[2])
+            else:
+                cmd = policy.act(Observation(frames=list(frames), goal_image=None, step=step, extras=extras))
+                policy_ms.append((time.perf_counter() - t0) * 1000.0)
+                frame = sim.step(cmd.v, cmd.w)
             step += 1
             frames.append(frame.rgb)
             extras, state, move = frame.extras, frame.state, frame.move
             path_m += move["travelled_m"]
+            if unstuck is not None:
+                unstuck.observe(step, move["collided"], (state["position"][0], state["position"][2]))
             collisions += int(move["collided"])
             streak = streak + 1 if move["collided"] else 0
             longest = max(longest, streak)
@@ -164,6 +184,8 @@ def run_search_episode(sim, policy: Policy, episode: Dict[str, Any], arm: str, r
                   "search_steps": first_seen if first_seen is not None else step,
                   "approach_steps": (step - first_seen) if first_seen is not None else None,
                   "seen_usable": len(state["seen_instances"])}
+        if unstuck is not None:
+            result.update(unstuck_events=len(unstuck.events), unstuck_steps=unstuck_steps)
         if run.live_rule_tau is not None:
             result.update(live_rule_tau=run.live_rule_tau, rule_stop_step=rule_stop_step,
                           rule_stop_success=rule_stop_step is not None and reached(state["vp_geodesic_m"], run.success_m))
@@ -172,6 +194,8 @@ def run_search_episode(sim, policy: Policy, episode: Dict[str, Any], arm: str, r
     if dets_file is not None:
         dets_file.close()
         os.replace(partial_path(dets_path), dets_path)
+    if evidence_path is not None:
+        sim.save_evidence(str(evidence_path))
     log = steplog.read(log_path)
     result["stuck_streaks"] = len(steplog.stuck_streaks(log, run.stuck_steps))
     if save_dir is not None:
