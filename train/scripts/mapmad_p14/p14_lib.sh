@@ -19,7 +19,7 @@ export P14_OUTPUTS="${P14_OUTPUTS:-${OUT_MOUNT}/mapmad}"
 
 say() {  # message -> own log + phase14a_log.md
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" | tee -a "$LOG"
-    echo "- $(date '+%m-%d %H:%M') [$WHO] $*" >> "$P14/phase14a_log.md"
+    echo "- $(date '+%m-%d %H:%M') [$WHO] $*" >> "$P14/${P14_LOGNAME:-phase14a_log.md}"
 }
 
 status() {  # key=value ... [--state S] -> driver/chain_state.json + STATUS.md

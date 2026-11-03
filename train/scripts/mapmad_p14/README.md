@@ -24,3 +24,24 @@ Launch (after `nvidia-smi`): `bash train/scripts/mapmad_p14/launch_p14a.sh`. Wat
 `screen -r p14a_chain`. DRY: `P14_DIR=<host p14a_dry/chain> P14_CFG=/app/visualnav-transformer/mapmad/configs/p14a_dry.yaml
 P14_ALLOW_DIRTY=1 P14_GPUS="0 1" P14_EPISODES="<2 p13d + 2 p14d ids>" P14_DIAG_SAMPLE=4 CL_CHECK_S=30 SILENT_S=600
 bash launch_p14a.sh dry`.
+
+## Phase 14b-1 — fix the target marks in the stop module (no training)
+
+Re-scores the 14a practice runs (read only) with fixes F1 (object-level projection: median-depth filter / eroded mask +
+DBSCAN largest cluster), F2 (temperature-scaled raw YOLOE scores, no 0.4 floor) and F3 (stop cell ahead and in view
+now), inside the stop module only. Rules: `/outputs/mapmad/p14b1_marks/p14b1_rules.md` (+ `.sha256`, copy in
+`mapmad/configs/p14b1_rules.md`); config `mapmad/configs/p14b1_marks.yaml` (`runs_from: p14a_finish`; DRY:
+`p14b1_dry.yaml`). Outputs: `/mnt/shared_disk/nazli/nomad_outputs/mapmad/p14b1_marks/` (`STATUS.md`,
+`phase14b1_log.md`, `replay/`, `calib/`, `stopbench/`, `stopbench_ccat/`, `stopbench_truth/`, `rescore_driving/`,
+`videos_marks_fixed/`, `tables/`, `checks/`, `G14b1_table_draft.md`, `driver/`).
+
+| Script | What it does |
+|---|---|
+| `launch_p14b1.sh [dry]` | starts screens `p14b1_chain` + `p14b1_chain_watch` and `p14b1_gpuwatch` if not running |
+| `run_p14b1_chain.sh` | the chain: pre-flight (hashes before, temperature fit), replay of the baseline runs (6 shards per GPU, one YOLOE server each, every run on the GPU that drove it), driving-test replay in the background while the CPU runs the stop bench (score, pick, c_cat, final, marks), driving re-score, old-vs-new videos, hashes after + draft G14b1 |
+| `p14_lib.sh`, `p14_status.py` | shared with 14a; `P14_LOGNAME`, `P14_PHASE`, `P14_PASTE` select the 14b-1 names |
+
+Tools: Habitat side `mapmad_sim/mark_projection.py` (F1), `mapmad_sim/stop_variants.py` (F2 / F3 / tentative /
+c_cat, grid scorer), `mapmad/scripts/p14b_replay.py`, `p14b_videos.py`; NoMaD side
+`vint_train.mapmad.closed_loop.p14b_bench` (calib, score, pick, final, marks, drive, hashes, gate).
+Launch (after `nvidia-smi`): `bash train/scripts/mapmad_p14/launch_p14b1.sh`. DRY: see the header of `launch_p14b1.sh`.

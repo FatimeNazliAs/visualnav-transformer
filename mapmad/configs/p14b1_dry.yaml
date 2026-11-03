@@ -1,0 +1,3 @@
+# Phase 14b-1 DRY chain (never results): p14b1_marks.yaml with outputs in p14b1_dry (kickoff §5).
+extends: p14b1_marks.yaml
+out_dir: p14b1_dry

@@ -96,6 +96,17 @@ class RunLayout:
         base = outputs / cfg["out_dir"]
         return cls(cfg=cfg, base=base, root=base / subdir, outputs=outputs)
 
+    @classmethod
+    def load_runs(cls, path: Path, subdir: str = "", outputs: Optional[Path] = None) -> "RunLayout":
+        """Phase 14b-1: the layout of the runs a re-scoring config reads (its `runs_from` folder, e.g. p14a_finish,
+        read only); without `runs_from`, the config's own out_dir (= load)."""
+        layout = cls.load(path, subdir, outputs)
+        src = layout.cfg.get("runs_from")
+        if not src:
+            return layout
+        base = layout.outputs / src
+        return cls(cfg=layout.cfg, base=base, root=base / subdir, outputs=layout.outputs)
+
     # --- inputs ------------------------------------------------------------------------------------------------
     @property
     def episodes_dir(self) -> Path:

@@ -19,8 +19,10 @@ import sys
 import time
 from typing import Dict, List, Tuple
 
-PASTE = ("continue Phase 14a: read STATUS.md and the chain log, then finish the tables, 14.6, the G14a table and the "
-         "summary")
+PASTE = os.environ.get("P14_PASTE") or ("continue Phase 14a: read STATUS.md and the chain log, then finish the tables, "
+                                       "14.6, the G14a table and the summary")
+PHASE = os.environ.get("P14_PHASE", "14a")  # Phase 14b-1 reuses this writer (P14_PHASE, P14_PASTE, P14_LOGNAME)
+LOGNAME = os.environ.get("P14_LOGNAME", "phase14a_log.md")
 LISTS = ("fallback", "error")
 
 
@@ -60,7 +62,7 @@ def count(p13: str, subdir: str, arms: List[str]) -> Tuple[int, int]:
 def write_status(p13: str) -> None:
     st = load(os.path.join(p13, "driver", "chain_state.json"))
     lines = [f"**On return, paste in the VS Code chat:** `{PASTE}`", "",
-             f"# Phase 14a STATUS — {st.get('state', 'NOT STARTED')}", "",
+             f"# Phase {PHASE} STATUS — {st.get('state', 'NOT STARTED')}", "",
              f"Updated {time.strftime('%Y-%m-%d %H:%M:%S')} (Istanbul time). Driver started {st.get('started', '-')}.", ""]
     if st.get("come_back"):
         lines += [f"**CHAIN DONE expected: {st['come_back']}**", ""]
@@ -86,7 +88,7 @@ def write_status(p13: str) -> None:
     f = os.path.join(p13, "STOP_reason.txt")
     if os.path.exists(f):
         lines += ["", "STOP_reason.txt:", "```", open(f).read().strip(), "```"]
-    lines += ["", "Logs: driver/chain.log, driver/gpu_watch.log, phase14a_log.md; `screen -r p14a_chain`."]
+    lines += ["", f"Logs: driver/chain.log, driver/gpu_watch.log, {LOGNAME}; `screen -r p{PHASE.replace('-', '')}_chain`."]
     tmp = os.path.join(p13, f".STATUS.md.{os.getpid()}.tmp")
     with open(tmp, "w") as fh:
         fh.write("\n".join(lines) + "\n")

@@ -1,0 +1,29 @@
+# Phase 14b-1 — fix the target marks in the stop module (no training, no driving, no exam; kickoff
+# ~/projects/nomad-mapmad/.p14b1_kickoff.md v1.1; rules frozen in /outputs/mapmad/p14b1_marks/p14b1_rules.md + .sha256,
+# copy in configs/p14b1_rules.md). Re-scores the Phase 14a practice runs (read only, `runs_from`) with fixes F1 / F2 /
+# F3 inside the stop module; outputs below out_dir. The arm table, sets and harness numbers are Phase 14a's.
+extends: p14a_finish.yaml
+out_dir: p14b1_marks
+runs_from: p14a_finish                # RunLayout.load_runs: the 14a runs (logs, evidence, dets) are read, never written
+
+projection:                           # F1 (mark_projection.ProjSpec; p14b1_rules.md §3)
+  med_d: [0.2, 0.3, 0.5]              # F1-med: keep mask pixels within d m of the mask's median depth
+  erode_k: [1, 2, 3]                  # F1-clu: 3 x 3 erosion iterations
+  min_px: [20, 50, 100]               # F1-clu: DBSCAN min points (pixels; weighted 5 cm voxels)
+  eps_m: 0.2
+  voxel_m: 0.05
+  max_depth_m: 4.0
+  far_frac: 0.95
+
+p14b1:
+  arms: [M21b, M21bh, N, F, VF]
+  drive_subdirs: {a1: [M21b_a1, M21bh_a1, N_a1], w4: [M21b_w4, M21bh_w4, N_w4], a1w4: [M21b_a1w4, M21bh_a1w4, N_a1w4]}
+  calib:                              # F2 temperature fit (Phase 9 photo test, six categories)
+    labels: p9_recognisers/photo_test/yoloe/labels.json
+    halves: p9_recognisers/frames/halves.json
+    t_grid: [0.40, 3.00, 0.05]
+    bins: 10
+  ccat_grid: [0.1, 0.2, 0.3, 0.4, 0.5]
+  keep_gain: 0.02                     # keep rule: half-B mean success +0.02, STOP precision not lower
+  bootstrap: {draws: 10000, seed: 14401}
+  video_seed_picks: p14a_finish/videos_marks/picks.json
