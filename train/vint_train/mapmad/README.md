@@ -231,4 +231,7 @@ Phase 12 (the search exam; rules `/outputs/mapmad/p12_search_exam/p12_rules.md`,
   W4 get-unstuck rule (`Unstuck`, driven by `search_runner.run_search_episode(unstuck=...)`); off = Phase 13 exactly.
 - `closed_loop/p14_stopbench.py` (every stop rule on the practice runs + the §4b pick), `p14_tables.py` (Qwen keep /
   drop, driving tests, gate draft), `p14_checks.py` (same-as-Phase-13, determinism, fairness).
+- Report only (Part 3): `p14_stopbench score --marks truth --out stopbench_truth` + `truth-report` (the same rules
+  with simulator-truth marks: rule errors vs detector errors); `p14_tables qwen-audit` (stops made without asking
+  Qwen, Qwen's yes / no vs the truth).
 - Tests: `tests/test_p14.py`.

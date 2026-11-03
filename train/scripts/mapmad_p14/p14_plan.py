@@ -22,7 +22,9 @@ def line_of(plan: P14Plan, c) -> str:
 
 def main() -> None:
     config, cmd = sys.argv[1], sys.argv[2]
-    plan = P14Plan.load(config, os.environ.get("P14_OUTPUTS", "/mnt/shared_disk/nazli/nomad_outputs/mapmad"))
+    if "P14_OUTPUTS" not in os.environ:
+        raise SystemExit("set P14_OUTPUTS (the mapmad outputs folder; p14_lib.sh sets it from the naz_mapmad mount)")
+    plan = P14Plan.load(config, os.environ["P14_OUTPUTS"])
     if cmd == "calls":
         for c in plan.calls(sys.argv[3]):
             print(line_of(plan, c))

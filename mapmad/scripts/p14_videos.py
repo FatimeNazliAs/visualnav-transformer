@@ -7,6 +7,14 @@
     python mapmad/scripts/p14_videos.py render --config ... --subdir runs/baseline --gpu G --recog-port P \
         --out <p14a>/videos_marks [--shard k/n]
     python mapmad/scripts/p13_videos.py check --out <p14a>/videos_marks             # boxes + poses (Phase 13 check)
+    python mapmad/scripts/p14_videos.py render --zoom --picks <p14a>/videos_marks/picks.json ... \
+        --out <p14a>/videos_marks/zoom                                               # + the near window (below)
+
+Zoom (Naz's Part 3 review): the storey map shrinks to 440 px and the network's near window (64 x 64 cells of 10 cm,
+robot-centred, forward up; the same cells as map_v2.near_window) is drawn beside it at 8 px per cell. Every mark >= 0.05
+is an enlarged square with an outline (red when rule-ready). Under the storey map, each step prints every YOLOE box's
+raw score and its mark strength (the largest layer value now on the cells under its mask, from the stop evidence),
+plus the same strength on each true target's cells.
 
 Videos = Phase 13's checkable videos (p13_videos.render_one, unchanged replay, boxes, timeline, checks) with three
 changes for the mark check: every target-layer cell with a value > 0 drawn in a bright colour scale by its strength
@@ -22,7 +30,7 @@ import json
 import sys
 from multiprocessing import Pool
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import cv2
 import numpy as np
@@ -113,6 +121,177 @@ def render_one(service, boxes, layout, table, arm, episode, k, args, tau, vname)
 
 def patch() -> None:
     pv.layer_image, pv.legend_panel, pv.caption, pv.render_one = layer_image, legend_panel, caption, render_one
+
+
+# --- zoom: the network's near window beside the storey (render --zoom, Naz's Part 3 review) --------------------------
+ZOOM_N, ZOOM_CELL_M, ZOOM_PX = 64, 0.1, 8  # 64 x 64 cells of 10 cm (6.4 m), 8 px per cell
+ZOOM = ZOOM_N * ZOOM_PX  # 512
+STOREY = 440  # the whole-storey map shrinks from 760 px to make room
+RIGHT_X = 962
+ZOOM_XY = (RIGHT_X + STOREY + 6, pv.HEAD + 4)  # (1408, 104): right edge 1920
+NUM_XY = (RIGHT_X, pv.HEAD + 4 + STOREY + 8)  # the per-step numbers under the storey map
+MARK_MIN = 0.05
+_Z: Dict[str, Any] = {}  # the current step's arrays, filled by the patched layer_image / map_panel / render_one
+
+
+def window_cells(pose: Sequence[float], origin: Sequence[float], res: float, shape: Sequence[int],
+                 n: int = ZOOM_N, cell_m: float = ZOOM_CELL_M) -> Tuple[np.ndarray, np.ndarray]:
+    """(flat storey cell, inside) of every pixel of the network's near window at pose (X, Y, yaw), each (n, n): the
+    stored cell under the pixel's centre, forward = up, as map_v2.sample_layers."""
+    from vint_train.mapmad.local_map import cell_centres, local_to_world
+
+    fwd, left = cell_centres(n, cell_m)
+    wx, wy = local_to_world(fwd, left, tuple(pose))
+    i = np.floor((wx - origin[0]) / res).astype(np.int64)
+    j = np.floor((wy - origin[1]) / res).astype(np.int64)
+    inside = (i >= 0) & (i < shape[0]) & (j >= 0) & (j < shape[1])
+    return np.where(inside, i * int(shape[1]) + j, 0), inside
+
+
+def zoom_px(xy: Sequence[float], pose: Sequence[float], n: int = ZOOM_N, cell_m: float = ZOOM_CELL_M,
+            px: int = ZOOM_PX) -> Tuple[float, float]:
+    """(col, row) zoom pixel of a 2D point (X, Y); the robot is at (n / 2, n / 2) * px."""
+    from vint_train.mapmad.local_map import world_to_local
+
+    f, l_ = world_to_local(np.asarray(xy[0]), np.asarray(xy[1]), tuple(pose))
+    return float((n / 2 - l_ / cell_m) * px), float((n / 2 - f / cell_m) * px)
+
+
+def zoom_image(pose: Sequence[float], ev: Dict[str, Any], obst: np.ndarray, expl: np.ndarray, value: np.ndarray,
+               ready: np.ndarray, tau: float, episode: Dict[str, Any], rule_cell: Optional[Sequence[float]],
+               stop_cell: Optional[Sequence[float]]) -> np.ndarray:
+    """The near window at ZOOM_PX px per cell: unknown / explored / obstacle as on the storey map, every mark cell
+    >= MARK_MIN as an enlarged square (ZOOM_PX + 2) with an outline (black; red when rule-ready), weakest drawn first,
+    the true objects' boxes (green), the rule's cell (ring) / stop cell (X), the robot (centre, facing up)."""
+    from mapmad_sim.frames import to_2d
+
+    flat, inside = window_cells(pose, ev["origin"], float(ev["res"]), ev["shape"])
+    img = np.empty((ZOOM_N, ZOOM_N, 3), np.uint8)
+    img[:] = pv.OUTSIDE_PX
+    img[inside & expl[flat]] = pv.EXPL_PX
+    img[inside & obst[flat]] = pv.OBST_PX
+    img = cv2.resize(img, (ZOOM, ZOOM), interpolation=cv2.INTER_NEAREST)
+    v = np.where(inside, value[flat], 0.0)
+    rows, cols = np.nonzero(v >= MARK_MIN)
+    order = np.argsort(v[rows, cols], kind="stable")
+    for r, c in zip(rows[order], cols[order]):
+        x0, y0 = c * ZOOM_PX - 1, r * ZOOM_PX - 1
+        colour = tuple(int(q) for q in strength_colours(v[r, c]))
+        cv2.rectangle(img, (x0, y0), (x0 + ZOOM_PX + 1, y0 + ZOOM_PX + 1), colour, -1)
+        edge = pv.READY_C if (v[r, c] >= tau - 1e-12 and ready[flat[r, c]]) else (0, 0, 0)
+        cv2.rectangle(img, (x0, y0), (x0 + ZOOM_PX + 1, y0 + ZOOM_PX + 1), edge, 1)
+    for inst in episode["target"]["instances"]:
+        c, s = inst["centre"], inst["size"]
+        corners = [to_2d([c[0] + a * s[0] / 2, 0.0, c[2] + b * s[2] / 2]) for a, b in ((-1, -1), (1, -1), (1, 1), (-1, 1))]
+        poly = np.round([zoom_px(p, pose) for p in corners]).astype(np.int32)
+        cv2.polylines(img, [poly], True, pv.TRUE_C, 2, cv2.LINE_AA)
+    if rule_cell is not None:
+        cv2.circle(img, tuple(int(round(q)) for q in zoom_px(rule_cell, pose)), 9, pv.RULE_C, 2, cv2.LINE_AA)
+    if stop_cell is not None:
+        cv2.drawMarker(img, tuple(int(round(q)) for q in zoom_px(stop_cell, pose)), pv.RULE_C,
+                       cv2.MARKER_TILTED_CROSS, 22, 4)
+    h = ZOOM // 2
+    tri = np.array([[h, h - 14], [h - 9, h + 8], [h + 9, h + 8]], np.int32)
+    cv2.fillPoly(img, [tri], (255, 255, 255), cv2.LINE_AA)
+    cv2.polylines(img, [tri], True, (0, 0, 0), 2, cv2.LINE_AA)
+    bar = int(round(1.0 / ZOOM_CELL_M * ZOOM_PX))  # 1 m
+    cv2.line(img, (12, ZOOM - 14), (12 + bar, ZOOM - 14), (255, 255, 255), 3)
+    return img
+
+
+def step_numbers(ev: Dict[str, Any], t: int, value: np.ndarray) -> Tuple[List[Tuple[float, float, float, int]],
+                                                                         List[Tuple[int, float, int]]]:
+    """Frame t: per YOLOE detection (raw score, look = its map value (recogniser.map_score), mark strength = the
+    largest layer value now on the cells under its mask, cells), strongest raw first; per true target in the picture
+    (id, the same strength on its cells, cells)."""
+    def strength(cells: np.ndarray) -> float:
+        return float(value[cells].max()) if cells.size else 0.0
+
+    dets = []
+    for k in np.flatnonzero(ev["det_t"] == t):
+        cells = ev["det_cells"][ev["det_cells_ptr"][k]:ev["det_cells_ptr"][k + 1]]
+        dets.append((float(ev["det_raw"][k]), float(ev["det_value"][k]), strength(cells), int(cells.size)))
+    trues = []
+    for k in np.flatnonzero(ev["true_t"] == t):
+        cells = ev["true_cells"][ev["true_cells_ptr"][k]:ev["true_cells_ptr"][k + 1]]
+        trues.append((int(ev["true_id"][k]), strength(cells), int(cells.size)))
+    return sorted(dets, key=lambda d: -d[0]), trues
+
+
+_layer_image_marks = layer_image
+_map_panel_p13 = pv.map_panel
+_draw_cursor_p13 = pv.draw_cursor
+_freeze_frame_p13 = pv.freeze_frame
+
+
+def layer_image_zoom(fv, obst, expl, value, ready, tau):
+    _Z.update(obst=obst, expl=expl, value=value, ready=ready, tau=tau)
+    return _layer_image_marks(fv, obst, expl, value, ready, tau)
+
+
+def map_panel_zoom(fv, base, episode, path, yaw, rule_cell, stop_cell):
+    _Z.update(rule_cell=rule_cell, stop_cell=stop_cell)
+    return _map_panel_p13(fv, base, episode, path, yaw, rule_cell, stop_cell)
+
+
+def draw_cursor_zoom(frame: np.ndarray, t: int, n: int) -> None:
+    """The timeline cursor, then the zoom panel of step t into the frame (draw_cursor is the last hook that sees the
+    frame before the text is drawn)."""
+    _draw_cursor_p13(frame, t, n)
+    ev = _Z["ev"]
+    z = zoom_image(ev["pose"][t], ev, _Z["obst"], _Z["expl"], _Z["value"], _Z["ready"], _Z["tau"], _Z["episode"],
+                   _Z["rule_cell"], _Z["stop_cell"])
+    x, y = ZOOM_XY
+    frame[y:y + ZOOM, x:x + ZOOM] = z
+    frame[NUM_XY[1]:pv.TL[1] - 4, RIGHT_X:ZOOM_XY[0] - 4] = 0
+
+
+def caption_zoom(text, episode, name, t, n, events):
+    """caption (with the max mark strength ahead) + zoom titles + the step's YOLOE raw scores and mark strengths."""
+    caption(text, episode, name, t, n, events)
+    x, y = ZOOM_XY
+    text.add((x + 8, y + 6), "network's near window (6.4 m, 10 cm cells)", 18)
+    text.add((x + 14, y + ZOOM - 42), "1 m", 18)
+    text.add((x + 8, y + ZOOM + 6), f"marks ≥ {MARK_MIN:.2f}: purple → yellow by strength", 18)
+    text.add((x + 8, y + ZOOM + 30), "red edge = rule-ready; green = true object", 18)
+    dets, trues = step_numbers(_Z["ev"], t, _Z["value"])
+    nx, ny = NUM_XY
+    text.add((nx, ny), f"step {t}: YOLOE boxes on this picture", 20)
+    text.add((nx, ny + 24), "raw = YOLOE score; look = its map value;", 16, (200, 200, 200))
+    text.add((nx, ny + 44), "mark = layer now on the box's cells", 16, (200, 200, 200))
+    rows = [(f"raw {r:.3f} · look {v:.2f} → mark {s:.2f} ({c} cells)",
+             pv.HIGH_C if s >= _TAU[0] - 1e-12 else pv.YOLO) for r, v, s, c in dets[:6]]
+    if len(dets) > 6:
+        rows.append((f"… {len(dets) - 6} more", (200, 200, 200)))
+    if not dets:
+        rows.append(("no YOLOE box", (160, 160, 160)))
+    rows += [(f"TRUE #{i} → mark {s:.2f} ({c} cells)", pv.TRUE_C) for i, s, c in trues[:3]]
+    for k, (s, colour) in enumerate(rows):
+        text.add((nx + 8, ny + 70 + 22 * k), s, 17, colour)
+
+
+def freeze_frame_zoom(frame: np.ndarray, kind: str, lines: List[str], colour: Tuple[int, int, int]) -> np.ndarray:
+    """Phase 13's freeze with the whole right block (storey, zoom, numbers) kept bright."""
+    out = _freeze_frame_p13(frame, kind, lines, colour)
+    y0, y1 = pv.HEAD, pv.TL[1] - 4
+    out[y0:y1, RIGHT_X - 2:] = frame[y0:y1, RIGHT_X - 2:]
+    cv2.rectangle(out, (RIGHT_X - 2, y0), (pv.SIZE[0] - 1, y1 - 1), colour, 4)
+    return out
+
+
+def render_one_zoom(service, boxes, layout, table, arm, episode, k, args, tau, vname):
+    ev = load_evidence(layout.root / "evidence" / arm / f"{run_id(episode['episode_id'], k)}.npz")
+    _Z.clear()
+    _Z.update(ev=ev, episode=episode)
+    return render_one(service, boxes, layout, table, arm, episode, k, args, tau, vname)
+
+
+def patch_zoom() -> None:
+    """patch() + the zoom: storey map 440 px at the left of the right half, the near window beside it."""
+    patch()
+    pv.MAP, pv.MAP_XY = STOREY, (RIGHT_X, pv.HEAD + 4)
+    pv.layer_image, pv.map_panel, pv.draw_cursor = layer_image_zoom, map_panel_zoom, draw_cursor_zoom
+    pv.caption, pv.freeze_frame, pv.render_one = caption_zoom, freeze_frame_zoom, render_one_zoom
 
 
 # --- commands ---------------------------------------------------------------------------------------------------------
@@ -216,8 +395,8 @@ def cmd_pick(args) -> None:
 
 
 def cmd_render(args) -> None:
-    patch()
-    picks = json.loads((Path(args.out) / "picks.json").read_text())["picks"]
+    patch_zoom() if args.zoom else patch()
+    picks = json.loads((args.picks or Path(args.out) / "picks.json").read_text())["picks"]
     k, n = (int(x) for x in args.shard.split("/"))
     picks = [p for i, p in enumerate(picks) if i % n == k]
     for set_name in sorted({p["set"] for p in picks}):
@@ -237,6 +416,8 @@ def main() -> None:
     p.add_argument("--recog-port", type=int)
     p.add_argument("--itm-port", type=int)
     p.add_argument("--shard", default="0/1")
+    p.add_argument("--zoom", action="store_true", help="render: add the network's near window beside the storey")
+    p.add_argument("--picks", type=Path, help="render: the picks file (default <out>/picks.json)")
     p.add_argument("--out", type=Path, required=True)
     args = p.parse_args()
     {"code-check": cmd_code_check, "counts": cmd_counts, "pick": cmd_pick, "render": cmd_render}[args.cmd](args)

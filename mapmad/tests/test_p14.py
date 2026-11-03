@@ -199,3 +199,40 @@ def test_strength_colours_handles_empty_frames():
 
     assert strength_colours(np.array([])).shape == (0, 3)
     assert strength_colours(np.array([0.0, 1.0])).tolist() == [[13, 8, 135], [240, 249, 33]]
+
+
+def test_zoom_window_is_the_networks_near_window():
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+    from p14_videos import window_cells, zoom_px
+    from vint_train.mapmad.map_v2 import near_window
+
+    rng = np.random.default_rng(0)
+    shape, origin, res, pose = (120, 100), (-3.0, -2.0), 0.1, (2.13, 1.71, 0.7)
+    grid = rng.random(shape).astype(np.float32)
+    flat, inside = window_cells(pose, origin, res, shape)
+    ours = np.where(inside, grid.reshape(-1)[flat], 0.0)
+    net = near_window({n: grid for n in ("obstacle", "explored", "frontier", "target")}, origin, res, pose)[3]
+    assert np.array_equal(ours, net)
+    ahead = (pose[0] + math.cos(pose[2]), pose[1] + math.sin(pose[2]))  # 1 m straight ahead: 10 cells up
+    assert np.allclose(zoom_px(ahead, pose), (256.0, 256.0 - 80.0))
+
+
+def test_truth_marks_turn_true_pixels_into_full_score_looks(tmp_path):
+    from mapmad_sim.stop_rules import truth_marks
+
+    k = cell(12, 10)  # 0.25 m ahead of the robot
+    table = [k] * 8 + [-1] * 8
+    sem = np.zeros((4, 4), np.int32)
+    sem.reshape(-1)[:8] = 7  # the target instance (id 7) on the pixels that land in cell k
+    rec = EvidenceRecorder(SHAPE, (0.0, 0.0), RES, [7])
+    for t in range(3):
+        rec.add(t, (1.0, 1.05, 0.0), cells_of([k], table), [det(0.1, 0.1, range(8))] if t else [], sem)
+    first = {"obstacle": np.full(SHAPE[0] * SHAPE[1], -1, np.int32), "explored": np.zeros(SHAPE[0] * SHAPE[1], np.int32)}
+    rec.save(tmp_path / "e.npz", first, [])
+    ev = load(tmp_path / "e.npz")
+    assert first_stops(ev)["today"] is None  # the recogniser's weak marks (0.1) never reach tau
+    tm = truth_marks(ev)
+    assert tm["det_value"].tolist() == [1.0, 1.0, 1.0] and tm["det_cells"].tolist() == [k, k, k]
+    assert tm["view"] is ev["view"] and tm["pose"] is ev["pose"]
+    stop = first_stops(tm)["today"]
+    assert stop is not None and stop[0] == 1  # frame 1: two looks at value 1.0

@@ -461,9 +461,9 @@ The unattended chain: `train/scripts/mapmad_p12/` (README there).
 - `src/mapmad_sim/stop_evidence.py` — per-run stop evidence (search_v2 setting `log_evidence`: poses, view cells, YOLOE
   masks -> cells, true boxes -> cells, first-seen maps, bumps), one npz per run; records only (runs stay byte-identical).
 - `src/mapmad_sim/stop_rules.py` — today's rule (rebuilds the logged rule value), Rule 1 (voting), Rule 2 (weighted
-  voting + close-and-confident), rejected spots; `diagnosis.py` (wrong place vs bad driving), `mark_check.py` (marks
+  voting + close-and-confident), rejected spots, `truth_marks` (simulator-truth marks, report only); `diagnosis.py` (wrong place vs bad driving), `mark_check.py` (marks
   on true / wrong objects), `run_plan_p14.py` (the chain's calls). Arm switches `pick: stick` / `unstuck: w4` in
   `arm_table.py`; reversing only through `step(..., reverse=True)` (`robot.clip_command(allow_reverse)`).
 - `scripts/make_p14_sets.py` (p14d + practice halves), `p14_qwen_check.py` (Qwen3-VL yes/no/unsure on Rule 2's
-  stops; recogniser server command `ask`), `p14_diagnosis.py`, `p14_videos.py` (mark-check videos + counts).
+  stops; recogniser server command `ask`), `p14_diagnosis.py`, `p14_videos.py` (mark-check videos + counts; `render --zoom` adds the network's near window beside the storey map, with each step's YOLOE raw scores and the mark strength on each box's cells).
 - Tests: `tests/test_p14.py`. Chain: `train/scripts/mapmad_p14/` (README there).

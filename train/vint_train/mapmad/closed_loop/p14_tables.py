@@ -3,6 +3,7 @@
     python -m vint_train.mapmad.closed_loop.p14_tables qwen --config <p14a_finish.yaml>     # qwen/qwen.md + QWEN_KEEP.json
     python -m vint_train.mapmad.closed_loop.p14_tables drive --config <p14a_finish.yaml>    # tables/driving.md + .json
     python -m vint_train.mapmad.closed_loop.p14_tables gate --config <p14a_finish.yaml>     # tables/tables.md + G14a draft
+    python -m vint_train.mapmad.closed_loop.p14_tables qwen-audit --config <p14a_finish.yaml>  # qwen/audit.md (report only)
 
 qwen (§5): Rule 2's pick with the Qwen3-VL check (qwen/runs/<arm>/<run>.json, mapmad/scripts/p14_qwen_check.py) vs
 without it, judged on the logs like the stop bench; kept if on half B the mean rule-stop success over the 5 arms rises
@@ -28,8 +29,8 @@ from mapmad_bridge import steplog
 from mapmad_sim.run_layout import RunLayout, parse_run_id, write_text_atomic
 from vint_train.mapmad.closed_loop.exam_stats import cluster_bootstrap, paired
 from vint_train.mapmad.closed_loop.p12_score import heading_change_deg, score_log
-from vint_train.mapmad.closed_loop.p14_stopbench import (ARMS5, HALVES, in_half, judge, metrics, practice,
-                                                          practice_episodes)
+from vint_train.mapmad.closed_loop.p14_stopbench import (ARMS5, HALVES, in_half, judge, metrics, on_wrong_object,
+                                                          practice, practice_episodes)
 
 NET_ARMS = ("M21b", "M21bh", "N")
 SWITCHES = {"A1": ("a1", "_a1"), "W4": ("w4", "_w4"), "A1+W4": ("a1w4", "_a1w4")}  # name -> (subdir, arm suffix)
@@ -110,6 +111,91 @@ def cmd_qwen(args) -> None:
     print("\n".join(lines), flush=True)
 
 
+def box_overlap(asked: Sequence[float], true: Sequence[float]) -> float:
+    """Intersection area / asked-box area of two (x0, y0, x1, y1) pixel boxes."""
+    w = min(asked[2], true[2]) - max(asked[0], true[0])
+    h = min(asked[3], true[3]) - max(asked[1], true[1])
+    area = max(asked[2] - asked[0], 1e-9) * max(asked[3] - asked[1], 1e-9)
+    return max(w, 0.0) * max(h, 0.0) / area
+
+
+def cmd_qwen_audit(args) -> None:
+    """Report only (Part 3): how each Rule 2 + Qwen stop came about (a "yes"; the 3-ask / 20-step fallback after
+    "unsure"; no ask at all: the fired cell was not in view within 20 steps) and Qwen's yes / no against the truth,
+    on the map (the asked cell within 1.0 m of a true instance's box: the stop bench's wrong-object test) and in the
+    picture (a true instance's box covers >= 25 % of the asked box in that frame) -> qwen/audit.md + audit.json."""
+    from mapmad_sim import stop_evidence
+    layout = RunLayout.load(args.config, subdir="runs/baseline")
+    eps = practice_episodes(layout)
+    how = {a: {"yes": 0, "fallback_unsure": 0, "no_ask": 0, "no_stop": 0} for a in ARMS5}
+    conf = {a: {k: 0 for k in ("yes_true", "yes_false", "no_true", "no_false", "unsure_true", "unsure_false")}
+            for a in ARMS5}
+    pic = {k: 0 for k in ("yes_true", "yes_false", "no_true", "no_false")}
+    sources = {"recogniser": 0, "projection": 0}
+    for a in ARMS5:
+        for f in sorted((layout.base / "qwen" / "runs" / a).glob("*.json")):
+            rid = f.name[:-len(".json")]
+            q = json.loads(f.read_text())
+            ans_file = layout.base / "qwen" / "answers" / a / f"{rid}.jsonl"
+            calls = [json.loads(x) for x in ans_file.read_text().splitlines()] if ans_file.exists() else []
+            if q["stop"] is None:
+                how[a]["no_stop"] += 1
+            else:
+                at = [c for c in calls if c["step"] == q["stop"][0]]
+                how[a]["yes" if any(c["answer"] == "yes" for c in at) else "fallback_unsure" if at else "no_ask"] += 1
+            if not calls:
+                continue
+            insts = eps[parse_run_id(rid)[0]]["target"]["instances"]
+            ev = stop_evidence.load(layout.root / "evidence" / a / f"{rid}.npz")
+            for c in calls:
+                truth = bool(insts) and not on_wrong_object(c["cell"], insts)
+                conf[a][f"{c['answer']}_{'true' if truth else 'false'}"] += 1
+                sources[c["source"]] = sources.get(c["source"], 0) + 1
+                if c["box"] is not None and c["answer"] in ("yes", "no"):
+                    tb = ev["true_box"][ev["true_t"] == c["step"]]
+                    seen = any(box_overlap(c["box"], b) >= 0.25 for b in tb if np.isfinite(b).all())
+                    pic[f"{c['answer']}_{'true' if seen else 'false'}"] += 1
+    tot = lambda d: {k: sum(x[k] for x in d.values()) for k in next(iter(d.values()))}  # noqa: E731
+    H, C = tot(how), tot(conf)
+
+    def acc(c: Dict[str, int]) -> Dict[str, Optional[float]]:
+        yn = c["yes_true"] + c["yes_false"] + c["no_true"] + c["no_false"]
+        r = lambda a_, b_: a_ / b_ if b_ else None  # noqa: E731
+        return {"accuracy_yes_no": r(c["yes_true"] + c["no_false"], yn), "yes_precision": r(c["yes_true"], c["yes_true"] + c["yes_false"]),
+                "target_recall": r(c["yes_true"], c["yes_true"] + c["no_true"]),
+                "wrong_object_rejected": r(c["no_false"], c["no_false"] + c["yes_false"]), "answers_yes_no": yn}
+
+    res = {"how_stopped": how, "how_stopped_total": H, "answers_map_truth": conf, "answers_map_truth_total": C,
+           "map": acc(C), "picture": acc(pic), "answers_picture_truth": pic, "box_source": sources}
+    lines = ["# 14.2 Qwen3-VL check: how the robot stopped and how right Qwen was (report only)", "",
+             "Rule 2 + Qwen on the practice runs (seed 0). Truth on the map = the asked cell within 1.0 m of a true "
+             "instance's box (the stop bench's wrong-object test); in the picture = a true instance's box covers "
+             ">= 25 % of the asked box in that frame.", "",
+             "## How each run's stop came about", "", "| arm | stop after yes | stop after unsure (3 asks / 20 steps) | "
+             "stop without asking (cell not in view within 20 steps) | no stop |", "|---|---|---|---|---|"]
+    for a in list(ARMS5) + ["all"]:
+        h = H if a == "all" else how[a]
+        lines.append(f"| {a} | {h['yes']} | {h['fallback_unsure']} | {h['no_ask']} | {h['no_stop']} |")
+    n_stops = H["yes"] + H["fallback_unsure"] + H["no_ask"]
+    lines += ["", f"Stops without asking: {H['no_ask']} of {n_stops} stops "
+              f"({100 * H['no_ask'] / max(n_stops, 1):.1f} %).", "",
+              "## Qwen's answers against the truth", "", "| arm | yes, target there | yes, no target | no, target there | "
+              "no, no target | unsure, target | unsure, no target |", "|---|---|---|---|---|---|---|"]
+    for a in list(ARMS5) + ["all"]:
+        c = C if a == "all" else conf[a]
+        lines.append(f"| {a} | " + " | ".join(str(c[k]) for k in ("yes_true", "yes_false", "no_true", "no_false",
+                                                                     "unsure_true", "unsure_false")) + " |")
+    for name, m in (("on the map", res["map"]), ("in the picture", res["picture"])):
+        lines.append(f"- **{name}:** yes/no accuracy {f3(m['accuracy_yes_no'])} over {m['answers_yes_no']} answers; "
+                     f"a yes is right {f3(m['yes_precision'])}; true targets kept (yes) {f3(m['target_recall'])}; "
+                     f"wrong objects rejected (no) {f3(m['wrong_object_rejected'])}")
+    lines.append(f"- Box source of the asks: {sources}")
+    out = layout.base / "qwen"
+    write_text_atomic(out / "audit.json", json.dumps(res, indent=1) + "\n")
+    write_text_atomic(out / "audit.md", "\n".join(lines) + "\n")
+    print("\n".join(lines), flush=True)
+
+
 # --- 14.4 ---------------------------------------------------------------------------------------------------------
 def run_metrics(log_file: Path, bench_file: Path, main_key: str, instances) -> Dict[str, Any]:
     log = steplog.read(log_file)
@@ -174,8 +260,8 @@ def cmd_drive(args) -> None:
                 f"{row[m][0]:.3f}" if m in ("oracle", "spl", "rule_today", "rule_main", "stuck") else f"{row[m][0]:.1f}"
                 for m in METRICS) + " |")
     lines += ["", "## Paired differences vs baseline (switch - baseline) [home CI]", "",
-              "| arm | switch | oracle | flips / 100 turns | collision steps | stuck runs | rule main |",
-              "|---|---|---|---|---|---|---|"]
+              "| arm | switch | oracle | flips / 100 turns | collision steps | stuck runs | rule today | rule main |",
+              "|---|---|---|---|---|---|---|---|"]
     for a in NET_ARMS:
         for sw in SWITCHES:
             p = res["arms"][a].get(sw, {}).get("paired")
@@ -183,16 +269,19 @@ def cmd_drive(args) -> None:
                 continue
             cell = lambda m, d=3: f"{p[m]['diff']:+.{d}f} [{p[m]['home_ci'][0]:+.{d}f}, {p[m]['home_ci'][1]:+.{d}f}]"  # noqa: E731
             lines.append(f"| {a} | {sw} | {cell('oracle')} | {cell('flips', 1)} | {cell('collisions', 1)} | "
-                         f"{cell('stuck')} | {cell('rule_main')} |")
-    lines += ["", "## Map effect M21b - M21bh (oracle success, paired) per switch", "", "| switch | diff [home CI] | n |",
-              "|---|---|---|"]
+                         f"{cell('stuck')} | {cell('rule_today')} | {cell('rule_main')} |")
+    lines += ["", "## Map effect M21b - M21bh (paired) per switch: oracle, rule today, rule main", "",
+              "| switch | oracle [home CI] | rule today [home CI] | rule main [home CI] | n |", "|---|---|---|---|---|"]
     for sw in ["base"] + list(SWITCHES):
         m, h = data[sw]["M21b"], data[sw]["M21bh"]
         if not m or not h:
             continue
-        p = paired({e: r["oracle"] for e, r in m.items()}, {e: r["oracle"] for e, r in h.items()}, home_of, N_BOOT, BOOT_SEED)
-        res["map_effect"][sw] = p
-        lines.append(f"| {sw} | {p['diff']:+.3f} [{p['home_ci'][0]:+.3f}, {p['home_ci'][1]:+.3f}] | {p['n']} |")
+        pm = {k: paired({e: r[k] for e, r in m.items()}, {e: r[k] for e, r in h.items()}, home_of, N_BOOT, BOOT_SEED)
+              for k in ("oracle", "rule_today", "rule_main")}
+        res["map_effect"][sw] = pm["oracle"]
+        res.setdefault("map_effect_rules", {})[sw] = {k: pm[k] for k in ("rule_today", "rule_main")}
+        lines.append(f"| {sw} | " + " | ".join(f"{pm[k]['diff']:+.3f} [{pm[k]['home_ci'][0]:+.3f}, {pm[k]['home_ci'][1]:+.3f}]"
+                                                for k in ("oracle", "rule_today", "rule_main")) + f" | {pm['oracle']['n']} |")
     lines += ["", "## §4b reading (mean over M21b, M21bh, N; paired, all episodes)", "",
               "| switch | oracle diff | target metric | relative change | reading |", "|---|---|---|---|---|"]
     for sw in SWITCHES:
@@ -231,8 +320,13 @@ def read_text(p: Path) -> str:
 def cmd_gate(args) -> None:
     layout = RunLayout.load(args.config)
     b = layout.base
-    parts = [("Stop-rule bench (14.1)", b / "stopbench" / "stopbench.md"), ("Qwen3-VL check (14.2)", b / "qwen" / "qwen.md"),
-             ("Diagnosis (14.3)", b / "diagnosis" / "diagnosis.md"), ("Driving tests (14.4)", b / "tables" / "driving.md"),
+    parts = [("Stop-rule bench (14.1)", b / "stopbench" / "stopbench.md"),
+             ("Stop bench with simulator-truth marks (14.1, report only)", b / "stopbench_truth" / "truth.md"),
+             ("Truth marks on the wrong object: projection smear (report only)", b / "stopbench_truth" / "smear_note.md"),
+             ("Qwen3-VL check (14.2)", b / "qwen" / "qwen.md"),
+             ("Qwen3-VL audit: how stops came about, answers vs truth (report only)", b / "qwen" / "audit.md"),
+             ("Diagnosis (14.3)", b / "diagnosis" / "diagnosis.md"), ("F check (14.3)", b / "diagnosis" / "f_check.md"),
+             ("Driving tests (14.4)", b / "tables" / "driving.md"),
              ("Mark check (14.5)", b / "videos_marks" / "mark_counts.md"), ("Fairness / determinism", b / "checks" / "checks.md")]
     body = ["# Phase 14a tables (practice set; report only unless stated)", ""]
     for title, p in parts:
@@ -242,20 +336,34 @@ def cmd_gate(args) -> None:
     q = json.loads((b / "qwen" / "QWEN_KEEP.json").read_text()) if (b / "qwen" / "QWEN_KEEP.json").exists() else {}
     dr = json.loads((b / "tables" / "driving.json").read_text()) if (b / "tables" / "driving.json").exists() else {}
     ck = json.loads((b / "checks" / "checks.json").read_text()) if (b / "checks" / "checks.json").exists() else {}
+    au = json.loads((b / "qwen" / "audit.json").read_text()) if (b / "qwen" / "audit.json").exists() else {}
+    hs = au.get("how_stopped_total") or {}
+    n_stop = sum(hs.get(k, 0) for k in ("yes", "fallback_unsure", "no_ask"))
+    tr = json.loads((b / "stopbench_truth" / "truth.json").read_text()) if (b / "stopbench_truth" / "truth.json").exists() else {}
+    tmean = (lambda key, g: float(np.mean([g(tr["arms"][a][key]) for a in tr["arms"]]))) if tr else None
     vids = sorted((b / "videos_marks").glob("*.mp4"))
     rows = [
         ("1", "Stop bench reported", f"Rule 1 pick `{pick.get('rule1_pick')}`, Rule 2 pick `{pick.get('rule2_pick')}` "
-                                     "(main stop); halves A / B / all in stopbench.md"),
+                                     "(main stop); halves A / B / all in stopbench.md" +
+                                     (f"; truth marks (Rule 2, mean over arms): success {tmean(pick['rule2_pick'], lambda r: r['truth']['success']):.3f} "
+                                      f"vs YOLOE {tmean(pick['rule2_pick'], lambda r: r['recogniser']['success']):.3f} "
+                                      f"(oracle {tmean(pick['rule2_pick'], lambda r: r['truth']['oracle']):.3f})" if tr else "")),
         ("2", "Qwen check", "not done" if not q else f"{'kept' if q.get('keep') else 'dropped'} (half-B gain "
                                                       f"{q.get('half_B_gain', 0):+.3f}; latency mean "
                                                       f"{f3((q.get('latency_ms') or {}).get('mean'))} ms; "
-                                                      f"{f3(q.get('calls_per_run'))} calls per run)"),
-        ("3", "Diagnosis", "class shares per arm + F check in diagnosis.md"),
+                                                      f"{f3(q.get('calls_per_run'))} calls per run)" +
+                                                      (f"; {hs.get('no_ask', 0)}/{n_stop} stops without asking; "
+                                                       f"yes/no accuracy vs map truth {f3(au['map']['accuracy_yes_no'])}"
+                                                       if au else "")),
+        ("3", "Diagnosis", "class shares per arm in diagnosis.md; F check in f_check.md" +
+                           (" (no bug: F's low agree share = no-goal and mark-approach windows + the strict angle test)"
+                            if (b / "diagnosis" / "f_check.md").exists() else "")),
         ("4", "Driving tests", "; ".join(f"{k}: {'helps' if v['helps'] else 'does not help'}"
                                          for k, v in (dr.get("reading") or {}).items()) or "missing"),
         ("5", "Mark check", f"renderer answer (code_check.json), {len(vids)} videos, counts in mark_counts.md"),
         ("6", "Fairness", ck.get("fairness_summary", "missing")),
-        ("7", "Determinism", ck.get("determinism_summary", "missing"))]
+        ("7", "Determinism", ck.get("determinism_summary", "missing") + "; Phase 13: " +
+                             ck.get("same_p13_summary", "missing"))]
     lines = ["# G14a gate table (draft)", "", "| # | Check | Result |", "|---|---|---|"]
     lines += [f"| {a} | {b_} | {c} |" for a, b_, c in rows]
     write_text_atomic(b / "G14a_table_draft.md", "\n".join(lines) + "\n")
@@ -264,10 +372,10 @@ def cmd_gate(args) -> None:
 
 def main(argv: Optional[List[str]] = None) -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("cmd", choices=["qwen", "drive", "gate"])
+    p.add_argument("cmd", choices=["qwen", "qwen-audit", "drive", "gate"])
     p.add_argument("--config", type=Path, required=True)
     args = p.parse_args(argv)
-    {"qwen": cmd_qwen, "drive": cmd_drive, "gate": cmd_gate}[args.cmd](args)
+    {"qwen": cmd_qwen, "qwen-audit": cmd_qwen_audit, "drive": cmd_drive, "gate": cmd_gate}[args.cmd](args)
 
 
 if __name__ == "__main__":

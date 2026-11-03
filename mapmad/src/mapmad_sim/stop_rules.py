@@ -226,6 +226,17 @@ def _ranked(cells: np.ndarray, value: np.ndarray, ok: np.ndarray) -> Fire:
     return Fire(c[order], v[order])
 
 
+def truth_marks(ev: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
+    """The same run with simulator-truth marks in place of the recogniser (MT-style, report only): every true target
+    instance in a frame becomes a detection with raw score = map value = 1.0, its pixel count as size and the cells
+    under its pixels; view cells, poses and maps unchanged."""
+    out = dict(ev)
+    n = len(ev["true_t"])
+    out.update({"det_t": ev["true_t"], "det_raw": np.ones(n), "det_value": np.ones(n), "det_px": ev["true_px"],
+                "det_box": ev["true_box"], "det_cells": ev["true_cells"], "det_cells_ptr": ev["true_cells_ptr"]})
+    return out
+
+
 def first_stops(ev: Dict[str, np.ndarray], spec: StopSpec = StopSpec(),
                 logged_rule: Optional[Sequence[Optional[float]]] = None) -> Dict[str, object]:
     """Every rule variant's first stop of one run: {key: (step, cell xy) or None}, plus "parity": the share of steps

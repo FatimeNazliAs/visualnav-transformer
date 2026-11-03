@@ -201,3 +201,11 @@ def test_judge_and_pick_rules():
                    "oracle_success": True}]}
     key, _ = pick_rule(rows, ["r2_v0.40_g1", "r2_v0.50_g1", "r2_v0.50_g2"], {"e": "A"}, ["X"], r2_order)
     assert key == "r2_v0.50_g1"  # tie on success -> the higher v
+
+
+def test_box_overlap_is_share_of_the_asked_box():
+    from vint_train.mapmad.closed_loop.p14_tables import box_overlap
+
+    assert box_overlap((0, 0, 10, 10), (0, 0, 10, 10)) == pytest.approx(1.0)
+    assert box_overlap((0, 0, 10, 10), (5, 0, 20, 10)) == pytest.approx(0.5)
+    assert box_overlap((0, 0, 10, 10), (20, 20, 30, 30)) == 0.0
