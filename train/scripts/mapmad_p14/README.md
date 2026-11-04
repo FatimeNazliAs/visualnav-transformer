@@ -45,3 +45,28 @@ Tools: Habitat side `mapmad_sim/mark_projection.py` (F1), `mapmad_sim/stop_varia
 c_cat, grid scorer), `mapmad/scripts/p14b_replay.py`, `p14b_videos.py`; NoMaD side
 `vint_train.mapmad.closed_loop.p14b_bench` (calib, score, pick, final, marks, drive, hashes, gate).
 Launch (after `nvidia-smi`): `bash train/scripts/mapmad_p14/launch_p14b1.sh`. DRY: see the header of `launch_p14b1.sh`.
+
+## Phase 14b-2 — better recognition + drive-to-the-mark
+
+R1 renders detector training frames in the labelled HM3D train homes (minus the photo-test homes; HM3D val and MP3D
+excluded, checked by id lists), R2 fine-tunes YOLOE-11-L-seg (LP and FT) and runs the Phase 9 photo test, R3 replays
+the 14a baseline recordings with each fine-tuned detector (stop module only), R4 drives the practice set with the
+picked detector and the A-mark switch (drive to an accepted target cluster, `mapmad_sim/amark.py`), R5 writes the
+tables, 8 videos and the draft gate. Rules: `/outputs/mapmad/p14b2_recog/p14b2_rules.md` (+ `.sha256`, copy in
+`mapmad/configs/p14b2_rules.md`); config `mapmad/configs/p14b2_recog.yaml` (DRY: `p14b2_dry.yaml`). Outputs:
+`/mnt/shared_disk/nazli/nomad_outputs/mapmad/p14b2_recog/` (`STATUS.md`, `phase14b2_log.md`, `trainset/`, `yolo/`,
+`train/`, `models.yaml`, `photo_test/`, `photo/`, `calib_yoloe_*`, `replay_yoloe_*`, `stopbench_yoloe_*`, `runs/{am,det,detam}`,
+`checks/`, `tables/` (plain, photo, r3, r4), `videos_detam/`, `G14b2_table_draft.md`, `driver/`).
+
+| Script | What it does |
+|---|---|
+| `launch_p14b2.sh [dry]` | starts screens `p14b2_chain` + `p14b2_chain_watch` and `p14b2_gpuwatch` if not running |
+| `run_p14b2_chain.sh` | the chain: pre-flight (home lists + contamination check, 14a hashes), R1 render + select + YOLO dataset, R2 LP / FT training in parallel + photo test + temperature + pick, R3 replay per detector (bench in the background), R4 driving cells + determinism + switch-off + fairness checks, R5 tables, videos, hashes after, draft G14b2 |
+
+Tools: Habitat side `mapmad/scripts/p14b2_trainset.py`, `p14b_replay.py --detector`, `p9_photo_test.py` /
+`p9_score.py` (with `MAPMAD_PHOTO_TEST_DIR`, `MAPMAD_RECOG_MODELS`), `p14_videos.py render --arm`; `mapmad_sim/amark.py`;
+recogniser side `mapmad_recog/finetune.py` (prep, train, models) and the fixed-vocabulary mode of `models.py`
+(`weights`, `vocab`, `sha256` in a models file; `run_p13_pairs.sh` passes `RECOG_CONFIG`); NoMaD side
+`vint_train.mapmad.closed_loop.p14b2_tables` (photo, r3, r4, plain, off, gate), `p14b_bench --det`, `p14_checks det
+--stage r4det`. Launch (after `nvidia-smi`): `bash train/scripts/mapmad_p14/launch_p14b2.sh`. DRY: see the header of
+`run_p14b2_chain.sh`.

@@ -164,6 +164,16 @@ class Recogniser:
         raise NotImplementedError
 
 
+def file_sha256(path: Path) -> str:
+    import hashlib
+
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
 class _Ultralytics(Recogniser):
     """YOLOE (masks) and YOLO-World (boxes): one class per call, text embeddings cached per prompt."""
 
@@ -174,7 +184,16 @@ class _Ultralytics(Recogniser):
         folder = self.cache / "ultralytics"
         os.chdir(folder)  # text encoders were saved here by p9_download.py
         self.yoloe = self.spec["ultralytics"].startswith("yoloe")
-        self.model = (YOLOE if self.yoloe else YOLO)(str(folder / self.spec["ultralytics"]))
+        weights = folder / self.spec["ultralytics"]
+        self.vocab: Optional[List[str]] = self.spec.get("vocab")  # Phase 14b-2: fine-tuned, fixed 6 classes
+        if self.spec.get("weights"):  # path below the outputs root (fine-tuned weights, sha256 checked)
+            from mapmad_sim import config
+
+            weights = config.paths()["outputs"] / self.spec["weights"]
+            if self.spec.get("sha256") and file_sha256(weights) != self.spec["sha256"]:
+                raise RuntimeError(f"{weights}: sha256 does not match the models config")
+        self.model = (YOLOE if self.yoloe else YOLO)(str(weights))
+        self.classes: Optional[List[int]] = None
         self.current: Optional[str] = None
         self.pe: Dict[str, Any] = {}
         self.text_caches.append(self.pe)
@@ -203,7 +222,11 @@ class _Ultralytics(Recogniser):
     def _set(self, prompt: str) -> None:
         if prompt == self.current and self.reuse_text:
             return
-        if self.yoloe:
+        if self.vocab:  # fixed vocabulary: the asked class only (no text encoding at run time)
+            if prompt not in self.vocab:
+                raise ValueError(f"prompt {prompt!r} is not in the fine-tuned vocabulary {self.vocab}")
+            self.classes = [self.vocab.index(prompt)]
+        elif self.yoloe:
             if prompt not in self.pe or not self.reuse_text:
                 self.pe[prompt] = self.model.get_text_pe([prompt])
             self.model.set_classes([prompt], self.pe[prompt])
@@ -214,7 +237,7 @@ class _Ultralytics(Recogniser):
     def detect(self, rgb: np.ndarray, prompt: str) -> List[RawDet]:
         self._set(prompt)
         r = self.model.predict(rgb[..., ::-1], conf=self.min_score, max_det=self.max_det, device=self.device,
-                               verbose=False, retina_masks=True)[0]
+                               verbose=False, retina_masks=True, classes=self.classes)[0]
         boxes = r.boxes.xyxy.cpu().numpy() if r.boxes is not None else np.zeros((0, 4))
         scores = r.boxes.conf.cpu().numpy() if r.boxes is not None else np.zeros(0)
         masks = r.masks.data.cpu().numpy() > 0.5 if (self.yoloe and r.masks is not None) else None

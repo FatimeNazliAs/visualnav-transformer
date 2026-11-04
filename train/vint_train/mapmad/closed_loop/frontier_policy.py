@@ -68,3 +68,17 @@ class VFPolicy(FrontierPolicy):
         cmd = super().act(obs)
         cmd.info["vf"] = obs.extras.get("vf")
         return cmd
+
+
+class AMarkSteer(FrontierPolicy):
+    """Phase 14b-2 A-mark (mapmad_sim.amark.AMarkAgent decides on the simulator side): FrontierPolicy's steering on
+    obs.extras["amark"] while the agent steers; the step log's policy info is {"amark": mode, ...}."""
+
+    name = "amark"
+
+    def act(self, obs: Observation) -> Command:
+        d = obs.extras["amark"]
+        cmd = super().act(Observation(frames=obs.frames, goal_image=None, step=obs.step,
+                                      extras={"teacher": {**d, "mark": d.get("cluster")}}))
+        cmd.info = {"amark": cmd.info.get("mode"), **{k: v for k, v in cmd.info.items() if k != "mode"}}
+        return cmd

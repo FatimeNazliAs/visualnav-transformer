@@ -17,6 +17,7 @@ comes from the raw pass (half-B 6-category items, the first 50 calls of the pass
 
 import argparse
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -38,6 +39,13 @@ TIMING_ITEMS = 350
 
 def out_root() -> Path:
     return config.paths()["outputs"] / "p9_recognisers"
+
+
+def photo_dir() -> Path:
+    """Where model outputs go: photo_test/ of Phase 9, or MAPMAD_PHOTO_TEST_DIR (Phase 14b-2: fine-tuned YOLOE; the
+    frame set is always Phase 9's, read only)."""
+    env = os.environ.get("MAPMAD_PHOTO_TEST_DIR")
+    return Path(env) if env else out_root() / "photo_test"
 
 
 def load_items(kind: str) -> List[Dict[str, Any]]:
@@ -76,7 +84,7 @@ def call(client: SidecarRecogniser, rgb: np.ndarray, prompt: str, min_score: flo
 
 
 def cmd_raw(a: argparse.Namespace, client: SidecarRecogniser) -> None:
-    folder = out_root() / "photo_test" / a.model / a.raw_dir
+    folder = photo_dir() / a.model / a.raw_dir
     folder.mkdir(parents=True, exist_ok=True)
     items = load_items(client.info["kind"])
     imgs = Images()
@@ -106,7 +114,7 @@ def timing_items(seed: int) -> List[Dict[str, Any]]:
 
 
 def cmd_timing(a: argparse.Namespace, client: SidecarRecogniser) -> None:
-    folder = out_root() / "photo_test" / a.model
+    folder = photo_dir() / a.model
     imgs = Images()
     client.request({"cmd": "reset_stats"})
     rows = []

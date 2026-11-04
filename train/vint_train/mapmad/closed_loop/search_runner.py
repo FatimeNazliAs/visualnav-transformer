@@ -28,7 +28,7 @@ import json
 import math
 import os
 import time
-from collections import deque
+from collections import Counter, deque
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -75,7 +75,7 @@ def run_search_episode(sim, policy: Policy, episode: Dict[str, Any], arm: str, r
                        header_extra: Optional[Dict[str, Any]] = None, save_dir: Optional[Path] = None,
                        outputs_extra: Optional[Dict[str, Any]] = None, rec_ms: Optional[List[float]] = None,
                        dets_path: Optional[Path] = None, unstuck: Optional[Any] = None,
-                       evidence_path: Optional[Path] = None) -> Tuple[Dict[str, Any], List[float]]:
+                       evidence_path: Optional[Path] = None, amark: Optional[Policy] = None) -> Tuple[Dict[str, Any], List[float]]:
     """Drive one episode; writes log_path (and the drive to save_dir); returns (result line, policy ms per step).
     search_v2 = search_v2.search_settings(...) + {"noise_seed", "record"} (+ Phase 12 "target", "rule", "teacher");
     outputs_extra = more server outputs (V1: "map" + "map_settings"); rec_ms collects the recogniser's round trips;
@@ -90,6 +90,7 @@ def run_search_episode(sim, policy: Policy, episode: Dict[str, Any], arm: str, r
     if unstuck is not None:
         unstuck.reset()
     unstuck_steps = 0
+    amark_steps, amark_events = 0, Counter()
     frames = deque([first.rgb], maxlen=policy.context_frames)
     extras, state = first.extras, first.state
     start_vp = state["vp_geodesic_m"]
@@ -139,6 +140,13 @@ def run_search_episode(sim, policy: Policy, episode: Dict[str, Any], arm: str, r
                 if picker is not None:
                     picker.reset()
                 frame = sim.step(cmd.v, cmd.w, reverse=manoeuvre[2])
+            elif amark is not None and (extras.get("amark") or {}).get("steer"):  # Phase 14b-2: drive to the mark
+                cmd = amark.act(Observation(frames=list(frames), goal_image=None, step=step, extras=extras))
+                amark_steps += 1
+                picker = getattr(policy, "picker", None)
+                if picker is not None:
+                    picker.reset()
+                frame = sim.step(cmd.v, cmd.w)
             else:
                 cmd = policy.act(Observation(frames=list(frames), goal_image=None, step=step, extras=extras))
                 policy_ms.append((time.perf_counter() - t0) * 1000.0)
@@ -158,6 +166,11 @@ def run_search_episode(sim, policy: Policy, episode: Dict[str, Any], arm: str, r
                     "position": state["position"], "yaw": state["yaw"], "vp_geodesic_m": state["vp_geodesic_m"],
                     "collided": move["collided"], "travelled_m": move["travelled_m"], "short_m": move["short_m"],
                     "in_view": state["in_view"], "seen_instances": state["seen_instances"]}
+            if amark is not None and extras.get("amark") is not None:
+                a = extras["amark"]
+                line["amark"] = {k: a.get(k) for k in ("steer", "event", "cluster")}
+                if a.get("event"):
+                    amark_events[a["event"]] += 1
             if exam:
                 line.update(rule_value=extras["rule"]["value"], rule_cell=extras["rule"]["cell"],
                             n_dets=state.get("n_dets"))
@@ -186,6 +199,8 @@ def run_search_episode(sim, policy: Policy, episode: Dict[str, Any], arm: str, r
                   "seen_usable": len(state["seen_instances"])}
         if unstuck is not None:
             result.update(unstuck_events=len(unstuck.events), unstuck_steps=unstuck_steps)
+        if amark is not None:
+            result.update(amark_steps=amark_steps, amark_events=dict(sorted(amark_events.items())))
         if run.live_rule_tau is not None:
             result.update(live_rule_tau=run.live_rule_tau, rule_stop_step=rule_stop_step,
                           rule_stop_success=rule_stop_step is not None and reached(state["vp_geodesic_m"], run.success_m))

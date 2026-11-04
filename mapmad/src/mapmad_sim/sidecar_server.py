@@ -157,7 +157,7 @@ class SimService:
         self.online_map = None
         self.search = None
         self.episode = episode
-        self.rule, self.agent, self.vf, self.evidence = None, None, None, None
+        self.rule, self.agent, self.vf, self.evidence, self.amark = None, None, None, None, None
         if searching:
             from mapmad_sim.search_v2 import SearchMap, SearchSpec, instances_of
 
@@ -174,6 +174,12 @@ class SimService:
                     self.agent = FrontierAgent(FrontierSpec.from_wire(sv["teacher"]))
             if sv.get("vf"):
                 self.vf = self._vf_agent(sv["vf"], episode)
+            if sv.get("amark"):  # Phase 14b-2 R4: drive to the mark (needs the rule value)
+                from mapmad_sim.amark import AMarkAgent, AMarkSpec
+
+                if self.rule is None:
+                    raise ValueError("search_v2 'amark' needs 'rule' (the stop rule value)")
+                self.amark = AMarkAgent(AMarkSpec.from_wire(sv["amark"]))
             if sv.get("log_evidence"):
                 from mapmad_sim.stop_evidence import EvidenceRecorder
 
@@ -254,6 +260,10 @@ class SimService:
             out["rule"] = {"value": v, "cell": list(cell) if cell is not None else None}
         if self.agent is not None:
             out["teacher"] = self.agent.step(s, pose)
+        if self.amark is not None:
+            from mapmad_sim.search_exam import own_map
+
+            out["amark"] = self.amark.step(s, own_map(s), pose, float(out["rule"]["value"]))
         if self.vf is not None:
             from mapmad_sim.search_vf import CameraView
 

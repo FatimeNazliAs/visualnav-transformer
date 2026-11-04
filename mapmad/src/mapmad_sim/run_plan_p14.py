@@ -20,12 +20,17 @@ from typing import Any, Dict, List, NamedTuple, Optional, Tuple
 
 from mapmad_sim.arm_table import ArmTable
 
-STAGES = ("baseline", "drive", "det")
+STAGES = ("baseline", "drive", "det", "r4", "r4det")
 NET_ARMS = ("M21b", "M21bh", "N")
 BASE_ARMS = ("M21b", "M21bh", "N", "F", "VF")
 SWITCHES = (("a1", "_a1"), ("w4", "_w4"), ("a1w4", "_a1w4"))  # (subdir, arm suffix)
 PARTS = ("p13d", "p14d")
 DET_ARMS = ("M21b", "M21b_a1w4", "N_a1w4")
+# Phase 14b-2 R4 (W4 on everywhere): (subdir, arm suffix, recogniser) -- "picked" = the R2 detector (the chain maps it
+# to its sidecar key); detector base + A-mark off = the 14a W4 runs (reused, p14a_finish/runs/w4)
+R4_CELLS = (("am", "_w4_am", "yoloe"), ("det", "_w4_d", "picked"), ("detam", "_w4_d_am", "picked"))
+R4_DET_ARMS = ("M21b_w4_d_am", "N_w4_d_am")  # gate row 8: same episode twice, same GPU (one sidecar model per call)
+R4_OFF_ARMS = ("M21b_w4", "N_w4")  # gate row 7: switch off with 14b-2 code = the 14a W4 runs byte for byte
 
 
 class Call(NamedTuple):
@@ -67,6 +72,14 @@ class P14Plan:
         if stage == "drive":
             return [Call(f"{sub}_{s}", f"runs/{sub}", s, "yoloe", (0,), tuple(a + suf for a in NET_ARMS), eps(s))
                     for sub, suf in SWITCHES for s in PARTS]
+        if stage == "r4":  # P14B2_BASE_ONLY=1: R2 fallback (no fine-tuned pick) -> the A-mark cell only
+            cells = [c for c in R4_CELLS if not (os.environ.get("P14B2_BASE_ONLY") and c[2] == "picked")]
+            return [Call(f"{sub}_{s}", f"runs/{sub}", s, recog, (0,), tuple(a + suf for a in NET_ARMS), eps(s))
+                    for sub, suf, recog in cells for s in PARTS]
+        if stage == "r4det":
+            e = tuple(self.episode_ids("p13d")[:1])
+            out = [Call(f"det_{x}", f"checks/det_{x}", "p13d", "picked", (0,), R4_DET_ARMS, e) for x in ("a", "b")]
+            return out + [Call("off", "checks/off", "p13d", "yoloe", (0,), R4_OFF_ARMS, tuple(self.episode_ids("p13d")[:2]))]
         if stage == "det":
             e = self.episode_ids("p13d")[:1]
             return [Call(f"det_{x}", f"checks/det_{x}", "p13d", "yoloe", (0,), DET_ARMS, tuple(e)) for x in ("a", "b")]

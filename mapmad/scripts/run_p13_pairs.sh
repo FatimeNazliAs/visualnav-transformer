@@ -1,6 +1,6 @@
 #!/bin/bash
 # Phase 13 closed-loop runs on ONE GPU = run_p12_pairs.sh (PAIRS_PER_GPU pairs of one simulator server + one
-# recogniser server (model RECOG, default yoloe; none = no sidecar) + one runner, one shared run queue per TOKEN), with
+# recogniser server (model RECOG, default yoloe; none = no sidecar; RECOG_CONFIG = its models file, Phase 14b-2) + one runner, one shared run queue per TOKEN), with
 # two changes: every process is marked MAPMAD_P13_OWNER (the Phase 13 GPU watcher), and RECOG "<model>+itm" (arm VF)
 # also starts ONE BLIP-2 ITM server for this GPU (naz_mapmad_recog, mapmad_recog.itm_server, port IPORT0 + GPU, shared
 # by the GPU's pairs) and passes --itm-port to every runner. Run on the host (the chain driver does it):
@@ -73,7 +73,7 @@ for ((k = 0; k < PAIRS_PER_GPU; k++)); do
         mkdir_cmd="mkdir -p $LOG_DIR/recog_restarts $LOG_DIR/text_reuse"
         run docker exec -d -e MAPMAD_SIDECAR_KEY -e CUDA_VISIBLE_DEVICES="$GPU" -e OMP_NUM_THREADS=4 -e HOME=/model_cache/home \
             -e MAPMAD_P13_OWNER="$OWNER" "$RECOGC" bash -c \
-            "$mkdir_cmd; until python -m mapmad_recog.server --model $RECOG --port $rport --text-reuse-out $LOG_DIR/text_reuse/${RECOG}_gpu${GPU}_$k.json >> $LOG_DIR/recog_gpu${GPU}_$k.log 2>&1; do
+            "$mkdir_cmd; until python -m mapmad_recog.server --model $RECOG --port $rport --text-reuse-out $LOG_DIR/text_reuse/${RECOG}_gpu${GPU}_$k.json${RECOG_CONFIG:+ --config $RECOG_CONFIG} >> $LOG_DIR/recog_gpu${GPU}_$k.log 2>&1; do
                  c=\$?; echo \"recogniser exited with \$c, restarting \$(date -Is)\" >> $LOG_DIR/recog_gpu${GPU}_$k.log
                  echo \"\$(date -Is) exit \$c\" >> $LOG_DIR/recog_restarts/gpu${GPU}_$k; sleep 3; done"
         recog_args=(--recog-port "$rport")

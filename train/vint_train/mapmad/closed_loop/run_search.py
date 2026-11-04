@@ -117,6 +117,15 @@ class Policies:
         return Unstuck(UnstuckSpec.from_config(self.layout.cfg["switches"]["w4"]), self.limits["max_w"],
                        1.0 / self.limits["rate_hz"])
 
+    def amark(self, name: str) -> Optional[Any]:
+        """Phase 14b-2 A-mark: arm F's steering (FrontierPolicy) for the drive-to-the-mark steps, or None."""
+        if self.arm(name).mark_drive != "amark":
+            return None
+        from vint_train.mapmad.closed_loop.frontier_policy import AMarkSteer
+
+        teacher = datagen_config(self.layout.cfg)["teacher"]
+        return AMarkSteer(float(teacher["face_tolerance_deg"]), **self.limits)
+
     def _build_mapmad_v2(self, a: Arm) -> Policy:
         from vint_train.mapmad.closed_loop.search_policy import MapMaDV2Policy
         from vint_train.mapmad.inference_v2 import MapMaDV2Inference
@@ -316,7 +325,7 @@ def main() -> None:
                     result, ms = run_search_episode(sim, policies.get(arm), ep, arm, run, k, seed, layout.log(arm, rid),
                                                     fingerprint, sv, wire.cameras[arm], policies.header(arm), save_dir,
                                                     wire.extra.get(arm), rec_ms, layout.dets(arm, rid),
-                                                    policies.unstuck(arm), evidence)
+                                                    policies.unstuck(arm), evidence, policies.amark(arm))
                     break
                 except INFRA_ERRORS + (RuntimeError,) as exc:
                     if isinstance(exc, RuntimeError) and not str(exc).startswith("simulator server"):

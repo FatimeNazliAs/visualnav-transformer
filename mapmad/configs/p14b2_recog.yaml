@@ -1,0 +1,72 @@
+# Phase 14b-2 · better recognition + drive-to-the-mark (kickoff .p14b2_kickoff.md v1.0; rules p14b2_rules.md).
+# R1 training frames (mapmad/scripts/p14b2_trainset.py, Habitat side), R2 fine-tuning (mapmad_recog/finetune.py,
+# naz_mapmad_recog), photo test (p9_photo_test.py / p9_score.py with MAPMAD_PHOTO_TEST_DIR), R3 / R4 below.
+extends: p14b1_marks.yaml           # arm table, sets, practice set, harness (14a) + 14b-1 bench settings
+out_dir: p14b2_recog                 # below the outputs root
+runs_from: p14a_finish               # R3 replays the 14a baseline runs (read only)
+seed: 1402
+
+projection:                          # R3: today's marks (base) and F1-med 0.5 only (14b-1's F1 pick)
+  med_d: [0.5]
+  erode_k: []
+  min_px: []
+
+trainset:
+  datagen: p8_datagen_v3a.yaml       # camera (pin025), robot, floor rules: as Phase 8 / Phase 9
+  splits_file: p2_home_splits.json   # photo-test homes = rule.val_drive.phase1_homes (Phase 1 / Phase 9)
+  split: train                       # HM3D train split; homes with HM3D Semantics labels only
+  drives:                            # Phase 8 drives (both MapMaD splits) of the pool homes
+    dataset: habitat_mapmad_v2
+    split_files: [splits/habitat_mapmad_v2/train/traj_names.txt, splits/habitat_mapmad_v2/test/traj_names.txt]
+    min_move_m: 0.5                  # kickoff R1: poses >= 0.5 m or >= 30 deg apart
+    min_turn_deg: 30.0
+  max_candidates_per_home: 1000      # seeded subset of a home's thinned poses (even spread over homes)
+  min_pixels: 50                     # an instance is labelled with >= 50 px (smaller target instances -> ignore)
+  max_depth_m: 4.0
+  n_frames: 60000                    # target size (fewer if not available; reported)
+  free_share: 0.40                   # target-free frames (no labelled or ignored target pixel of the 6)
+  lookalike_words: [stool, bench, ottoman, footstool, pouf, pouffe]   # 14a chair look-alikes: background, not ignore
+  lookalike_weight: 3.0              # target-free frames showing a look-alike are drawn 3x as often
+  val_share: 0.10                    # split by home 90 / 10 (val for early checks only)
+  jpeg_quality: 95
+
+finetune:                            # R2, fixed recipe per variant (rules §R2); last epoch used
+  base_weights: yoloe-11l-seg.pt     # Phase 9's YOLOE-11-L-seg (model cache, sha256 in p9 weights.json)
+  epochs: 20
+  imgsz: 320
+  batch: 0.90                        # ultralytics auto-batch at 90 % of GPU memory (~2.4 GB headroom); value logged
+  seed: 0
+  deterministic: true
+  workers: 8
+  variants: [lp, ft]                 # lp = linear probing (class projections cv3.*.2 only); ft = full fine-tune
+
+r3:                                  # replay re-score with the picked detector (stop module only)
+  arms: [M21b, M21bh, N, F, VF]
+  subdir: runs/baseline
+  rows: [base, f1med]                # 14a marks / F1-med, each vs the same row with base YOLOE (14b-1 bench)
+
+# --- R4 driving test (practice set, seed 0; new runs below <out_dir>/runs/{am,det,detam}) ---
+sets:                                # the 14a practice set, read from p14a_finish (frozen; fingerprint 8d7b623e739c...)
+  p14d: {folder: ../p14a_finish/sets/p14d}
+  practice: {file: ../p14a_finish/sets/practice.json}
+
+switches:
+  amark:                             # A-mark (mapmad_sim/amark.py; rules §R4); tau = the dev choice (0.45)
+    trigger_m: 3.0                   # accepted cluster in view within 3 m
+    goal_m: 0.9                      # goal = nearest free cell <= 0.9 m from the cluster (VLFM: stop < 0.9 m)
+    reject_m: 0.5                    # a handled cluster excludes a 0.5 m disk (no second trigger on it)
+    max_steps: 120                   # approach timeout (30 s at 4 Hz) -> rejected
+
+recognisers:
+  picked: {model: yoloe, threshold: 0.01, p99: 0.7878322374820708, vlm: false}  # R2 pick; the chain overrides it
+
+arms:                                # W4 on in every R4 arm (kickoff R4); base + A-mark off = 14a's *_w4 runs
+  M21b_w4_am: {checkpoint: v21b, maps: true, target: recogniser, recogniser: yoloe, unstuck: w4, mark_drive: amark, label: "MapMaD v2.1b + W4 + drive to the mark"}
+  M21bh_w4_am: {checkpoint: v21b, maps: false, target: recogniser, recogniser: yoloe, unstuck: w4, mark_drive: amark, label: "MapMaD v2.1b, maps hidden + W4 + drive to the mark"}
+  N_w4_am: {policy: nomad, checkpoint: official, target: recogniser, recogniser: yoloe, unstuck: w4, mark_drive: amark, label: "NoMaD explore + W4 + drive to the mark"}
+  M21b_w4_d: {checkpoint: v21b, maps: true, target: recogniser, recogniser: picked, unstuck: w4, label: "MapMaD v2.1b + W4, fine-tuned detector"}
+  M21bh_w4_d: {checkpoint: v21b, maps: false, target: recogniser, recogniser: picked, unstuck: w4, label: "MapMaD v2.1b, maps hidden + W4, fine-tuned detector"}
+  N_w4_d: {policy: nomad, checkpoint: official, target: recogniser, recogniser: picked, unstuck: w4, label: "NoMaD explore + W4, fine-tuned detector"}
+  M21b_w4_d_am: {checkpoint: v21b, maps: true, target: recogniser, recogniser: picked, unstuck: w4, mark_drive: amark, label: "MapMaD v2.1b + W4 + fine-tuned detector + drive to the mark"}
+  M21bh_w4_d_am: {checkpoint: v21b, maps: false, target: recogniser, recogniser: picked, unstuck: w4, mark_drive: amark, label: "MapMaD v2.1b, maps hidden + W4 + fine-tuned detector + drive to the mark"}
+  N_w4_d_am: {policy: nomad, checkpoint: official, target: recogniser, recogniser: picked, unstuck: w4, mark_drive: amark, label: "NoMaD explore + W4 + fine-tuned detector + drive to the mark"}

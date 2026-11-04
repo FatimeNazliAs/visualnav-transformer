@@ -84,8 +84,13 @@ def base_variants(spec: ProjSpec) -> List[Variant]:
             + [Variant("true", p, "map") for p in spec.names()])
 
 
-def temperature(out: Path) -> float:
-    return float(json.loads((out / "calib" / "calib.json").read_text())["T"])
+def det_dir(name: str, det: Optional[str]) -> str:
+    """Folder name of a bench stage: base YOLOE (14b-1) or a Phase 14b-2 detector (`<name>_<det>`)."""
+    return name if not det else f"{name}_{det}"
+
+
+def temperature(out: Path, det: Optional[str] = None) -> float:
+    return float(json.loads((out / det_dir("calib", det) / "calib.json").read_text())["T"])
 
 
 # --- 14b1.2 calibration -----------------------------------------------------------------------------------------------
@@ -135,7 +140,7 @@ def reliability(p: np.ndarray, y: np.ndarray, bins: int) -> List[Tuple[int, floa
 def cmd_calib(args) -> None:
     runs, out = layouts(args.config)
     c = runs.cfg["p14b1"]["calib"]
-    labels = json.loads((runs.outputs / c["labels"]).read_text())
+    labels = json.loads((runs.outputs / (args.labels or c["labels"])).read_text())
     halves = json.loads((runs.outputs / c["halves"]).read_text())
     lo, hi, step = c["t_grid"]
     grid = [round(lo + step * k, 2) for k in range(int(round((hi - lo) / step)) + 1)]
@@ -149,8 +154,10 @@ def cmd_calib(args) -> None:
            "ece_by_T_half_A": scores,
            "note": "logits recovered from the scores (logit = log(s / (1 - s))): the photo test kept no raw logits "
                    "(kickoff §3 fallback)"}
-    (out / "calib").mkdir(parents=True, exist_ok=True)
-    write_text_atomic(out / "calib" / "calib.json", json.dumps(res, indent=1) + "\n")
+    cdir = out / det_dir("calib", args.det)
+    cdir.mkdir(parents=True, exist_ok=True)
+    res["labels"] = args.labels or c["labels"]
+    write_text_atomic(cdir / "calib.json", json.dumps(res, indent=1) + "\n")
     sb, yb = data["B"]
     lines = ["# 14b1.2 temperature fit (F2; report)", "",
              f"YOLOE-11-L-seg on the Phase 9 photo test, six categories (p9q items; TP / FP at box IoU >= 0.5, IGN rows "
@@ -167,7 +174,7 @@ def cmd_calib(args) -> None:
     for k, (a, b) in enumerate(zip(reliability(sb, yb, bins), reliability(calibrated(sb, t), yb, bins))):
         lines.append(f"| {k / bins:.1f}-{(k + 1) / bins:.1f} | {a[0]} | {a[1]:.3f} | {a[2]:.3f} | {b[0]} | {b[1]:.3f} | "
                      f"{b[2]:.3f} |")
-    write_text_atomic(out / "calib" / "calib.md", "\n".join(lines) + "\n")
+    write_text_atomic(cdir / "calib.md", "\n".join(lines) + "\n")
     print("\n".join(lines[:12]), flush=True)
 
 
@@ -265,7 +272,9 @@ def episodes_filter() -> set:
 
 
 def score_jobs(runs: RunLayout, out: Path, arms: Sequence[str], variants: Sequence[Variant], dest: str, t_cal: float,
-               force: bool, with_parity: bool) -> List[Tuple]:
+               force: bool, with_parity: bool, det: Optional[str] = None) -> List[Tuple]:
+    """One job per logged run. det (Phase 14b-2 R3): projections and evidence from replay_<det> (the new detector's
+    rows), never the 14a evidence."""
     eps = practice_episodes(runs)
     only = episodes_filter()
     sub = Path(str(runs.root)).name
@@ -278,11 +287,12 @@ def score_jobs(runs: RunLayout, out: Path, arms: Sequence[str], variants: Sequen
             o = out / dest / "runs" / arm / f"{rid}.npz"
             if o.exists() and not force:
                 continue
-            proj = out / "replay" / sub / arm / f"{rid}.npz"
+            proj = out / det_dir("replay", det) / sub / arm / f"{rid}.npz"
             if not proj.exists():
                 raise SystemExit(f"missing replay file {proj}")
+            evf = (out / det_dir("replay", det) / sub / "evidence" / arm if det else runs.root / "evidence" / arm) / f"{rid}.npz"
             b14 = runs.base / "stopbench" / "runs" / arm / f"{rid}.json" if with_parity else None
-            jobs.append((str(f), str(runs.root / "evidence" / arm / f"{rid}.npz"), str(proj), str(o),
+            jobs.append((str(f), str(evf), str(proj), str(o),
                          eps[parse_run_id(rid)[0]], [v.name for v in variants], t_cal, str(b14) if b14 else ""))
     return jobs
 
@@ -312,8 +322,11 @@ def run_pool(jobs: List[Tuple], workers: int) -> None:
 
 def cmd_score(args) -> None:
     runs, out = layouts(args.config, args.subdir)
-    t_cal = temperature(out)
-    if args.ccat:
+    t_cal = temperature(out, args.det)
+    if args.det:  # Phase 14b-2 R3: the new detector's evidence; no 14a parity (other rows)
+        jobs = score_jobs(runs, out, args.arms, base_variants(proj_spec(runs.cfg)), det_dir("stopbench", args.det),
+                          t_cal, args.force, False, args.det)
+    elif args.ccat:
         pick = json.loads((out / "stopbench" / "PICK1.json").read_text())
         grid = runs.cfg["p14b1"]["ccat_grid"]
         projs = sorted({pick["f1best"][f] for f in FAMILIES})
@@ -1051,6 +1064,8 @@ def main(argv: Optional[List[str]] = None) -> None:
     p.add_argument("--force", action="store_true")
     p.add_argument("--ccat", action="store_true", help="score: the c_cat variants of PICK1.json's F1(best)")
     p.add_argument("--tag", default="before")
+    p.add_argument("--det", help="Phase 14b-2 R3: a fine-tuned detector key (calib_<det>, replay_<det>, stopbench_<det>)")
+    p.add_argument("--labels", help="calib: photo-test labels.json below the outputs root (default: config p14b1.calib)")
     args = p.parse_args(argv)
     {"calib": cmd_calib, "score": cmd_score, "pick": cmd_pick, "final": cmd_final, "marks": cmd_marks,
      "drive": cmd_drive, "hashes": cmd_hashes, "gate": cmd_gate}[args.cmd](args)

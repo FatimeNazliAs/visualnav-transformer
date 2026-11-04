@@ -96,6 +96,11 @@ def arm_wire(table: ArmTable, name: str, train_config: Callable[[str], Dict[str,
             target["recogniser"] = {"host": recog[0], "port": int(recog[1]), "model": r["model"],
                                     "threshold": float(r["threshold"]), "p99": float(r["p99"]), "vlm": bool(r["vlm"])}
         sv["target"] = target
+        if a.mark_drive == "amark":  # Phase 14b-2 R4: drive to an accepted cluster at the stop rule's tau
+            am = cfg["switches"]["amark"]
+            sv["amark"] = {"spec": dg["teacher"], "tau": float(table.choices()["tau"]),
+                           "min_views": int(run["rule_stop"]["min_views"]),
+                           **{k: am[k] for k in ("trigger_m", "goal_m", "reject_m", "max_steps")}}
         if a.policy in ("frontier", "vf"):  # vf: F's teacher block (marks, planner) inside its own block
             f = cfg["policies"]["frontier"]
             teacher = {"spec": dg["teacher"], "seen": a.teacher_seen, "mode": a.teacher_mode,

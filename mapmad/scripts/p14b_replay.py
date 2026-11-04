@@ -139,14 +139,22 @@ def match_rows(logged_raw: np.ndarray, logged_box: np.ndarray, dets: Sequence[An
 
 
 def replay_run(service: SimService, keeper: ObsKeeper, layout: RunLayout, table: ArmTable, arm: str,
-               episode: Dict[str, Any], rid: str, recog_port: int, spec: ProjSpec) -> Tuple[Dict[str, np.ndarray], Dict[str, Any]]:
-    """One run's projection arrays + its check record (module docstring)."""
+               episode: Dict[str, Any], rid: str, recog_port: int, spec: ProjSpec,
+               detector: Optional[Dict[str, Any]] = None) -> Tuple[Dict[str, np.ndarray], Dict[str, Any]]:
+    """One run's projection arrays + its check record (module docstring). With `detector` ({model, threshold, p99};
+    Phase 14b-2 R3) the picture goes to that recogniser instead: every detection it keeps becomes a new evidence row
+    (no matching to the logged rows) and the run's new evidence is returned under "evidence"."""
     from vint_train.mapmad.config import load_config
 
     t0 = time.time()
     tau = float(table.choices()["tau"])
     w = arm_wire(table, arm, load_config, (RECOG_HOST, recog_port), tau, ("unused", 0))
     sv = {k: v for k, v in w.search_v2.items() if k not in STRIP}
+    if detector is not None:
+        rec = dict(sv["target"]["recogniser"], **detector)
+        sv["target"] = dict(sv["target"], recogniser=rec)
+    new_rows: List[Tuple[float, ...]] = []
+    new_cells: List[np.ndarray] = []
     ev = stop_evidence.load(layout.root / "evidence" / arm / f"{rid}.npz")
     det_rows = {int(t): [] for t in np.unique(ev["det_t"])}
     for k, t in enumerate(ev["det_t"].tolist()):
@@ -169,7 +177,17 @@ def replay_run(service: SimService, keeper: ObsKeeper, layout: RunLayout, table:
                                   s.spec.noise.max_depth_m)
         rows = det_rows.get(t, [])
         dets = list(s.last_dets)
-        match, diff = match_rows(ev["det_raw"][rows], ev["det_box"][rows], dets)
+        if detector is not None:  # R3: the new detector's rows of this frame
+            for d in dets:
+                box = d.box if d.box is not None else (np.nan,) * 4
+                mask = d.mask if d.mask is not None else box_fill_mask(box, obs["depth"])
+                marks = project_mask(mask, box, geo, spec)
+                dets_tab.add(marks, raw_replay=float(d.raw_score), fallback=float(d.mask is None), base_same=1.0)
+                new_rows.append((t, float(d.raw_score), float(d.score), int(d.mask.sum()) if d.mask is not None else 1,
+                                 *[float(v) for v in box]))
+                new_cells.append(np.asarray(marks.cells["base"], np.int32))
+            rows = []
+        match, diff = match_rows(ev["det_raw"][rows], ev["det_box"][rows], dets) if detector is None else ([], 0.0)
         if not np.isnan(diff):
             chk["frames_rowwise"] += 1
             chk["max_raw_diff"] = max(chk["max_raw_diff"], diff)
@@ -204,12 +222,27 @@ def replay_run(service: SimService, keeper: ObsKeeper, layout: RunLayout, table:
             true_tab.add(marks, base_same=float(same))
     if chk["frames"] != len(ev["pose"]):
         raise RuntimeError(f"{arm} {rid}: replayed {chk['frames']} frames, evidence has {len(ev['pose'])}")
-    if len(dets_tab) != len(ev["det_t"]) or len(true_tab) != len(ev["true_t"]):
-        raise RuntimeError(f"{arm} {rid}: rows {len(dets_tab)}/{len(true_tab)} vs evidence {len(ev['det_t'])}/{len(ev['true_t'])}")
+    expected_det = len(new_rows) if detector is not None else len(ev["det_t"])
+    if len(dets_tab) != expected_det or len(true_tab) != len(ev["true_t"]):
+        raise RuntimeError(f"{arm} {rid}: rows {len(dets_tab)}/{len(true_tab)} vs evidence {expected_det}/{len(ev['true_t'])}")
     arrays = {**dets_tab.arrays(), **true_tab.arrays(), "version": np.array(1), "variants": np.array(spec.names())}
     chk.update(det_rows=len(dets_tab), true_rows=len(true_tab), seconds=round(time.time() - t0, 1),
                height_log_frames=len(HEIGHT_MISSES))
+    if detector is not None:
+        chk.update(det_rows_14a=int(len(ev["det_t"])), detector=detector["model"])
+        arrays["evidence"] = new_evidence(ev, new_rows, new_cells)
     return arrays, chk
+
+
+def new_evidence(ev: Dict[str, np.ndarray], rows: Sequence[Tuple[float, ...]], cells: Sequence[np.ndarray]) -> Dict[str, np.ndarray]:
+    """The logged evidence with its detection rows replaced by the new detector's (R3); everything else unchanged."""
+    det = np.asarray(rows, np.float64).reshape(-1, 8)
+    ptr = np.zeros(len(cells) + 1, np.int64)
+    ptr[1:] = np.cumsum([c.size for c in cells]) if cells else []
+    return {**ev, "det_t": det[:, 0].astype(np.int32), "det_raw": det[:, 1], "det_value": det[:, 2],
+            "det_px": det[:, 3].astype(np.int32), "det_box": det[:, 4:8],
+            "det_cells": np.concatenate(cells).astype(np.int32) if cells else np.zeros(0, np.int32),
+            "det_cells_ptr": ptr}
 
 
 def save_npz(path: Path, arrays: Dict[str, np.ndarray]) -> None:
@@ -275,9 +308,19 @@ def main() -> None:
     p.add_argument("--episodes", nargs="*")
     p.add_argument("--limit", type=int, default=0, help="at most this many runs of this shard (DRY)")
     p.add_argument("--out", type=Path, help="output folder (default <out_dir>/replay/<subdir name>; DRY: p14b1_dry)")
+    p.add_argument("--detector", help="Phase 14b-2 R3: replay with this recogniser key (the sidecar holds it); output "
+                                      "<out_dir>/replay_<key>/<subdir name>/ with new evidence in evidence/<arm>/")
+    p.add_argument("--det-threshold", type=float, help="R3: the detector's threshold t (photo test, half A)")
+    p.add_argument("--det-p99", type=float, help="R3: the detector's p99 of kept half-A scores (map value stretch)")
     args = p.parse_args()
     runs = RunLayout.load_runs(args.config, subdir=args.subdir)
-    out_base = args.out or RunLayout.load(args.config).base / "replay" / Path(args.subdir).name
+    detector = None
+    if args.detector:
+        if args.det_threshold is None or args.det_p99 is None:
+            raise SystemExit("--detector needs --det-threshold and --det-p99")
+        detector = {"model": args.detector, "threshold": args.det_threshold, "p99": args.det_p99}
+    sub = "replay" if detector is None else f"replay_{args.detector}"
+    out_base = args.out or RunLayout.load(args.config).base / sub / Path(args.subdir).name
     table = ArmTable.from_layout(runs)
     eps = practice_episodes(runs)
     spec = ProjSpec(**{k: tuple(v) if isinstance(v, list) else v for k, v in (runs.cfg.get("projection") or {}).items()})
@@ -298,7 +341,9 @@ def main() -> None:
             if npz.exists() and rec.exists():
                 continue
             arrays, chk = replay_run(service, keeper, runs, table, arm, eps[parse_run_id(rid)[0]], rid,
-                                     args.recog_port, spec)
+                                     args.recog_port, spec, detector)
+            if "evidence" in arrays:
+                save_npz(out_base / "evidence" / arm / f"{rid}.npz", arrays.pop("evidence"))
             save_npz(npz, arrays)
             write_text_atomic(rec, json.dumps({"arm": arm, "run": rid, "gpu": args.gpu,
                                                     "orig_gpu": first_gpu.get((arm, rid)), **chk}) + "\n")

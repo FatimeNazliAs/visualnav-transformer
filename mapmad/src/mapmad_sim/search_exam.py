@@ -117,6 +117,10 @@ class TargetSource:
 
         host, port, model, threshold, p99, vlm = key
         self.rec = connect(model, host, port, threshold, p99, vlm, protocol.auth_key(), wait_s=wait_s)
+        held = self.rec.info.get("model")
+        if held is not None and held != model:  # Phase 14b-2: never score one detector under another's name
+            self.rec.close()
+            raise ValueError(f"recogniser sidecar on port {port} holds {held!r}, the arm asks for {model!r}")
         self.key = key
 
     def detect(self, rgb: np.ndarray, depth: np.ndarray, prompt: str) -> List[Any]:
@@ -173,10 +177,7 @@ class FrontierAgent:
     mark: Optional[Tuple[int, Tuple[float, float], Tuple[float, float]]] = None  # (cell, centre, goal) of this step
 
     def own_map(self, search: Any) -> OwnMap:
-        lay = search.fmap.first_seen
-        shape = search.fmap.shape
-        return OwnMap(lay["obstacle"].reshape(shape) >= 0, lay["explored"].reshape(shape) >= 0,
-                      tuple(search.fmap.origin), search.spec.map_spec.resolution, search.bumped, None)
+        return own_map(search)
 
     def layer_mark(self, search: Any, own: OwnMap) -> Optional[SeenInstance]:
         """The strongest qualifying cell (>= tau, >= min_views views, not near a visited mark) as a seen instance whose
@@ -222,6 +223,14 @@ class FrontierAgent:
             self.state = replace(self.state, approach=None, known_instances=())
             out["mark_done"] = True
         return out
+
+
+def own_map(search: Any) -> OwnMap:
+    """The robot's own map now (obstacle / explored as known, bumped cells): arm F's and A-mark's planner input."""
+    lay = search.fmap.first_seen
+    shape = search.fmap.shape
+    return OwnMap(lay["obstacle"].reshape(shape) >= 0, lay["explored"].reshape(shape) >= 0,
+                  tuple(search.fmap.origin), search.spec.map_spec.resolution, search.bumped, None)
 
 
 def nearest_free(own: OwnMap, centre: Tuple[float, float], radius_m: float,

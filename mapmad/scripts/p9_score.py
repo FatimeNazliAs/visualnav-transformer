@@ -13,6 +13,7 @@ model's 6-category threshold, all OVON items) go to ovon_test/<model>.json. Re-r
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any, Dict, List
@@ -27,13 +28,19 @@ from mapmad_sim import config, photo_labels as pl  # noqa: E402
 from mapmad_sim import photo_scoring as ps  # noqa: E402
 from mapmad_sim.categories import load_map  # noqa: E402
 
-MODELS = config.CONFIG_DIR / "p9_models.yaml"
+MODELS = Path(os.environ.get("MAPMAD_RECOG_MODELS", config.CONFIG_DIR / "p9_models.yaml"))
 PHASE12_CALLS = 5_000_000
 MAX_LATENCY_S = 0.25
 
 
 def root() -> Path:
     return config.paths()["outputs"] / "p9_recognisers"
+
+
+def photo_dir() -> Path:
+    """Model outputs: photo_test/ of Phase 9, or MAPMAD_PHOTO_TEST_DIR (Phase 14b-2); frames are always Phase 9's."""
+    env = os.environ.get("MAPMAD_PHOTO_TEST_DIR")
+    return Path(env) if env else root() / "photo_test"
 
 
 def model_info(key: str) -> Dict[str, Any]:
@@ -62,7 +69,7 @@ def load_items(kind: str) -> List[Dict[str, Any]]:
 def label_all(key: str, items: List[Dict[str, Any]], tabs: Dict[str, pl.LabelTable], raw_dir: str = "raw") -> List[ps.Det]:
     fr = root() / "frames"
     frames = {f["frame_id"]: f for f in json.loads((fr / "frames.json").read_text())}
-    raw = detections.load_parts(root() / "photo_test" / key / raw_dir, detections.FRAME_HW)
+    raw = detections.load_parts(photo_dir() / key / raw_dir, detections.FRAME_HW)
     missing = [i["item_id"] for i in items if i["item_id"] not in raw]
     if missing:
         raise SystemExit(f"{key}: {len(missing)} items without raw output, e.g. {missing[:3]}")
@@ -94,7 +101,7 @@ def infos(items: List[Dict[str, Any]], tabs: Dict[str, pl.LabelTable]) -> Dict[s
 
 def latency(key: str, kind: str) -> Dict[str, Any]:
     """Median / p95 round trip (s) and peak VRAM: timing pass, or (VLMs) the raw pass on half-B 6-category items."""
-    d = root() / "photo_test" / key
+    d = photo_dir() / key
     stats = json.loads((d / "raw" / "stats.json").read_text()) if (d / "raw" / "stats.json").exists() else {}
     if kind == "truth":
         return {"median_s": 0.0, "p95_s": 0.0, "peak_vram_mb": 0.0, "source": "n/a (simulator)"}
@@ -115,7 +122,7 @@ def latency(key: str, kind: str) -> Dict[str, Any]:
 
 def labels(key: str, items: List[Dict[str, Any]], tabs: Dict[str, pl.LabelTable], fresh: bool) -> List[ps.Det]:
     """The detection labels of a model: computed from the raw outputs (cached in labels.json; --fresh recomputes)."""
-    path = root() / "photo_test" / key / "labels.json"
+    path = photo_dir() / key / "labels.json"
     if path.exists() and not fresh:
         return [ps.Det(**{**d, "hits": tuple(d["hits"])}) for d in json.loads(path.read_text())]
     dets = label_all(key, items, tabs)
@@ -131,7 +138,7 @@ def cmd_tune(key: str, fresh: bool) -> None:
     inf = infos(items, tabs)
     a = [inf[i["item_id"]] for i in items if i["set"] == "six" and i["half"] == "A"]
     t, f1_a = ps.tune(labels(key, items, tabs, fresh), a, kind in ("vlm", "truth"))
-    ps.write_json(root() / "photo_test" / key / "threshold.json", {"threshold": t, "f1_half_a": f1_a})
+    ps.write_json(photo_dir() / key / "threshold.json", {"threshold": t, "f1_half_a": f1_a})
     print(f"{key}: threshold {t} (half-A F1 {f1_a:.4f})")
 
 
@@ -144,12 +151,12 @@ def cmd_edge(key: str) -> None:
     dets = label_all(key, items, tabs, "raw_edge")
     inf = infos(items, tabs)
     b = [inf[i["item_id"]] for i in items if i["half"] == "B"]
-    t = json.loads((root() / "photo_test" / key / "threshold.json").read_text())["threshold"]
+    t = json.loads((photo_dir() / key / "threshold.json").read_text())["threshold"]
     out = {"model": key, "tuned_threshold": t, "report_only": True, "rule": "p9_rules_v2.md A3",
            "half_b": {f"{x:g}": {k: v for k, v in ps.metrics(dets, b, x, with_ap=False).items()
                                  if k in ("F1", "H", "R", "precision", "recall", "fa_per_free", "kept")}
                       for x in (0.01, 0.005, 0.001)}}
-    ps.write_json(root() / "photo_test" / key / "edge.json", out)
+    ps.write_json(photo_dir() / key / "edge.json", out)
     print(f"{key}: edge report " + ", ".join(f"F1@{x}={v['F1']:.4f}" for x, v in out["half_b"].items()))
 
 
@@ -187,7 +194,7 @@ def cmd_score(key: str, fresh: bool = False) -> None:
     out["confusions"] = ps.confusions(dets, b, t, cat_of)
     out["latency"] = latency(key, kind)
     out["phase12_cost_h"] = PHASE12_CALLS * out["latency"]["median_s"] / 3600.0
-    d = root() / "photo_test" / key
+    d = photo_dir() / key
     ps.write_json(d / "scores.json", out)
     if kind in ("open", "vlm", "truth"):
         ps.write_json(root() / "ovon_test" / f"{key}.json", ovon_scores(dets, items, inf, t, vlm))
@@ -220,10 +227,10 @@ def fmt(v: Any, nd: int = 3) -> str:
 
 def cmd_choose() -> None:
     cfg = yaml.safe_load(MODELS.read_text())
-    status = json.loads((root() / "photo_test" / "model_status.json").read_text())
+    status = json.loads((photo_dir() / "model_status.json").read_text())
     rows: Dict[str, Dict[str, Any]] = {}
     for key, spec in cfg["models"].items():
-        p = root() / "photo_test" / key / "scores.json"
+        p = photo_dir() / key / "scores.json"
         if status.get(key, {}).get("status") == "ran" and p.exists():
             s = json.loads(p.read_text())
             rows[key] = {"F1": s["half_b"]["F1"], "median_s": s["latency"]["median_s"], "kind": spec["kind"],
@@ -239,12 +246,12 @@ def cmd_choose() -> None:
                                  "p99": rows[m]["p99"], "median_s": rows[m]["median_s"], "F1": rows[m]["F1"],
                                  "family": rows[m]["family"], "kind": rows[m]["kind"]}
     ch["rows"] = rows
-    ps.write_json(root() / "photo_test" / "choice.json", ch)
+    ps.write_json(photo_dir() / "choice.json", ch)
     lines = ["# Phase 9 choice (p9_rules.md §choice, applied mechanically)", "",
              f"- **R1 = {ch['R1']}**, **R2 = {ch['R2']}**",
              f"- qualifying (median <= {MAX_LATENCY_S} s, open vocabulary): {', '.join(ch['qualifying']) or 'none'}"]
     lines += [f"- fallback: {f}" for f in ch["fallback_flags"]] + [f"- {l}" for l in ch["log"]]
-    (root() / "photo_test" / "choice.md").write_text("\n".join(lines) + "\n")
+    (photo_dir() / "choice.md").write_text("\n".join(lines) + "\n")
     write_tables(cfg, rows)
     print("\n".join(lines))
 
@@ -254,7 +261,7 @@ def write_tables(cfg: Dict[str, Any], rows: Dict[str, Dict[str, Any]]) -> None:
     out = ["# Phase 9 photo test, half B, 6 categories", "", hdr, "|" + "---|" * 14]
     keys = list(cfg["models"]) + ["truth"]
     for k in keys:
-        p = root() / "photo_test" / k / "scores.json"
+        p = photo_dir() / k / "scores.json"
         if not p.exists():
             r = rows.get(k, {})
             out.append(f"| {k} | {r.get('family', '')} | skipped: {r.get('reason', '')} |" + " |" * 11)
@@ -268,11 +275,11 @@ def write_tables(cfg: Dict[str, Any], rows: Dict[str, Dict[str, Any]]) -> None:
     out += ["", "## Per category (map F1 at the model's threshold)", "",
             "| Model | " + " | ".join(pl.CATEGORIES) + " |", "|---|" + "---|" * len(pl.CATEGORIES)]
     for k in keys:
-        p = root() / "photo_test" / k / "scores.json"
+        p = photo_dir() / k / "scores.json"
         if p.exists():
             s = json.loads(p.read_text())
             out.append(f"| {k} | " + " | ".join(fmt(s["per_category"][c]["F1"]) for c in pl.CATEGORIES) + " |")
-    (root() / "photo_test" / "table.md").write_text("\n".join(out) + "\n")
+    (photo_dir() / "table.md").write_text("\n".join(out) + "\n")
     ov = ["# OVON photo test (all OVON items, model's 6-category threshold)", "",
           "| Model | F1 all | " + " | ".join(f"{s} F1 (covered/mapped/all)" for s in ("val_seen", "val_seen_synonyms", "val_unseen")) + " |",
           "|---|---|---|---|---|"]
@@ -289,9 +296,9 @@ def write_tables(cfg: Dict[str, Any], rows: Dict[str, Dict[str, Any]]) -> None:
 def cmd_sheets(key: str, seed: int = 20261021) -> None:
     """8 hits, 8 misses (positive items with no kept map hit), 8 false alarms (kept pixel FP on target-free items),
     half B, seeded picks; kept detections outlined in red (points as dots), counted truth instances in yellow."""
-    s = json.loads((root() / "photo_test" / key / "scores.json").read_text())
+    s = json.loads((photo_dir() / key / "scores.json").read_text())
     t = s["threshold"]
-    dets = [ps.Det(**{**d, "hits": tuple(d["hits"])}) for d in json.loads((root() / "photo_test" / key / "labels.json").read_text())]
+    dets = [ps.Det(**{**d, "hits": tuple(d["hits"])}) for d in json.loads((photo_dir() / key / "labels.json").read_text())]
     items = {i["item_id"]: i for i in load_items(model_info(key)["kind"]) if i["set"] == "six" and i["half"] == "B"}
     kept = [d for d in dets if d.item in items and d.score >= t]
     rng = np.random.default_rng(seed)
@@ -300,7 +307,7 @@ def cmd_sheets(key: str, seed: int = 20261021) -> None:
     hit_items = {d.item for d in kept if d.map == "hit"}
     misses = sorted(i for i, it in items.items() if it["status"] == "positive" and i not in hit_items)
     pick = lambda xs: [xs[k] for k in sorted(rng.permutation(len(xs))[:8])] if xs else []
-    raw = detections.load_parts(root() / "photo_test" / key / "raw", detections.FRAME_HW)
+    raw = detections.load_parts(photo_dir() / key / "raw", detections.FRAME_HW)
     fr = root() / "frames"
     frames = {f["frame_id"]: f for f in json.loads((fr / "frames.json").read_text())}
     tabs = tables()

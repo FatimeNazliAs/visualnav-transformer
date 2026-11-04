@@ -402,7 +402,7 @@ def cmd_render(args) -> None:
     for set_name in sorted({p["set"] for p in picks}):
         args.set = set_name
         args.seed_index = 0
-        pv.render_all(args, [(f"{p['name']}__M21b", "M21b", p["episode"]) for p in picks if p["set"] == set_name])
+        pv.render_all(args, [(f"{p['name']}__{args.arm}", args.arm, p["episode"]) for p in picks if p["set"] == set_name])
 
 
 def main() -> None:
@@ -418,6 +418,7 @@ def main() -> None:
     p.add_argument("--shard", default="0/1")
     p.add_argument("--zoom", action="store_true", help="render: add the network's near window beside the storey")
     p.add_argument("--picks", type=Path, help="render: the picks file (default <out>/picks.json)")
+    p.add_argument("--arm", default="M21b", help="render: the arm whose runs are drawn (Phase 14b-2: M21b_w4_d_am)")
     p.add_argument("--out", type=Path, required=True)
     args = p.parse_args()
     {"code-check": cmd_code_check, "counts": cmd_counts, "pick": cmd_pick, "render": cmd_render}[args.cmd](args)

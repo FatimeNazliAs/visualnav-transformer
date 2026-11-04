@@ -41,6 +41,7 @@ NO_WEIGHTS = ("frontier", "vf")  # map-based arms without a network (Phase 13 "v
 TARGETS = ("truth_noisy", "recogniser", "none")
 PICKS = ("sample0", "stick")  # Phase 14a A1
 UNSTUCK = ("none", "w4")  # Phase 14a W4
+MARK_DRIVE = ("none", "amark")  # Phase 14b-2 A-mark: drive to an accepted target cluster (mapmad_sim/amark.py)
 CHOICES_FILE = "P12_DEV_CHOICES.json"  # Phase 12: the dev decisions (headline, deltas, tau), below out_dir
 
 
@@ -72,6 +73,7 @@ class Arm:
     pair: Optional[str] = None  # Phase 12: the checkpoint pair this arm belongs to (v2 | v21), for the headline rule
     pick: str = "sample0"  # Phase 14a: which diffusion sample drives (PICKS)
     unstuck: str = "none"  # Phase 14a: get-unstuck rule (UNSTUCK)
+    mark_drive: str = "none"  # Phase 14b-2: drive to the mark (MARK_DRIVE)
 
     def __post_init__(self) -> None:
         if self.policy not in POLICIES:
@@ -91,7 +93,11 @@ class Arm:
             raise ValueError(f"arm {self.name}: teacher_seen layer|truth, teacher_mode search|explore")
         if self.pick not in PICKS or self.unstuck not in UNSTUCK:
             raise ValueError(f"arm {self.name}: pick {PICKS}, unstuck {UNSTUCK}")
-        if self.policy in NO_WEIGHTS and (self.pick != "sample0" or self.unstuck != "none"):
+        if self.mark_drive not in MARK_DRIVE:
+            raise ValueError(f"arm {self.name}: mark_drive {MARK_DRIVE}")
+        if self.mark_drive != "none" and self.target == "none":
+            raise ValueError(f"arm {self.name}: A-mark needs a target layer")
+        if self.policy in NO_WEIGHTS and (self.pick != "sample0" or self.unstuck != "none" or self.mark_drive != "none"):
             raise ValueError(f"arm {self.name}: the driving switches are for network arms only")
         if "__" in self.name or "." in self.name or "/" in self.name:
             raise ValueError(f"arm {self.name}: no '__', '.' or '/' in an arm name (run ids and file names)")
@@ -112,6 +118,8 @@ class Arm:
             out["pick"] = self.pick
         if self.unstuck != "none":
             out["unstuck"] = self.unstuck
+        if self.mark_drive != "none":
+            out["mark_drive"] = self.mark_drive
         return out
 
     @property

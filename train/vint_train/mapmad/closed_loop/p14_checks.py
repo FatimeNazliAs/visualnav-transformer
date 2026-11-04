@@ -94,7 +94,7 @@ def cmd_same_p13(args) -> None:
 def cmd_det(args) -> None:
     layout = RunLayout.load(args.config)
     plan = P14Plan.from_cfg(layout)
-    a, b = plan.calls("det")
+    a, b = plan.calls(args.stage)[:2]  # Phase 14b-2: stage r4det (its first two calls: det_a, det_b)
     bad, n = [], 0
     for arm in a.arms:
         for e in a.episodes:
@@ -163,6 +163,7 @@ def main(argv: Optional[List[str]] = None) -> None:
     p.add_argument("cmd", choices=["same-p13", "det", "fairness"])
     p.add_argument("--config", type=Path, required=True)
     p.add_argument("--stages", nargs="+", default=["baseline", "drive"])
+    p.add_argument("--stage", default="det", help="det: the stage whose first two calls are the twin runs (14b-2: r4det)")
     args = p.parse_args(argv)
     {"same-p13": cmd_same_p13, "det": cmd_det, "fairness": cmd_fairness}[args.cmd](args)
 
