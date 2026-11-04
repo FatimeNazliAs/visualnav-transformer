@@ -67,3 +67,14 @@ def test_imap_safe_yields_all_and_fails_fast_on_a_dead_worker():
     assert sorted(b.imap_safe(_square_or_die, [1, 2, 4], 2)) == [1, 4, 16]
     with pytest.raises(BrokenProcessPool):
         list(b.imap_safe(_square_or_die, [1, 2, 3, 4], 2))
+
+
+
+def test_precision_diff_ci_pools_over_homes():
+    home_of = {"e1": "h1", "e2": "h1", "e3": "h2", "e4": "h3"}
+    new = {"e1": [1, 2], "e2": [0, 1], "e3": [2, 2], "e4": [1, 3]}  # pooled 4 / 8
+    old = {"e1": [0, 2], "e2": [0, 2], "e3": [1, 2], "e4": [1, 2]}  # pooled 2 / 8
+    point, ci = b.precision_diff_ci(new, old, home_of, 2000, 1)
+    assert point == pytest.approx(0.25)
+    assert ci[0] <= point <= ci[1]
+    assert b.precision_diff_ci(new, new, home_of, 500, 1) == (0.0, [0.0, 0.0])

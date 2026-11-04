@@ -57,6 +57,13 @@ COMPARE = (("f3", "base", "F3"), ("f2", "base", "F2"), ("f1med", "base", "F1-med
            ("f1f2f3c", "f1f2f3", "c_cat on top"))
 CHAIN = {"f3": ["f3"], "f2": ["f2"], "f1med": ["f1med"], "f1clu": ["f1clu"], "f1f2": ["f1f2", "f1f2b"],
          "f1f2f3": ["f1f2", "f1f2b", "f1f2f3"], "f1f2f3c": ["f1f2", "f1f2b", "f1f2f3", "f1f2f3c"]}
+# CHAIN step -> its keep-rule comparison (keep_rule keys)
+STEP_KEY = {"f3": "f3<base", "f2": "f2<base", "f1med": "f1med<base", "f1clu": "f1clu<base", "f1f2": "f1f2<f2",
+            "f1f2b": "f1f2<f1best", "f1f2f3": "f1f2f3<f1f2", "f1f2f3c": "f1f2f3c<f1f2f3"}
+# Part 3 fix-effects table: (fix, row (None = the best combination), the row it is compared with)
+EFFECTS = (("F1-med", "f1med", "base"), ("F1-clu", "f1clu", "base"), ("F2", "f2", "base"), ("F3", "f3", "base"),
+           ("c_cat", "f1f2f3c", "f1f2f3"), ("best combination", None, "base"))
+COMBOS = ("f1f2", "f1f2f3", "f1f2f3c")
 KEYS = all_keys()
 KEY_INDEX = {k: i for i, k in enumerate(KEYS)}
 
@@ -560,18 +567,106 @@ def episode_means_b(merged: Merged, sel: Sel) -> Dict[str, float]:
     return {e: float(np.mean(v)) for e, v in acc.items()}
 
 
+def stop_counts_b(merged: Merged, sel: Sel) -> Dict[str, List[float]]:
+    """episode -> [correct stops, stops] summed over the arms on half B (the parts of the pooled STOP precision)."""
+    acc: Dict[str, List[float]] = defaultdict(lambda: [0.0, 0.0])
+    for a in merged.arms:
+        d = merged.data[a]
+        m = merged.mask(a, "B")
+        stops = merged.select(a, sel, "step", "B") >= 0
+        good = merged.select(a, sel, "success", "B").astype(bool) & stops
+        for e, s, g in zip(d["episode"][m], stops, good):
+            acc[str(e)][0] += float(g)
+            acc[str(e)][1] += float(s)
+    return dict(acc)
+
+
+def precision_diff_ci(ca: Dict[str, List[float]], cb: Dict[str, List[float]], home_of: Dict[str, str], draws: int,
+                      seed: int) -> Tuple[Optional[float], Optional[List[float]]]:
+    """Pooled STOP precision of a minus that of b (episodes both have) and its home-clustered bootstrap 95 % CI: the
+    homes are drawn with replacement, the same draw for a and b, and each draw recomputes both pooled ratios."""
+    ids = sorted(set(ca) & set(cb))
+    homes = sorted({home_of[i] for i in ids})
+    hk = {h: k for k, h in enumerate(homes)}
+    pa, pb = np.zeros((len(homes), 2)), np.zeros((len(homes), 2))
+    for i in ids:
+        pa[hk[home_of[i]]] += ca[i]
+        pb[hk[home_of[i]]] += cb[i]
+
+    def diff(sa: np.ndarray, sb: np.ndarray) -> np.ndarray:
+        with np.errstate(divide="ignore", invalid="ignore"):
+            return sa[..., 0] / sa[..., 1] - sb[..., 0] / sb[..., 1]
+    point = float(diff(pa.sum(0), pb.sum(0)))
+    if not np.isfinite(point):
+        return None, None
+    pick_h = np.random.default_rng(seed).integers(0, len(homes), size=(draws, len(homes)))
+    d = diff(pa[pick_h].sum(1), pb[pick_h].sum(1))
+    d = d[np.isfinite(d)]
+    return point, [float(np.percentile(d, 2.5)), float(np.percentile(d, 97.5))]
+
+
+def passes_keep(keep_fam: Dict[str, Any], row: str) -> bool:
+    """A row passes the keep rule when every fix it adds 'helps' (CHAIN); base passes."""
+    return row == "base" or all(keep_fam[STEP_KEY[c]]["helps"] for c in CHAIN[row])
+
+
+def fix_effects(merged: Merged, rows: Dict[str, Dict[str, Sel]], summ: Dict[str, Dict[str, Any]], keep: Dict[str, Any],
+                home_of: Dict[str, str], boot: Dict[str, int]) -> Dict[str, Any]:
+    """Per family and fix (EFFECTS): half-B change in mean rule-stop success and in pooled STOP precision vs the row
+    without it, each with a home-clustered 95 % CI, and the keep-rule verdict. The best combination is the combination
+    row (COMBOS) with the highest half-A mean success (ties -> fewer fixes), compared with base."""
+    from vint_train.mapmad.closed_loop.exam_stats import paired
+
+    out: Dict[str, Any] = {}
+    for fam in FAMILIES:
+        combo = max(COMBOS, key=lambda r: (round(summ[fam][r]["mean"]["A"]["success"], 12), -COMBOS.index(r)))
+        res = []
+        for fix, row, prev in EFFECTS:
+            row = row or combo
+            a, b = summ[fam][row]["mean"]["B"], summ[fam][prev]["mean"]["B"]
+            d = paired(episode_means_b(merged, rows[fam][row]), episode_means_b(merged, rows[fam][prev]), home_of,
+                       boot["draws"], boot["seed"])
+            pd, pci = precision_diff_ci(stop_counts_b(merged, rows[fam][row]), stop_counts_b(merged, rows[fam][prev]),
+                                        home_of, boot["draws"], boot["seed"])
+            verdict = keep[fam][STEP_KEY["f1f2f3c"]]["helps"] if fix == "c_cat" else passes_keep(keep[fam], row)
+            res.append({"fix": fix, "row": row, "vs": prev, "success_B": [a["success"], b["success"]],
+                        "success_diff_B": a["success"] - b["success"], "success_ci_B": d.get("home_ci"),
+                        "precision_B": [a["precision_pooled"], b["precision_pooled"]], "precision_diff_B": pd,
+                        "precision_ci_B": pci, "stops_B": [a["stops"], b["stops"]], "passes_keep": bool(verdict)})
+        out[fam] = {"best_combination": combo, "rows": res}
+    return out
+
+
+def fix_effects_md(eff: Dict[str, Any]) -> List[str]:
+    """tables/fix_effects.md: one plain table, half B, mean over the 5 arms."""
+    sg = lambda x: "-" if x is None else f"{x:+.3f}"  # noqa: E731
+    ci = lambda c: "-" if not c else f"[{c[0]:+.3f}, {c[1]:+.3f}]"  # noqa: E731
+    lines = ["# Effect of each fix on half B (mean over the 5 arms; picks on half A)", "",
+             "Correct stops = rule-stop success (share of episodes where the stop module stops at the target). STOP "
+             "precision = correct stops / all stops, pooled over the 5 arms. CIs: home-clustered bootstrap, 10,000 "
+             "draws, seed 14401. Keep rule: success +0.02 or more and precision not lower (a combination needs every "
+             "step). c_cat is compared with F1(best)+F2+F3; the others with base (14a marks, key re-picked).", "",
+             "| rule | fix | row (vs) | correct stops B new / old | change [CI] | STOP precision B new / old | change [CI] "
+             "| stops new / old | keep rule |", "|---|---|---|---|---|---|---|---|---|"]
+    for fam in FAMILIES:
+        for r in eff[fam]["rows"]:
+            fix = r["fix"] + (f" ({ROW_NAME[r['row']]})" if r["fix"] == "best combination" else "")
+            lines.append(f"| {FAMILY_NAME[fam]} | {fix} | `{r['row']}` (vs `{r['vs']}`) | {fmt(r['success_B'][0])} / "
+                         f"{fmt(r['success_B'][1])} | {sg(r['success_diff_B'])} {ci(r['success_ci_B'])} | "
+                         f"{fmt(r['precision_B'][0])} / {fmt(r['precision_B'][1])} | {sg(r['precision_diff_B'])} "
+                         f"{ci(r['precision_ci_B'])} | {r['stops_B'][0]} / {r['stops_B'][1]} | "
+                         f"{'pass' if r['passes_keep'] else 'fail'} |")
+    return lines
+
+
 def recommend(keep: Dict[str, Any], summ: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
     """Per family: the row with the highest half-B mean success among rows whose every added fix 'helps' (CHAIN; the
     F1 step of a combination = F1 on top of F2 and F2 on top of F1); none -> base. Overall: the best family's."""
     out = {}
     for fam in FAMILIES:
         ok = {"base": True}
-        k = keep[fam]
-        helps = {"f3": k["f3<base"]["helps"], "f2": k["f2<base"]["helps"], "f1med": k["f1med<base"]["helps"],
-                 "f1clu": k["f1clu<base"]["helps"], "f1f2": k["f1f2<f2"]["helps"], "f1f2b": k["f1f2<f1best"]["helps"],
-                 "f1f2f3": k["f1f2f3<f1f2"]["helps"], "f1f2f3c": k["f1f2f3c<f1f2f3"]["helps"]}
-        for row, chain in CHAIN.items():
-            ok[row] = all(helps[c] for c in chain)
+        for row in CHAIN:
+            ok[row] = passes_keep(keep[fam], row)
         cand = [r for r in ok if ok[r]]
         best = max(cand, key=lambda r: (round(summ[fam][r]["mean"]["B"]["success"], 12), -ROWS.index(r) if r in ROWS else 0))
         out[fam] = {"row": best, "eligible": cand, "success_B": summ[fam][best]["mean"]["B"]["success"]}
@@ -625,13 +720,16 @@ def cmd_final(args) -> None:
     summ = {f: {r: summary_of(merged, s) for r, s in rr.items()} for f, rr in rows.items()}
     keep = keep_rule(merged, rows, summ, home_of, float(cfg["keep_gain"]), cfg["bootstrap"])
     rec = recommend(keep, summ)
+    eff = fix_effects(merged, rows, summ, keep, home_of, cfg["bootstrap"])
     truth = truth_ceiling(bench, rows, spec) if any(v.startswith("true|") for v in bench.variants) else None
     par = {a: [int(bench.data[a]["parity"][:, 0].sum()), int(bench.data[a]["parity"][:, 1].sum())] for a in args.arms}
     res = {"temperature": temperature(out), "f1best": f1best, "ccat_done": bench_c is not None, "parity14a": par,
            "rows": {f: {r: summ[f][r] for r in rows[f]} for f in FAMILIES}, "keep": keep, "recommended": rec,
+           "fix_effects": eff,
            "truth": truth, "arms": list(args.arms), "practice_fingerprint": pr["fingerprint"]}
     write_text_atomic(out / "stopbench" / "RESULTS.json", json.dumps(res, indent=1) + "\n")
     write_text_atomic(out / "stopbench" / "stopbench.md", "\n".join(results_md(res, merged, rows)) + "\n")
+    write_text_atomic(out / "tables" / "fix_effects.md", "\n".join(fix_effects_md(eff)) + "\n")
     if truth:
         write_text_atomic(out / "stopbench_truth" / "truth.md", "\n".join(truth_md(res)) + "\n")
     print("\n".join(results_md(res, merged, rows)[:40]), flush=True)
