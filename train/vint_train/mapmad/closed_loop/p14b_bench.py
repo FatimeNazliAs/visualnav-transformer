@@ -25,9 +25,9 @@ import hashlib
 import json
 import math
 from collections import defaultdict
-from multiprocessing import Pool
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, Iterator, List, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -280,15 +280,25 @@ def score_jobs(runs: RunLayout, out: Path, arms: Sequence[str], variants: Sequen
     return jobs
 
 
+def imap_safe(fn: Callable[[Any], Any], jobs: Sequence[Any], workers: int) -> Iterator[Any]:
+    """Run fn over jobs on `workers` processes and yield the results as they finish (any order).
+
+    Unlike multiprocessing.Pool, a worker that dies (killed, segfault) raises BrokenProcessPool here instead of
+    leaving the caller waiting forever for its job (Phase 14b-1 chain: one dead worker hung the bench 4 h).
+    """
+    with ProcessPoolExecutor(max_workers=workers) as ex:
+        for fut in as_completed([ex.submit(fn, j) for j in jobs]):
+            yield fut.result()
+
+
 def run_pool(jobs: List[Tuple], workers: int) -> None:
     print(f"scoring {len(jobs)} runs on {workers} workers", flush=True)
     errors = []
-    with Pool(workers) as pool:
-        for k, (o, err) in enumerate(pool.imap_unordered(_score_one, jobs, chunksize=1)):
-            if err:
-                errors.append((o, err))
-            if (k + 1) % 50 == 0:
-                print(f"{k + 1}/{len(jobs)}", flush=True)
+    for k, (o, err) in enumerate(imap_safe(_score_one, jobs, workers)):
+        if err:
+            errors.append((o, err))
+        if (k + 1) % 50 == 0:
+            print(f"{k + 1}/{len(jobs)}", flush=True)
     if errors:
         raise SystemExit(f"{len(errors)} runs failed: {errors[:2]}")
 
@@ -764,16 +774,15 @@ def cmd_marks(args) -> None:
             jobs.append((str(runs.root / "evidence" / arm / f"{rid}.npz"), str(f), eps[parse_run_id(rid)[0]], names, arm))
     acc: Dict[str, Dict[str, Any]] = defaultdict(lambda: {"dist": [], "far90": [], "smear": [], "area": [], "rows": 0,
                                                           "empty": 0})
-    with Pool(args.workers) as pool:
-        for _, r in pool.imap_unordered(marks_run, jobs, chunksize=2):
-            for k, v in r.items():
-                if k == "arm":
-                    continue
-                a = acc[k]
-                for f in ("dist", "far90", "smear", "area"):
-                    a[f] += v[f]
-                a["rows"] += v["rows"]
-                a["empty"] += v["empty"]
+    for _, r in imap_safe(marks_run, jobs, args.workers):
+        for k, v in r.items():
+            if k == "arm":
+                continue
+            a = acc[k]
+            for f in ("dist", "far90", "smear", "area"):
+                a[f] += v[f]
+            a["rows"] += v["rows"]
+            a["empty"] += v["empty"]
     q = lambda xs, p: float(np.percentile(xs, p)) if xs else float("nan")  # noqa: E731
     res = {k: {"rows": v["rows"], "empty": v["empty"], "dist_p50": q(v["dist"], 50), "dist_p90": q(v["dist"], 90),
                "far90_p50": q(v["far90"], 50), "far90_p90": q(v["far90"], 90),

@@ -51,3 +51,19 @@ def test_ece_zero_for_calibrated_bins():
     p = np.array([0.15] * 20 + [0.85] * 20)
     y = np.array([1] * 3 + [0] * 17 + [1] * 17 + [0] * 3)
     assert b.ece(p, y) == pytest.approx(0.0)
+
+
+def _square_or_die(x: int) -> int:
+    import os
+
+    if x == 3:
+        os._exit(9)  # a worker dying mid-task (as in the 14b-1 chain)
+    return x * x
+
+
+def test_imap_safe_yields_all_and_fails_fast_on_a_dead_worker():
+    from concurrent.futures.process import BrokenProcessPool
+
+    assert sorted(b.imap_safe(_square_or_die, [1, 2, 4], 2)) == [1, 4, 16]
+    with pytest.raises(BrokenProcessPool):
+        list(b.imap_safe(_square_or_die, [1, 2, 3, 4], 2))
