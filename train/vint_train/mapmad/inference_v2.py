@@ -50,8 +50,10 @@ class MapMaDV2Inference:
         return transform_images([PILImage.fromarray(a) for a in arrays], self.image_size, center_crop=False).to(self.device)
 
     def encoder_inputs(self, frames: Sequence[np.ndarray], near: np.ndarray, far: np.ndarray, near_shown: bool,
-                       far_shown: bool, goal_image: Optional[np.ndarray]) -> Dict[str, torch.Tensor]:
-        """The vision encoder's keyword inputs for one step (batch of 1)."""
+                       far_shown: bool, goal_image: Optional[np.ndarray],
+                       past: Optional[np.ndarray] = None) -> Dict[str, torch.Tensor]:
+        """The vision encoder's keyword inputs for one step (batch of 1). past (Phase 14b-3, v3): the last n moves
+        (n, 3) shown as the past-move token; None = no token (v2's inputs exactly)."""
         if len(frames) != self.cfg["context_size"] + 1:
             raise ValueError(f"need {self.cfg['context_size'] + 1} frames, got {len(frames)}")
         maps = np.zeros((2, 4, 64, 64), dtype=np.float32)
@@ -60,7 +62,10 @@ class MapMaDV2Inference:
         if far_shown:
             maps[1] = far
         photo = goal_image is not None
-        return {"obs_img": self._pictures(frames),
+        extra = {} if past is None else {
+            "past_move": torch.as_tensor(np.asarray(past, np.float32))[None].to(self.device),
+            "input_past_mask": torch.zeros((1,), dtype=torch.long, device=self.device)}
+        return {**extra, "obs_img": self._pictures(frames),
                 "goal_img": self._pictures([goal_image if photo else frames[-1]]),
                 "input_goal_mask": torch.full((1,), 0 if photo else 1, dtype=torch.long, device=self.device),
                 "map_img": torch.from_numpy(maps)[None].to(self.device),

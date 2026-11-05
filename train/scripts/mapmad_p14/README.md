@@ -70,3 +70,31 @@ recogniser side `mapmad_recog/finetune.py` (prep, train, models) and the fixed-v
 `vint_train.mapmad.closed_loop.p14b2_tables` (photo, r3, r4, extras, plain, off, gate), `p14b_bench --det`, `p14_checks det
 --stage r4det`. Launch (after `nvidia-smi`): `bash train/scripts/mapmad_p14/launch_p14b2.sh`. DRY: see the header of
 `run_p14b2_chain.sh`.
+
+## Phase 14b-3 — retrain MapMaD v3 + final exam B
+
+V1 DAgger round 2 (v2.1b drives the Phase 11 start set minus the 10 photo-test homes, maps shown then hidden, with the
+fine-tuned YOLOE marks, W4 / A-mark off; Phase 11 labels + W1 recovery labels in stuck states), V2 one fine-tune ->
+MapMaD v3 (round-2 data, reverse-capable recovery waypoints, past-move token + auxiliary head; `ema_9` fixed), G10
+rows + recovery-label loss, V3 practice check (v3 vs the 14b-2 "both" cell), V4 exam B (second use, pipeline P* for
+every arm, pre-set run order with the budget cut), V5 tables, videos, draft gate. Rules:
+`/outputs/mapmad/p14b3_v3/p14b3_rules.md` (+ `.sha256`, copy in `mapmad/configs/p14b3_rules.md`); configs
+`mapmad/configs/p14b3_v3.yaml`, `p14b3_rollout_{map,hidden}.yaml`, `train/config/mapmad_v3.yaml` (DRY: `p14b3_dry*.yaml`,
+`mapmad_v3_dry.yaml`). Outputs: `/mnt/shared_disk/nazli/nomad_outputs/mapmad/p14b3_v3/` (`STATUS.md`,
+`phase14b3_log.md`, `rollouts_r2/{set,map,hidden}`, `labels/`, `launch/`, `runs/v3_s1_*/`, `V3.json`, `offline/v3/`,
+`runs/{practice,examb}`, `checks/`, `tables/`, `videos/`, `G14b3_table_draft.md`, `driver/`); round-2 drives in
+`<mapmad_data>/habitat_mapmad_v3_dagger_r2{map,hidden}`.
+
+| Script | What it does |
+|---|---|
+| `launch_p14b3.sh [dry]` | starts screens `p14b3_chain` + `p14b3_chain_watch` and `p14b3_gpuwatch` if not running |
+| `run_p14b3_chain.sh` | the chain (header: pre-flight, V1 rollouts + labels + contamination, data index, restart + fine-tune + offline checks (+ the W1-turn fallback), determinism + Phase 13 / 14b-2 reproductions, V3 practice (+ the oscillation fallback), V4 exam B with the budget cut, fairness, rules sha256, videos, tables, draft gate) |
+| `p14_lib.sh` | shared; `CL_UNIT_DIV=1` makes `closed_loop` count GPU-hours as wall time x GPUs (one unit) |
+| `p14_plan.py` | picks `run_plan_p14b3.P14b3Plan` for `p14b3_*` configs (stages practice, det, off, examb) |
+| `p14_status.py` | `CL_SEEDS` counts only runs of those seed indices (exam calls per seed share `runs/examb`) |
+
+Tools: Habitat side `mapmad/scripts/make_p14b3_sets.py` (round-2 set, contamination), `p14b3_preflight.py`,
+`mapmad_sim/recovery_labels.py` (W1), `mapmad_sim/run_plan_p14b3.py`, `arm_table.Arm.reverse`; NoMaD side
+`vint_train/mapmad/past_moves.py` (B1), `v3_offline.py` (recovery-label loss, past-move error),
+`closed_loop/p14b3_checks.py`, `closed_loop/p14b3_tables.py`, `closed_loop/deployment.ReverseSpec`.
+Launch (after `nvidia-smi`): `bash train/scripts/mapmad_p14/launch_p14b3.sh`. DRY: see the header of `launch_p14b3.sh`.

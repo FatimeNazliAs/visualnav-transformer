@@ -42,6 +42,7 @@ TARGETS = ("truth_noisy", "recogniser", "none")
 PICKS = ("sample0", "stick")  # Phase 14a A1
 UNSTUCK = ("none", "w4")  # Phase 14a W4
 MARK_DRIVE = ("none", "amark")  # Phase 14b-2 A-mark: drive to an accepted target cluster (mapmad_sim/amark.py)
+REVERSE = ("none", "behind")  # Phase 14b-3: "behind" = drive backward to a waypoint behind the robot (|bearing| > 150 deg)
 CHOICES_FILE = "P12_DEV_CHOICES.json"  # Phase 12: the dev decisions (headline, deltas, tau), below out_dir
 
 
@@ -74,6 +75,7 @@ class Arm:
     pick: str = "sample0"  # Phase 14a: which diffusion sample drives (PICKS)
     unstuck: str = "none"  # Phase 14a: get-unstuck rule (UNSTUCK)
     mark_drive: str = "none"  # Phase 14b-2: drive to the mark (MARK_DRIVE)
+    reverse: str = "none"  # Phase 14b-3: reverse execution of behind-waypoints (REVERSE; v3's controller)
 
     def __post_init__(self) -> None:
         if self.policy not in POLICIES:
@@ -97,7 +99,10 @@ class Arm:
             raise ValueError(f"arm {self.name}: mark_drive {MARK_DRIVE}")
         if self.mark_drive != "none" and self.target == "none":
             raise ValueError(f"arm {self.name}: A-mark needs a target layer")
-        if self.policy in NO_WEIGHTS and (self.pick != "sample0" or self.unstuck != "none" or self.mark_drive != "none"):
+        if self.reverse not in REVERSE:
+            raise ValueError(f"arm {self.name}: reverse {REVERSE}")
+        if self.policy in NO_WEIGHTS and (self.pick != "sample0" or self.unstuck != "none" or self.mark_drive != "none"
+                                          or self.reverse != "none"):
             raise ValueError(f"arm {self.name}: the driving switches are for network arms only")
         if "__" in self.name or "." in self.name or "/" in self.name:
             raise ValueError(f"arm {self.name}: no '__', '.' or '/' in an arm name (run ids and file names)")
@@ -120,6 +125,8 @@ class Arm:
             out["unstuck"] = self.unstuck
         if self.mark_drive != "none":
             out["mark_drive"] = self.mark_drive
+        if self.reverse != "none":
+            out["reverse"] = self.reverse
         return out
 
     @property

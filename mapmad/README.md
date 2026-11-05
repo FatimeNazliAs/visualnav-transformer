@@ -467,3 +467,14 @@ The unattended chain: `train/scripts/mapmad_p12/` (README there).
 - `scripts/make_p14_sets.py` (p14d + practice halves), `p14_qwen_check.py` (Qwen3-VL yes/no/unsure on Rule 2's
   stops; recogniser server command `ask`), `p14_diagnosis.py`, `p14_videos.py` (mark-check videos + counts; `render --zoom` adds the network's near window beside the storey map, with each step's YOLOE raw scores and the mark strength on each box's cells).
 - Tests: `tests/test_p14.py`. Chain: `train/scripts/mapmad_p14/` (README there).
+
+## Phase 14b-3 — DAgger round 2, MapMaD v3, final exam B (rules /outputs/mapmad/p14b3_v3/p14b3_rules.md)
+- `scripts/make_p14b3_sets.py rollout` freezes the round-2 start set (Phase 11's set minus the 10 photo-test homes);
+  `contamination` checks rollout homes, round-2 drives and training split lists against the frozen photo-test / HM3D
+  val / MP3D lists. `scripts/p14b3_preflight.py`: checkpoint sha256s + set fingerprints of the rules file.
+- `src/mapmad_sim/recovery_labels.py`: W1 recovery labels (stuck by W4's rule on the record -> back up 0.25 m, turn
+  to the teacher's path or the most open direction, then ahead), used by `dagger_labels.label_drive` when
+  `rollouts.recovery` is set (`p11_labels.py` passes it; labels.npz gains `recovery`, `stuck`, `recovery_mode`).
+- `arm_table.Arm.reverse` ("behind": v3's reverse controller), `run_plan_p14b3.py` (practice, det, off, exam B in the
+  pre-set order, one call per seed).
+- Tests: `tests/test_p14b3.py`.

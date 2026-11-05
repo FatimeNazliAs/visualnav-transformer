@@ -66,6 +66,13 @@ class FloorMapMismatch(RuntimeError):
     """The episode was built on another floor map."""
 
 
+
+def pose2d(state: Dict[str, Any]) -> Tuple[float, float, float]:
+    """Phase 14b-3: the robot's pose in NoMaD's 2D frame (X = -z, Y = -x, yaw unchanged; mapmad_sim/frames.py), as
+    traj_data.pkl stores it -- the past-move token's input (past_moves.py)."""
+    p = state["position"]
+    return -float(p[2]), -float(p[0]), float(state["yaw"])
+
 def reached(value: Optional[float], limit: float) -> bool:
     return value is not None and value <= limit
 
@@ -130,6 +137,7 @@ def run_search_episode(sim, policy: Policy, episode: Dict[str, Any], arm: str, r
         if exam and rec_ms is not None:
             rec_ms.append(float(extras["timing"]["rec_ms"]))
         rule_stop_step = None
+        poses = [pose2d(state)] if getattr(policy, "wants_poses", False) else None  # Phase 14b-3: v3's past moves
         while not (success and run.stop_at_success) and rule_stop_step is None and step < run.max_steps:
             t0 = time.perf_counter()
             manoeuvre = unstuck.command(step, extras) if unstuck is not None else None
@@ -148,12 +156,15 @@ def run_search_episode(sim, policy: Policy, episode: Dict[str, Any], arm: str, r
                     picker.reset()
                 frame = sim.step(cmd.v, cmd.w)
             else:
-                cmd = policy.act(Observation(frames=list(frames), goal_image=None, step=step, extras=extras))
+                pol_extras = dict(extras, pose_history=poses) if poses is not None else extras
+                cmd = policy.act(Observation(frames=list(frames), goal_image=None, step=step, extras=pol_extras))
                 policy_ms.append((time.perf_counter() - t0) * 1000.0)
-                frame = sim.step(cmd.v, cmd.w)
+                frame = sim.step(cmd.v, cmd.w, reverse=True) if cmd.info.get("reverse") else sim.step(cmd.v, cmd.w)
             step += 1
             frames.append(frame.rgb)
             extras, state, move = frame.extras, frame.state, frame.move
+            if poses is not None:
+                poses.append(pose2d(state))
             path_m += move["travelled_m"]
             if unstuck is not None:
                 unstuck.observe(step, move["collided"], (state["position"][0], state["position"][2]))

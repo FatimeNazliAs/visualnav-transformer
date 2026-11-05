@@ -42,11 +42,15 @@ def save(path: str, state: Dict) -> None:
 
 
 def count_arm(p13: str, subdir: str, arm: str) -> Tuple[int, int]:
-    """(done, crashed) runs of the arm whose episode id starts with $CL_EP_PREFIX (Phase 14a: p13d- / p14d-)."""
+    """(done, crashed) runs of the arm whose episode id starts with $CL_EP_PREFIX (Phase 14a: p13d- / p14d-) and, with
+    $CL_SEEDS (Phase 14b-3), whose seed index is one of those."""
     d = os.path.join(p13, subdir, "summaries", arm)
     if not os.path.isdir(d):
         return 0, 0
     names = [n for n in os.listdir(d) if n.startswith(os.environ.get("CL_EP_PREFIX", ""))]
+    seeds = os.environ.get("CL_SEEDS", "").split()  # Phase 14b-3: exam B calls per seed index share runs/examb
+    if seeds:
+        names = [n for n in names if "__s" in n and n.split(".", 1)[0].rsplit("__s", 1)[1] in seeds]
     crashed = sum(n.endswith(".crash.json") for n in names)
     return sum(n.endswith(".json") and not n.endswith(".crash.json") for n in names), crashed
 

@@ -20,6 +20,9 @@ Per frame t of a drive (Phase 8 drive format; a student rollout or, for the labe
 4. no label (`reason`): collision (the move after frame t is inside a run of >= collision_skip consecutive collision
    steps; such states are excluded like Phase 8's collision drives) or teacher_fail (no_frontier, blacklist_exhausted,
    no_path). A state that is both counts as collision when LabelSpec.collision_first (else as teacher_fail).
+5. Phase 14b-3 (LabelSpec.recovery set): a STUCK state (W4's rule on the record) gets a W1 recovery label instead
+   (back up, turn toward the teacher's path or the most open direction; recovery_labels.py) -- before the collision
+   and teacher-fail skips; labels.npz then also holds `recovery` and `stuck` per frame.
 `label_drive` returns per-frame arrays (labels.npz); `label_check` compares look-ahead labels on teacher drives with
 the teacher's real future poses at the same frames.
 """
@@ -57,6 +60,7 @@ class LabelSpec:
     face_tolerance_deg: float = 15.0
     replan: bool = True  # look-ahead variant (module docstring, step 3)
     collision_first: bool = True  # a state that is both: skipped as collision (step 4)
+    recovery: Optional[Any] = None  # Phase 14b-3 W1: recovery_labels.RecoverySpec (None = Phase 11 labels exactly)
 
 
 def frozen_blacklist(spec: TeacherSpec) -> TeacherSpec:
@@ -225,12 +229,23 @@ def label_drive(folder: Path, teacher: TeacherSpec, pursuit: PursuitSpec, spec: 
     plen = np.full(n, np.nan, dtype=np.float32)
     new_choice = np.zeros(n, dtype=bool)
     coll = collision_frames(np.asarray(drive["frames"]["collided"], bool), spec.collision_skip)
+    rec = np.zeros(n, dtype=bool)
+    stuck = None
+    if spec.recovery is not None:  # Phase 14b-3 W1: stuck states get a recovery label (recovery_labels.py)
+        from mapmad_sim.recovery_labels import recovery_poses, stuck_frames
+
+        stuck = stuck_frames(np.asarray(drive["frames"]["collided"], bool), drive["traj"]["position"], spec.recovery)
     for t, pose, dec, seen, own, state in teacher_states(drive, tspec):
         mode[t] = MODES.index(dec.mode)
         if dec.goal is not None:
             goal[t] = dec.goal
         plen[t] = dec.path_length_m
         new_choice[t] = dec.new_choice
+        if stuck is not None and stuck[t]:
+            usable = dec if dec.mode not in TEACHER_FAILS else None
+            wp[t] = waypoints_of(recovery_poses(pose, usable, own, spec.recovery, spec.steps), spec.every)
+            rec[t] = True
+            continue
         if coll[t] and spec.collision_first:
             reason[t] = REASONS.index("collision")
             continue
@@ -247,7 +262,9 @@ def label_drive(folder: Path, teacher: TeacherSpec, pursuit: PursuitSpec, spec: 
             "teacher_mode": mode, "teacher_mode_names": np.asarray(MODES), "goal_xy": goal, "path_length_m": plen,
             "new_choice": new_choice, "frozen_blacklist": np.asarray(freeze_blacklist),
             "label_steps": np.asarray(spec.steps), "label_every": np.asarray(spec.every),
-            "replan": np.asarray(spec.replan), "collision_first": np.asarray(spec.collision_first)}
+            "replan": np.asarray(spec.replan), "collision_first": np.asarray(spec.collision_first),
+            **({"recovery": rec, "stuck": stuck, "recovery_mode": np.asarray(spec.recovery.mode)}
+               if spec.recovery is not None else {})}
 
 
 def label_check_drive(folder: Path, teacher: TeacherSpec, pursuit: PursuitSpec, spec: LabelSpec) -> Dict[str, Any]:

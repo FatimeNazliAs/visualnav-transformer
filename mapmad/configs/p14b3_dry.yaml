@@ -1,0 +1,8 @@
+# Phase 14b-3 DRY chain (never results): p14b3_v3.yaml with its own output folder.
+extends: p14b3_v3.yaml
+out_dir: p14b3_dry/chain
+sets:                                 # out_dir is one folder deeper than p14b3_v3: the relative set paths gain ../
+  p13d: {folder: ../../p13_claim/dev_set}
+  p14d: {folder: ../../p14a_finish/sets/p14d}
+  practice: {file: ../../p14a_finish/sets/practice.json}
+  examb: {folder: ../../p13_claim/examb_set}

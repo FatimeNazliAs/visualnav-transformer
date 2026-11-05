@@ -64,17 +64,30 @@ def normalized_deltas(actions: torch.Tensor, device: torch.device) -> torch.Tens
 
 
 def encode(model: nn.Module, batch: Dict[str, torch.Tensor]) -> torch.Tensor:
+    past = {"past_move": batch["past"], "input_past_mask": batch["past_mask"]} if "past" in batch else {}
     return model("vision_encoder", obs_img=batch["obs"], goal_img=batch["goal"], input_goal_mask=batch["goal_mask"],
-                 map_img=batch["map"], input_map_mask=batch["map_mask"])
+                 map_img=batch["map"], input_map_mask=batch["map_mask"], **past)
 
 
 def to_batch(data, transform, device: torch.device) -> Dict[str, torch.Tensor]:
-    """MapMaDDataset tuple -> dict of device tensors; images ImageNet-normalised like train_nomad."""
-    obs_image, goal_image, actions, distance, _goal_pos, _ds, action_mask, map_img, goal_mask, map_mask, mode = data
+    """MapMaDDataset tuple -> dict of device tensors; images ImageNet-normalised like train_nomad. Phase 14b-3 (v3):
+    three more fields (past moves, past mask, past valid; dataset_v2.past_part)."""
+    obs_image, goal_image, actions, distance, _goal_pos, _ds, action_mask, map_img, goal_mask, map_mask, mode = data[:11]
     obs = torch.cat([transform(o) for o in torch.split(obs_image, 3, dim=1)], dim=1).to(device)
-    return {"obs": obs, "goal": transform(goal_image).to(device), "actions": actions,
-            "distance": distance.float().to(device), "action_mask": action_mask.to(device), "map": map_img.to(device),
-            "goal_mask": goal_mask.long().to(device), "map_mask": map_mask.long().to(device), "mode": mode.to(device)}
+    out = {"obs": obs, "goal": transform(goal_image).to(device), "actions": actions,
+           "distance": distance.float().to(device), "action_mask": action_mask.to(device), "map": map_img.to(device),
+           "goal_mask": goal_mask.long().to(device), "map_mask": map_mask.long().to(device), "mode": mode.to(device)}
+    if len(data) > 11:
+        out.update(past=data[11].float().to(device), past_mask=data[12].long().to(device),
+                   past_valid=data[13].float().to(device))
+    return out
+
+
+def past_aux_loss(model: nn.Module, cond: torch.Tensor, b: Dict[str, torch.Tensor]) -> torch.Tensor:
+    """Phase 14b-3 (v3): MSE of the auxiliary head's past moves on the samples with a true past (past_moves.py)."""
+    from vint_train.mapmad.past_moves import past_loss
+
+    return past_loss(unwrap(model).vision_encoder.predict_past(cond), b["past"], b["past_valid"])
 
 
 class ModeMeter:
@@ -147,12 +160,13 @@ def train_mapmad_epoch(model, ema_model, optimizer, loader, transform, device, n
                        alpha: float, print_log_freq: int, wandb_log_freq: int, use_wandb: bool,
                        max_steps: Optional[int] = None,
                        lr_hook: Optional[Callable[[int, int], Dict[str, float]]] = None,
-                       step_log: Optional[StepLog] = None, accum: int = 1) -> Dict[str, Any]:
+                       step_log: Optional[StepLog] = None, accum: int = 1, past_lambda: float = 0.0) -> Dict[str, Any]:
     """One epoch; returns mean losses, per-mode diffusion losses and step timing.
     lr_hook(epoch, step) sets the lr before each optimizer step; step_log writes the per-N-steps records.
     accum > 1 (Phase 10 memory fallback, `grad_accum_steps`): one optimizer step per `accum` loader batches, each
     batch's loss divided by accum (the epoch's last step may hold fewer batches); `steps` counts optimizer steps,
-    the loss means are per loader batch. accum = 1 is the Phase 3/4 loop exactly."""
+    the loss means are per loader batch. accum = 1 is the Phase 3/4 loop exactly. past_lambda > 0 (Phase 14b-3, v3):
+    + past_lambda x the past-move prediction loss (logged as past_loss); 0 = the loop exactly as before."""
     model.train()
     meter, totals = ModeMeter(), defaultdict(float)
     wait_s, step_s, steps, batches = [], [], 0, 0
@@ -176,6 +190,10 @@ def train_mapmad_epoch(model, ema_model, optimizer, loader, transform, device, n
         am = b["action_mask"]
         diffusion_loss = (per_sample * am).mean() / (am.mean() + 1e-2)
         loss = alpha * dist_loss + (1 - alpha) * diffusion_loss
+        if past_lambda:  # Phase 14b-3 (v3): past-move prediction
+            aux = past_aux_loss(model, cond, b)
+            loss = loss + past_lambda * aux
+            totals["past_loss"] += float(aux)
         loss_cpu = loss.item()
         if not math.isfinite(loss_cpu):
             raise RuntimeError(f"Training diverged: non-finite loss ({loss_cpu}) at epoch {epoch}, step {steps}")
@@ -235,6 +253,7 @@ def evaluate_mapmad(ema_net: nn.Module, loader, transform, device, noise_schedul
     """Per-mode diffusion (noise-prediction) loss of the EMA model, fixed noise + timesteps per batch."""
     ema_net.eval()
     meter = ModeMeter()
+    past_num, past_den = 0.0, 0.0
     for bi, data in enumerate(loader):
         b = to_batch(data, transform, device)
         g = torch.Generator(device="cpu").manual_seed(seed + bi)
@@ -245,7 +264,14 @@ def evaluate_mapmad(ema_net: nn.Module, loader, transform, device, noise_schedul
         pred = ema_net("noise_pred_net", sample=noise_scheduler.add_noise(naction, noise, timesteps), timestep=timesteps,
                        global_cond=cond)
         meter.add(F.mse_loss(pred, noise, reduction="none").mean(dim=(1, 2)), b["action_mask"], b["mode"])
-    return meter.means()
+        if "past" in b:  # Phase 14b-3: past-move prediction error of the EMA model (report only)
+            v = b["past_valid"]
+            past_num += float(past_aux_loss(ema_net, cond, b)) * float(v.sum())
+            past_den += float(v.sum())
+    out = meter.means()
+    if past_den > 0:
+        out["past_mse"] = past_num / past_den
+    return out
 
 
 def train_eval_loop_mapmad(model, optimizer, lr_scheduler, noise_scheduler, train_loader, sampler,
@@ -297,7 +323,7 @@ def train_eval_loop_mapmad(model, optimizer, lr_scheduler, noise_scheduler, trai
                                     float(config["alpha"]), config["print_log_freq"], config["wandb_log_freq"],
                                     use_wandb, config.get("max_steps_per_epoch"),
                                     lr_hook=schedule.apply if schedule is not None else None, step_log=step_log,
-                                    accum=accum)
+                                    accum=accum, past_lambda=float((config.get("map", {}).get("past_moves") or {}).get("lambda", 0.0)))
         record.update({"lr": lr, "train_seconds": time.time() - t0})
         if schedule is not None:
             record["lr_groups_last_step"] = schedule.lrs()

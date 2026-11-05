@@ -31,11 +31,14 @@ def git_commit() -> str:
 
 def map_model_kwargs(config: Dict[str, Any]) -> Dict[str, Any]:
     """NoMaD_ViNT's map arguments from a config: map_input, and with it the `map` block's tokens (1 = v1, 2 = v2)
-    and layers (3 = v1, 4 = v2)."""
+    and layers (3 = v1, 4 = v2); v3: `map.past_moves.n` (the past-move token; absent = no token, v2 exactly)."""
     if not config.get("map_input", False):
         return {"map_input": False}
     m = config.get("map", {})
-    return {"map_input": True, "map_tokens": int(m.get("tokens", 1)), "map_channels": int(m.get("layers", 3))}
+    out = {"map_input": True, "map_tokens": int(m.get("tokens", 1)), "map_channels": int(m.get("layers", 3))}
+    if m.get("past_moves"):  # MapMaD v3 (Phase 14b-3): the past-move token + auxiliary head
+        out["past_moves"] = int(m["past_moves"]["n"])
+    return out
 
 
 def deep_merge(base: Dict[str, Any], top: Dict[str, Any]) -> Dict[str, Any]:

@@ -1,0 +1,19 @@
+# Phase 14b-3 DRY chain (never results): mapmad_v3.yaml on the DRY round-2 folders, 10 tiny epochs.
+base_config: mapmad_v3.yaml
+run_name: v3dry_s1
+logs_root: /outputs/mapmad/p14b3_dry/chain
+epoch_samples: 512
+map:
+  dagger_more:
+    - data_folder: /mapmad_data/habitat_mapmad_v3_dagger_r2map_dry
+      train: /mapmad_data/splits/habitat_mapmad_v3_dagger_r2map_dry/train/
+      test: null
+      frontier_cache: /mapmad_data/p14b3_dry_frontier_cache/habitat_mapmad_v3_dagger_r2map_dry
+      index_dir: /mapmad_data/p14b3_dry_index
+  dagger_hidden_more:
+    - data_folder: /mapmad_data/habitat_mapmad_v3_dagger_r2hidden_dry
+      train: /mapmad_data/splits/habitat_mapmad_v3_dagger_r2hidden_dry/train/
+      test: null
+      index_dir: /mapmad_data/p14b3_dry_index
+      search_phase_only: true
+      keep_recovery: true

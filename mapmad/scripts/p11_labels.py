@@ -61,10 +61,15 @@ def specs(layout: RunLayout) -> Tuple[TeacherSpec, PursuitSpec, LabelSpec]:
     dg = datagen_config(layout.cfg)
     r = RobotSpec.from_config(config.robot())
     ro, mo = layout.cfg["rollouts"], dg["motion"]
+    recovery = None
+    if ro.get("recovery"):  # Phase 14b-3 W1 recovery labels (mapmad_sim/recovery_labels.py)
+        from mapmad_sim.recovery_labels import RecoverySpec
+
+        recovery = RecoverySpec(**{**ro["recovery"], "max_w": r.max_w, "dt": r.dt})
     return (TeacherSpec.from_config(dg["teacher"]), PursuitSpec.from_config(dg["expert"], r.max_v, r.max_w, r.dt),
             LabelSpec(int(ro["label_steps"]), int(ro["label_every"]), int(ro["collision_skip_steps"]),
                       float(mo["retarget_turn_deg"]), float(dg["teacher"]["face_tolerance_deg"]),
-                      bool(ro["label_replan"]), ro["skip_order"] == "collision_first"))
+                      bool(ro["label_replan"]), ro["skip_order"] == "collision_first", recovery))
 
 
 def _init(ctx: Dict[str, Any]) -> None:
@@ -82,6 +87,8 @@ def _label_one(folder: str) -> Dict[str, Any]:
     if out.exists():
         with np.load(out) as z:
             stale = "teacher_fail" not in z.files  # written by an older labeller: redone
+            rec = _CTX["spec"].recovery
+            stale = stale or (rec is not None and ("recovery" not in z.files or str(z["recovery_mode"]) != rec.mode))
     attempts = 0
     if not out.exists() or stale:
         while True:  # labels are deterministic: a retry gives the same arrays (an intermittent numpy error under
@@ -98,11 +105,13 @@ def _label_one(folder: str) -> Dict[str, Any]:
         os.replace(tmp, out)
     with np.load(out) as z:
         reason, tf, coll = z["reason"], z["teacher_fail"], z["collision_streak"]
+        rec = z["recovery"] if "recovery" in z.files else np.zeros(len(reason), bool)
     meta = json.loads((Path(folder) / "mapmad_meta.json").read_text())
     return {"drive": Path(folder).name, "category": meta["category"], "frames": int(len(reason)),
             "counts": {**{REASONS[i]: int((reason == i).sum()) for i in range(len(REASONS))},
                        "teacher_fail_any": int(tf.sum()), "collision_any": int(coll.sum()),
-                       "overlap": int((tf & coll).sum())},
+                       "overlap": int((tf & coll).sum()), "recovery": int(rec.sum()),
+                       "recovery_teacher_fail": int((rec & tf).sum())},
             "seconds": round(time.time() - t0, 2), "attempts": attempts}
 
 
@@ -144,7 +153,8 @@ def cmd_check(args, layout: RunLayout) -> None:
 
 def rollout_drives(layout: RunLayout) -> List[Path]:
     data = config.paths()["mapmad_data"] / layout.cfg["rollouts"]["data_folder"]
-    return sorted(p for p in data.iterdir() if p.is_dir() and p.name.startswith("p11r-"))
+    return sorted(p for p in data.iterdir() if p.is_dir() and p.name.startswith("p11r-")
+                  and (p / "mapmad_meta.json").exists())  # a drive folder is complete once its meta exists
 
 
 def cmd_label(args, layout: RunLayout) -> None:
@@ -172,9 +182,12 @@ def cmd_label(args, layout: RunLayout) -> None:
         n = sum(c[k] for k in REASONS)
         return {"frames": n, **{k: round(c[k] / n, 4) if n else 0.0 for k in REASONS},
                 "teacher_fail": round(sum(c[k] for k in ("no_frontier", "blacklist_exhausted", "no_path")) / n, 4) if n else 0.0,
-                **{k: round(c[k] / n, 4) if n else 0.0 for k in ("teacher_fail_any", "collision_any", "overlap")}}
+                **{k: round(c[k] / n, 4) if n else 0.0 for k in ("teacher_fail_any", "collision_any", "overlap",
+                                                                   "recovery", "recovery_teacher_fail")}}
 
+    labelled = total["ok"]
     res = {"drives": len(rows), "frames": frames, "overall": shares(total),
+           "recovery_share_of_labels": round(total["recovery"] / labelled, 4) if labelled else 0.0,
            "per_category": {c: shares(v) for c, v in sorted(per_cat.items())},
            "teacher_fail_share": fails / frames if frames else 0.0,
            "limit_teacher_fail_share": float(ro["max_teacher_fail_share"]), "replan": spec.replan,

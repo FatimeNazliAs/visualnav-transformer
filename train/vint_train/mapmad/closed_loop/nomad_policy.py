@@ -66,6 +66,7 @@ class NomadPolicy(Policy):
     name = "nomad"
     log_all_samples = False  # True: every step's info also carries all sampled paths (`paths_all_m`, report only)
     picker = None  # Phase 14a A1: drive_switches.StickPicker (None = sample_index)
+    reverse = None  # Phase 14b-3: ReverseSpec (None = NoMaD's controller, never backward)
 
     def __init__(self, weights: str, cfg: Dict[str, Any], device: torch.device, num_samples: int = 8,
                  sample_index: int = 0, waypoint_index: int = 2, max_v: float = 0.2, max_w: float = 0.4,
@@ -148,11 +149,18 @@ class NomadPolicy(Policy):
         waypoint = paths[k][self.waypoint_index].astype(np.float64)
         if self.cfg["normalize"]:
             waypoint = waypoint * self.metres_per_unit
-        v, w = pd_controller(waypoint, self.max_v, self.max_w, 1.0 / self.rate_hz)
+        backward = self.reverse is not None and self.reverse.behind(waypoint)
+        if backward:  # Phase 14b-3: drive backward toward a waypoint behind the robot
+            v, w = self.reverse.command(waypoint, self.max_w, 1.0 / self.rate_hz)
+        else:
+            v, w = pd_controller(waypoint, self.max_v, self.max_w, 1.0 / self.rate_hz)
         info = {"waypoint_m": [float(waypoint[0]), float(waypoint[1])],
                 "path_m": (paths[k] * self.metres_per_unit).round(4).tolist()}
+        if backward:
+            info["reverse"] = True
         if self.picker is not None:
-            self.picker.executed(float(np.clip(v, 0.0, self.max_v)), float(np.clip(w, -self.max_w, self.max_w)))
+            lo = -self.max_v if backward else 0.0
+            self.picker.executed(float(np.clip(v, lo, self.max_v)), float(np.clip(w, -self.max_w, self.max_w)))
             info["sample"] = k
         if self.log_all_samples:
             info["paths_all_m"] = (paths * self.metres_per_unit).round(4).tolist()

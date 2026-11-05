@@ -235,3 +235,19 @@ Phase 12 (the search exam; rules `/outputs/mapmad/p12_search_exam/p12_rules.md`,
   with simulator-truth marks: rule errors vs detector errors); `p14_tables qwen-audit` (stops made without asking
   Qwen, Qwen's yes / no vs the truth).
 - Tests: `tests/test_p14.py`.
+
+## Phase 14b-3 (MapMaD v3)
+
+- `past_moves.py`: B1 — the last 8 executed moves (every 5th control step, each in its start frame; (dx, dy) / 0.25 m,
+  dθ rad) as one more token after the two map windows (`map.past_moves` in the train config; `NoMaD_ViNT(past_moves=8)`),
+  with its own mask bit, and an auxiliary head predicting them (MSE, `lambda` 0.1). Without the token's inputs the
+  model computes exactly what v2 / v2.1b compute; maps hidden + token hidden = NoMaD's own computation (G10 row 2).
+  Training: the token hidden with probability `drop_p` (0.3); GoStanford: hidden, no past loss. New weights live
+  under `vision_encoder.map_encoder.past*` (map-encoder lr group); `weights.grow_into` loads a v2.1b checkpoint.
+- `dataset_dagger.py`: `map.dagger_more` / `map.dagger_hidden_more` (further DAgger rounds, own folders) -> a
+  `DaggerUnion`; `keep_recovery` keeps W1 recovery states of maps-hidden drives beyond the search phase.
+- `v3_offline.py`: recovery-label loss (v3 vs v2.1b on round-2 recovery states) and the past-move error per epoch.
+- `closed_loop/deployment.ReverseSpec`: v3's controller (backward toward a waypoint behind the robot; arm switch
+  `reverse: behind`); the runner passes its pose history (`extras["pose_history"]`) to past-move policies.
+- `closed_loop/p14b3_checks.py`, `p14b3_tables.py`: gate rows 5-8, practice check, exam B rows 1-4, draft gate.
+- Train: `python train.py -c config/mapmad_v3.yaml` (from v2.1b `ema_9`).

@@ -58,6 +58,7 @@ class MapMaDDataset(ViNT_Dataset):
         self.has_maps = vint_kwargs["dataset_name"] in self.map_datasets
         self.map_size = int(map_cfg.get("size", 64))
         self.index_dir = index_dir
+        self._map_cfg = map_cfg  # (Phase 14b-3: read by MapMaDV2Dataset._init_modes for every dataset)
         super().__init__(**vint_kwargs)
         excluded = read_drive_list(exclude_drives)
         if excluded:
@@ -196,10 +197,10 @@ def build_mapmad_dataset(config: Dict[str, Any], dataset_name: str, split: str, 
         cls = MapMaDV2Dataset
     ds = _build(cls, config, dataset_name, split, train, d)
     if train and config["map"].get("dagger") and ds.has_maps:  # Phase 11: DAgger samples join search_map
-        from vint_train.mapmad.dataset_dagger import build_dagger_dataset
-        ds.attach_dagger(build_dagger_dataset(config, "train", train=True))
+        from vint_train.mapmad.dataset_dagger import build_dagger_set
+        ds.attach_dagger(build_dagger_set(config, "train", train=True))
         if config["map"].get("dagger_hidden"):  # Phase 13: maps-hidden DAgger samples join explore (equal count)
-            ds.attach_dagger_hidden(build_dagger_dataset(config, "train", train=True, hidden=True))
+            ds.attach_dagger_hidden(build_dagger_set(config, "train", train=True, hidden=True))
     return ds
 
 

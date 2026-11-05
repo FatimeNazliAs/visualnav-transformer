@@ -103,7 +103,8 @@ closed_loop() {  # label subdir set total budget_s recog seeds arms... -> 0 all 
     # one run queue; a GPU that gets another user's process is withdrawn (STOP file: its runners finish their current run,
     # take no more); a GPU free later is added to the same queue. When every runner has exited and runs are left, a new
     # launch token restarts the queue. Budget = GPU-running time scaled by the share of the two GPUs in use (waiting is
-    # not counted; CL_USED_S returns it). A recogniser restarted > 3 times -> 3; no new run for SILENT_S -> the runners
+    # not counted; CL_USED_S returns it; Phase 14b-3: CL_UNIT_DIV=1 counts wall time x GPUs in use = the GPU-hours of
+    # every other step, one unit). A recogniser restarted > 3 times -> 3; no new run for SILENT_S -> the runners
     # are killed (a hang, logged) and the round restarts.
     local label="$1" subdir="$2" set="$3" total="$4" budget="$5" recog="$6" seeds="$7"; shift 7
     local arms=("$@") round=0 used=0 t_last token g done crashed pids_alive progress_at_round=0 launched=0 seed_args=()
@@ -170,7 +171,7 @@ closed_loop() {  # label subdir set total budget_s recog seeds arms... -> 0 all 
         status gpus="${!PIDS[*]}" subdir="${CL_PREFIX:-}$subdir" arms="${arms[*]}" total="$total" step_label="$label"
         t_last=$SECONDS
         pause "${CL_CHECK_S:-300}"
-        used=$(( used + (SECONDS - t_last) * ${#PIDS[@]} / 2 ))
+        used=$(( used + (SECONDS - t_last) * ${#PIDS[@]} / ${CL_UNIT_DIV:-2} ))  # 14b-3: CL_UNIT_DIV=1 -> wall x GPUs
         if (( used > budget )); then
             say "$label: budget exceeded ($(( used / 60 )) min > $(( budget / 60 )) min of GPU-running time)"
             for g in "${!PIDS[@]}"; do touch "$P14/driver/STOP_gpu${g}_$token"; done

@@ -22,6 +22,8 @@ samples plus the DAgger samples (the seen pool over both sources' seen frames); 
 draws are exactly the above.
 Hidden DAgger (Phase 13, `attach_dagger_hidden`): an explore draw is, with probability hidden_q (equal-count rule,
 dataset_dagger.py), a uniform draw from the maps-hidden DAgger samples; without it the draws are exactly the above.
+Past moves (Phase 14b-3, v3, `map.past_moves`): three more fields per sample (past moves, past mask, past valid;
+`past_part`), drawn after everything else; without the block the samples are exactly the above.
 """
 
 from typing import Any, Dict, Optional, Tuple
@@ -41,9 +43,6 @@ class MapMaDV2Dataset(MapMaDDataset):
     """v2 map input and modes (module docstring)."""
 
     map_datasets = MAP_DATASETS_V2
-
-    def _init_modes(self, habitat_modes: Dict[str, float]) -> None:
-        self.mode_p = M.habitat_mode_table(habitat_modes, M.HABITAT_MODES_V2)
 
     dagger = None  # Phase 11: an attached DaggerDataset joins the search_map pool (attach_dagger)
     dagger_hidden = None  # Phase 13: an attached HiddenDaggerDataset joins the explore draws (attach_dagger_hidden)
@@ -79,6 +78,14 @@ class MapMaDV2Dataset(MapMaDDataset):
             return self, drive, t
         drive, t, _ = self.dagger.index_to_data[int(other[k - len(own)])]
         return self.dagger, drive, t
+
+    past_cfg: Optional[Dict[str, Any]] = None  # Phase 14b-3 (v3): `map.past_moves` -> past-move fields per sample
+    past_train = False
+
+    def _init_modes(self, habitat_modes: Dict[str, float]) -> None:  # runs for EVERY dataset (GoStanford too)
+        self.mode_p = M.habitat_mode_table(habitat_modes, M.HABITAT_MODES_V2)
+        self.past_cfg = dict(self._map_cfg["past_moves"]) if self._map_cfg.get("past_moves") else None
+        self.past_train = self.train
 
     def _init_maps(self, map_cfg: Dict[str, Any], train: bool) -> None:
         if int(map_cfg.get("layers", 4)) != 4:
@@ -141,18 +148,41 @@ class MapMaDV2Dataset(MapMaDDataset):
     # --- samples -------------------------------------------------------------------------------------------
     def get(self, i: int, key: int) -> Tuple[torch.Tensor, ...]:
         rng = self.rng(key)
+        sample, source = self._draw(i, rng)
+        if not self.past_cfg:
+            return sample
+        return sample + self.past_part(source, rng)
+
+    def _draw(self, i: int, rng: np.random.Generator):
+        """(sample, (source dataset, drive, t) or None for GoStanford): the draw rules of the module docstring."""
         if not self.has_maps:
-            return self._gostanford(i, M.draw_gostanford_mode(self.goal_mask_prob, rng))
+            return self._gostanford(i, M.draw_gostanford_mode(self.goal_mask_prob, rng)), None
         mode = M.draw_habitat_mode(self.mode_p, rng, M.HABITAT_MODES_V2)
         if self.dagger is not None and mode.name == "search_map":
             source, drive, t = self._union_draw(rng)
-            return source.habitat_sample(drive, t, mode, rng)
+            return source.habitat_sample(drive, t, mode, rng), (source, drive, t)
         if self.dagger_hidden is not None and mode.name == "explore" and rng.random() < self.hidden_q:
             pool = self.dagger_hidden.pools["explore"]
             drive, t, _ = self.dagger_hidden.index_to_data[int(pool[int(rng.integers(len(pool)))])]
-            return self.dagger_hidden.habitat_sample(drive, t, mode, rng)
+            return self.dagger_hidden.habitat_sample(drive, t, mode, rng), (self.dagger_hidden, drive, t)
         drive, t, _ = self.index_to_data[self.pool_index(i, mode, rng)]
-        return self.habitat_sample(drive, t, mode, rng)
+        return self.habitat_sample(drive, t, mode, rng), (self, drive, t)
+
+    def past_part(self, source, rng: np.random.Generator) -> Tuple[torch.Tensor, ...]:
+        """Phase 14b-3 (v3, past_moves.py): (past moves (n, 3), past mask (1 = hidden), past valid (1 = a true past)).
+        Habitat: the drive's own poses; in training the token is hidden with probability drop_p (drawn last, so every
+        earlier draw is unchanged). GoStanford (no comparable odometry, NoMaD's own data): zeros, hidden, not valid."""
+        from vint_train.mapmad.past_moves import past_displacements
+
+        c = self.past_cfg
+        n = int(c["n"])
+        if source is None:
+            return torch.zeros((n, 3), dtype=torch.float32), torch.tensor(1), torch.tensor(0.0)
+        ds, drive, t = source
+        traj = ds._get_trajectory(drive)
+        past = past_displacements(traj["position"], traj["yaw"], int(t), n, int(c["spacing"]), float(c["scale_m"]))
+        hidden = int(self.past_train and rng.random() < float(c["drop_p"]))
+        return torch.from_numpy(past), torch.tensor(hidden), torch.tensor(1.0)
 
     def habitat_sample(self, drive: str, t: int, mode: M.Mode, rng: np.random.Generator,
                        goal_offset: Optional[int] = None,

@@ -1,0 +1,39 @@
+# Phase 14b-3 · Retrain MapMaD v3 + final exam B (kickoff ~/projects/nomad-mapmad/.p14b3_kickoff.md v1.0; rules frozen in
+# /outputs/mapmad/p14b3_v3/p14b3_rules.md + .sha256, copy in configs/p14b3_rules.md). Extends 14b-2 (arm table with
+# the "both" cell = pipeline P*: FT YOLOE + A-mark + W4, today's rule at tau 0.45; practice set; harness numbers).
+# V1 rollouts: configs/p14b3_rollout_{map,hidden}.yaml. V2 fine-tune: train/config/mapmad_v3.yaml.
+# V3 practice check (MP3D practice set, seed 0) and V4 exam B (second use, 3 seeds for network arms, F 1 seed).
+extends: p14b2_recog.yaml
+out_dir: p14b3_v3
+runs_from: null                      # (14b-2's R3 replay source; nothing is replayed here)
+
+sets:
+  examb:                              # Phase 13 exam B, frozen 98a8d920... (291 episodes, 26 MP3D homes); second use
+    folder: ../p13_claim/examb_set
+    id_prefix: p13b
+    seed_salt: mapmad-p13b            # = Phase 13's noise seeds: M21b's Phase 13 runs pair by episode and seed index
+
+run:
+  seeds: 3                            # exam B: seed indices 0, 1, 2 for network arms; practice calls name seed 0
+
+checkpoints:
+  v3: {from_file: V3.json}            # below <out_dir>: written after the V2 fine-tune (ema_9, fixed in advance)
+
+recognisers:
+  picked: {model: yoloe_ft, threshold: 0.05, p99: 0.9706774163246155, vlm: false}  # 14b-2 pick (photo/choice.json)
+
+switches:
+  reverse:                            # kickoff §3 item 4: v3's controller (closed_loop/deployment.ReverseSpec)
+    behind_deg: 150.0                 # a waypoint with |bearing| > 150 deg is "behind"
+    max_v_back: 0.1                   # backward at <= 0.1 m/s (the get-unstuck rule's reverse speed)
+
+arms:                                 # P* = recogniser picked (FT) + unstuck w4 + mark_drive amark; stop: today's rule 0.45
+  # v2.1b with P*: the 14b-2 "both" cell arms (M21b_w4_d_am, M21bh_w4_d_am, N_w4_d_am) unchanged (p14b2_recog.yaml)
+  M3_P: {checkpoint: v3, maps: true, target: recogniser, recogniser: picked, unstuck: w4, mark_drive: amark,
+         reverse: behind, label: "MapMaD v3, maps shown + P* (FT detector, drive to the mark, get-unstuck)"}
+  M3h_P: {checkpoint: v3, maps: false, target: recogniser, recogniser: picked, unstuck: w4, mark_drive: amark,
+          reverse: behind, label: "MapMaD v3, maps hidden + P*"}
+  M3_Pnoam: {checkpoint: v3, maps: true, target: recogniser, recogniser: picked, unstuck: w4, reverse: behind,
+             label: "MapMaD v3, maps shown + P* without drive to the mark (driving-only effect)"}
+  F_d: {policy: frontier, target: recogniser, recogniser: picked,
+        label: "Map + frontier planner, fine-tuned detector (its own driving; P*'s stop)"}

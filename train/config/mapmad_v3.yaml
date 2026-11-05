@@ -1,0 +1,40 @@
+# MapMaD v3 (Phase 14b-3 step V2, kickoff .p14b3_kickoff.md v1.0 §3 items 2-6, p14b3_rules.md §3): ONE fine-tune from
+# v2.1b ema_9 with the v2.1b recipe (mapmad_v21b.yaml <- mapmad_v21.yaml: two lr groups, pretrained 1e-5 / map
+# encoders 1e-4; warm-up over epoch 1 + cosine; batch 256; 10 x 200,000 samples; seed 1; modes 45/20/20/15;
+# GoStanford 50/50) plus:
+# (a) DAgger round 2 (v2.1b drove with FT YOLOE marks in both modes; W1 recovery labels in stuck states): map-DAgger =
+#     Phase 11 + round 2 maps shown (dagger_more), hidden-DAgger = Phase 13 + round 2 maps hidden (dagger_hidden_more,
+#     search-phase states + ALL recovery states); equal-count rule over the two unions (dataset_dagger.py);
+# (b) reverse-capable waypoints: the recovery labels hold points behind the robot (no clipping anywhere in training);
+# (c) past moves (B1, past_moves.py): the last 8 executed moves (every 5th step) as one more token + an auxiliary head
+#     predicting them, lambda_past 0.1; the token hidden with probability 0.3 in training (so the head must read the past
+#     from the pictures), always hidden for GoStanford. New parameters fresh (the token's last Linear zero), the rest
+#     from v2.1b; they train in the map-encoder lr group (1e-4).
+# ema_9 fixed in advance; no picking.
+base_config: mapmad_v21b.yaml
+run_name: v3_s1
+run_label: v3_s1
+logs_root: /outputs/mapmad/p14b3_v3
+init_checkpoint: /outputs/mapmad/p13_claim/runs/v21b_s1_2026_10_30_17_02_10/ema_9.pth
+init_checkpoint_sha256: 9ab0dbfb590b1ec481fb805e7b34f3b93cb858057bec377b1cdf6f4ddeec2c68
+
+map:
+  past_moves:
+    n: 8                  # moves
+    spacing: 5            # control steps per move (= waypoint spacing)
+    scale_m: 0.25         # metres per unit (= the action normalisation 0.05 x 5)
+    drop_p: 0.3           # training: token hidden with this probability (Habitat samples)
+    lambda: 0.1           # auxiliary loss weight (kickoff §3 item 5, fixed)
+  dagger_more:            # round 2, maps shown (frontier cache built by `dataset_dagger frontier --block 0`)
+    - data_folder: /mapmad_data/habitat_mapmad_v3_dagger_r2map
+      train: /mapmad_data/splits/habitat_mapmad_v3_dagger_r2map/train/
+      test: null          # no round-2 rollouts in the 10 dev / photo-test homes (gate row 6)
+      frontier_cache: /mapmad_data/p14b3_frontier_cache/habitat_mapmad_v3_dagger_r2map
+      index_dir: /mapmad_data/p14b3_index
+  dagger_hidden_more:     # round 2, maps hidden
+    - data_folder: /mapmad_data/habitat_mapmad_v3_dagger_r2hidden
+      train: /mapmad_data/splits/habitat_mapmad_v3_dagger_r2hidden/train/
+      test: null
+      index_dir: /mapmad_data/p14b3_index
+      search_phase_only: true
+      keep_recovery: true # + every W1 recovery state of the drive (kickoff §3 item 3)

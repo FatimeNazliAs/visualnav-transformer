@@ -7,6 +7,9 @@ code change (/outputs/mapmad/p10_v2_train/checks/reference_forward_cpu.pt, CPU),
          (so the masks are what hide them) -> allclose(atol 1e-6, rtol 0) to the reference, photo shown and hidden;
          token count 7 (5 + near + far); every nomad.pth key loads; the only new keys are vision_encoder.map_encoder.*
          (near.* and far.*); positional rows 0-4 equal to the checkpoint's;
+- Phase 14b-3 (a config with map.past_moves, e.g. mapmad_v3.yaml; --weights nomad.pth): the past-move token is built
+         too and HIDDEN with non-zero past moves and a live token MLP; new keys near, far, past, past_head; report:
+         the token shown changes the output;
 - report: a mixed batch (per-sample photo/near/far masks) equals the per-mask results row by row (up to kernel
          rounding, <= 1e-4: hidden and shown rows run as sub-batches); a shown map changes
          the output; v1 (one token, mapmad_p4_C.yaml) with the map hidden still equals the reference (G3 row 1b).
@@ -45,7 +48,8 @@ def live_encoders(model: torch.nn.Module) -> None:
     """Non-zero last layers of both map encoders (zero-initialised at step 0)."""
     with torch.no_grad():
         for enc in model.vision_encoder.map_encoder.values():
-            torch.nn.init.normal_(enc.proj.weight, std=0.05)
+            last = enc.proj if hasattr(enc, "proj") else enc.net[2]  # Phase 14b-3: the past token / head MLPs
+            torch.nn.init.normal_(last.weight, std=0.05)
 
 
 def mask_report(model: torch.nn.Module, inputs: Dict[str, Any], device: torch.device) -> Dict[str, Any]:
@@ -76,12 +80,27 @@ def mask_report(model: torch.nn.Module, inputs: Dict[str, Any], device: torch.de
             "shown_map_changes_output": bool((shown - flipped).abs().max() > 1e-4)}
 
 
+def past_report(model: torch.nn.Module, inputs: Dict[str, Any], hidden: Dict[str, Any], device: torch.device) -> bool:
+    """Phase 14b-3 report: maps hidden, past token SHOWN changes the output (the token is not dead)."""
+    obs, goal = inputs["obs_img"].to(device), inputs["goal_img"].to(device)
+    b = obs.shape[0]
+    kw = {k: v.to(device) for k, v in hidden.items()}
+    gm = torch.ones(b, dtype=torch.long, device=device)
+    with torch.no_grad():
+        off = model("vision_encoder", obs_img=obs, goal_img=goal, input_goal_mask=gm, **kw)
+        kw["input_past_mask"] = torch.zeros(b, dtype=torch.long, device=device)
+        on = model("vision_encoder", obs_img=obs, goal_img=goal, input_goal_mask=gm, **kw)
+    return bool((on - off).abs().max() > 1e-4)
+
+
 def main(argv: List[str] = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--config", required=True, help="the v2 train config (mapmad_v2.yaml)")
     parser.add_argument("--v1-config", required=True, help="the v1 train config (mapmad_p4_C.yaml)")
     parser.add_argument("--reference", required=True)
     parser.add_argument("--out", required=True)
+    parser.add_argument("--weights", default=None, help="official nomad.pth (default: the config's init_weights; "
+                        "Phase 14b-3: a fine-tune config has none)")
     args = parser.parse_args(argv)
 
     enforce_determinism()
@@ -92,7 +111,8 @@ def main(argv: List[str] = None) -> None:
         raise SystemExit(f"reference made on {ref['device']}, this run on {device}: byte identity needs the same device")
     inputs, reference = ref["inputs"], ref["outputs"]
     b = inputs["obs_img"].shape[0]
-    weights = cfg["init_weights"]
+    weights = args.weights or cfg["init_weights"]
+    past = (cfg.get("map") or {}).get("past_moves")  # Phase 14b-3 (v3): the past-move token must be hidden too
     result: Dict[str, Any] = {"git_commit": git_commit(), "reference": args.reference,
                               "reference_commit": ref["git_commit"], "device": str(device)}
 
@@ -106,10 +126,16 @@ def main(argv: List[str] = None) -> None:
     model, report = build_with_official(cfg, weights, device)
     live_encoders(model)
     hidden = {"map_img": test_maps_v2(b), "input_map_mask": torch.ones((b, 2), dtype=torch.long)}
+    if past:  # non-zero past moves, token hidden (+ live token MLP: the mask is what hides it)
+        hidden.update(past_move=torch.randn((b, int(past["n"]), 3), generator=torch.Generator().manual_seed(2)),
+                      input_past_mask=torch.ones(b, dtype=torch.long))
     r2 = compare(run_forward(model, inputs, cfg, device, extra_encoder_kwargs=hidden), reference)
     masks = mask_report(model, inputs, device)
+    if past:
+        masks["past_shown_changes_output"] = past_report(model, inputs, hidden, device)
+    want = {"near", "far"} | ({"past", "past_head"} if past else set())
     keys_ok = (all(k.startswith("vision_encoder.map_encoder.") for k in report["new_keys"])
-               and {k.split(".")[2] for k in report["new_keys"]} == {"near", "far"})
+               and {k.split(".")[2] for k in report["new_keys"]} == want)
     result["row2"] = {"outputs": r2, "atol": ATOL, "load_report": report, "masks": masks,
                       "max_abs_diff": max(v["max_abs_diff"] for v in r2.values()),
                       "pass": (all(v["max_abs_diff"] <= ATOL for v in r2.values()) and masks["new_tokens"] == 7

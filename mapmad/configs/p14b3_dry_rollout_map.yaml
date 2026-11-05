@@ -1,0 +1,9 @@
+# Phase 14b-3 DRY chain (never results): round-2 rollouts (map) into DRY folders.
+extends: p14b3_rollout_map.yaml
+out_dir: p14b3_dry/chain/rollouts_r2/map
+sets:
+  rollout:
+    folder: ../../../../p14b3_v3/rollouts_r2/set
+rollouts:
+  data_folder: habitat_mapmad_v3_dagger_r2map_dry
+  splits: splits/habitat_mapmad_v3_dagger_r2map_dry

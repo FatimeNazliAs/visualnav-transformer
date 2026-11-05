@@ -9,7 +9,8 @@
 Then `load_state_dict(strict=True)` on the merged dict, so nothing is skipped silently.
 
 Our own checkpoints (train_loop saves them unwrapped) load with `load_checkpoint`: strict, every key; a fine-tune
-starts from one with `load_own_into` (Phase 11: `init_checkpoint` + `init_checkpoint_sha256` in the train config).
+starts from one with `load_own_into` (Phase 11: `init_checkpoint` + `init_checkpoint_sha256` in the train config);
+Phase 14b-3: a v2.1b checkpoint grows into the v3 model (past-move token) by `grow_into`'s rules.
 """
 
 from typing import Any, Dict, Tuple
@@ -18,6 +19,7 @@ import torch
 
 POS_KEY = "vision_encoder.positional_encoding.pos_enc"
 NEW_PREFIX = "vision_encoder.map_encoder."
+PAST_PREFIX = "vision_encoder.map_encoder.past"  # Phase 14b-3: the past-move token + head (past_moves.py)
 
 
 def strip_module_prefix(state: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
@@ -81,5 +83,37 @@ def load_own_into(model: torch.nn.Module, path: str, sha256: str) -> Dict[str, A
     from vint_train.mapmad.closed_loop.mapmad_policy import check_sha256
 
     got = check_sha256(path, sha256)
-    model.load_state_dict(strip_module_prefix(torch.load(path, map_location="cpu", weights_only=True)), strict=True)
-    return {"init_checkpoint": path, "sha256": got, "keys": len(model.state_dict())}
+    ckpt = strip_module_prefix(torch.load(path, map_location="cpu", weights_only=True))
+    own = model.state_dict()
+    if set(ckpt) == set(own) and all(own[k].shape == v.shape for k, v in ckpt.items()):
+        model.load_state_dict(ckpt, strict=True)
+        return {"init_checkpoint": path, "sha256": got, "keys": len(own)}
+    return dict(grow_into(model, ckpt, own), init_checkpoint=path, sha256=got)
+
+
+def grow_into(model: torch.nn.Module, ckpt: Dict[str, torch.Tensor], own: Dict[str, torch.Tensor]) -> Dict[str, Any]:
+    """Phase 14b-3 (v3 from v2.1b): load a checkpoint WITHOUT the past-move token into a model WITH it. Allowed only:
+    new keys under PAST_PREFIX (kept at their init: the token's last Linear is zero) and a positional table grown by
+    one row whose first rows equal the checkpoint's exactly; every checkpoint key must exist with the same shape.
+    Then a strict load of the merged dict."""
+    unexpected = sorted(set(ckpt) - set(own))
+    if unexpected:
+        raise RuntimeError(f"checkpoint keys missing from the model: {unexpected[:10]} ({len(unexpected)})")
+    new_keys = sorted(set(own) - set(ckpt))
+    bad_new = [k for k in new_keys if not k.startswith(PAST_PREFIX)]
+    if bad_new:
+        raise RuntimeError(f"model keys not in the checkpoint outside {PAST_PREFIX}*: {bad_new}")
+    merged, pos_report = dict(ckpt), {"grown": False}
+    for k, v in ckpt.items():
+        if own[k].shape == v.shape:
+            continue
+        rows = v.shape[1] if k == POS_KEY else -1
+        if k != POS_KEY or own[k].shape[1] != rows + 1 or not torch.equal(own[k][:, :rows].cpu(), v):
+            raise RuntimeError(f"shape / row mismatch for {k}: checkpoint {tuple(v.shape)} vs model {tuple(own[k].shape)}")
+        merged[k] = own[k].detach().clone()
+        pos_report = {"grown": True, "checkpoint_rows": rows, "model_rows": rows + 1, "first_rows_equal": True}
+    for k in new_keys:
+        merged[k] = own[k]
+    model.load_state_dict(merged, strict=True)
+    return {"keys": len(own), "new_keys": new_keys, "new_parameters": int(sum(own[k].numel() for k in new_keys)),
+            "positional_encoding": pos_report}

@@ -75,3 +75,22 @@ def pd_controller(waypoint: np.ndarray, max_v: float, max_w: float, dt: float) -
     v = np.clip(v, 0, max_v)
     w = np.clip(w, -max_w, max_w)
     return float(v), float(w)
+
+
+class ReverseSpec:
+    """Phase 14b-3 reverse execution (v3's controller): a waypoint behind the robot (|bearing| > behind_deg) is driven
+    to BACKWARD at up to max_v_back, turning so the robot's rear points at it. For dx < 0, NoMaD's own angle
+    arctan(dy / dx) is exactly the turn that points the rear at (dx, dy). Any other waypoint: NoMaD's pd_controller
+    unchanged (so a network that never predicts behind-waypoints drives exactly as before)."""
+
+    def __init__(self, behind_deg: float = 150.0, max_v_back: float = 0.1) -> None:
+        self.behind_deg, self.max_v_back = float(behind_deg), float(max_v_back)
+
+    def behind(self, waypoint: np.ndarray) -> bool:
+        return abs(np.degrees(np.arctan2(waypoint[1], waypoint[0]))) > self.behind_deg
+
+    def command(self, waypoint: np.ndarray, max_w: float, dt: float) -> Tuple[float, float]:
+        dx, dy = float(waypoint[0]), float(waypoint[1])
+        v = -min(abs(dx) / dt, self.max_v_back)
+        w = float(np.clip(np.arctan(dy / dx) / dt, -max_w, max_w))
+        return float(v), w

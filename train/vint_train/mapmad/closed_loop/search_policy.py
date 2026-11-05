@@ -38,6 +38,10 @@ class MapMaDV2Policy(NomadPolicy):
         self.maps, self.spacing, self.step_m = bool(maps), int(context_spacing), float(step_m)
         self.context_frames = cfg["context_size"] * self.spacing + 1
         self.name = "mapmad_v2_maps" if self.maps else "mapmad_v2_hidden"
+        # Phase 14b-3 (v3): a checkpoint trained with the past-move token gets the robot's last n moves (the runner
+        # passes its pose history in extras["pose_history"]); v2 / v2.1b checkpoints: no token, as before
+        self.past_cfg = (cfg.get("map") or {}).get("past_moves") or None
+        self.wants_poses = self.past_cfg is not None
 
     def ready(self, obs: Observation) -> bool:
         return len(obs.frames) >= 1  # missing past pictures repeat the first one
@@ -52,4 +56,17 @@ class MapMaDV2Policy(NomadPolicy):
         if self.maps and maps is None:
             raise RuntimeError("maps shown but the simulator sent no map windows")
         near, far = (maps[0], maps[1]) if maps is not None else (np.zeros((4, 64, 64), np.float32),) * 2
-        return self.net.encoder_inputs(frames, near, far, self.maps, self.maps, None)
+        return self.net.encoder_inputs(frames, near, far, self.maps, self.maps, None, self.past_moves(obs))
+
+    def past_moves(self, obs: Observation) -> Optional[np.ndarray]:
+        """(n, 3) past moves at this step (past_moves.past_displacements over the runner's pose history), or None."""
+        if self.past_cfg is None:
+            return None
+        from vint_train.mapmad.past_moves import past_displacements
+
+        hist = obs.extras.get("pose_history")
+        if not hist:
+            raise RuntimeError("a past-move checkpoint needs the runner's pose history (extras['pose_history'])")
+        c = self.past_cfg
+        h = np.asarray(hist, dtype=np.float64)
+        return past_displacements(h[:, :2], h[:, 2], len(h) - 1, int(c["n"]), int(c["spacing"]), float(c["scale_m"]))

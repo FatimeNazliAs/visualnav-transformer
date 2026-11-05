@@ -1,0 +1,60 @@
+# Phase 14b-3 V1 — DAgger round 2, maps SHOWN (kickoff .p14b3_kickoff.md v1.0 §3 items 1-2, p14b3_rules.md §2).
+# MapMaD v2.1b (ema_9) drives with both maps shown on Phase 11's rollout set (fingerprint 8e3428c7..., 1,448 episodes,
+# 145 labelled HM3D train homes), target layer from the FINE-TUNED YOLOE (14b-2 "FT", yoloe_ft, threshold 0.05,
+# p99 0.9707) so the network practises with the marks it will see; W4 and A-mark OFF (the network drives, stuck states
+# happen); 1,000 steps, stop at the success zone (Phase 11 rule); seed index 0 with the new noise salt mapmad-p14b3.
+# Recorded as Phase 8 drives in <mapmad_data>/habitat_mapmad_v3_dagger_r2map; labelled by the Phase 11 labeller
+# (re-ask look-ahead, frozen blacklist) + W1 recovery labels in stuck states (rollouts.recovery).
+extends: p13_hidden_dagger.yaml
+out_dir: p14b3_v3/rollouts_r2/map
+
+sets:
+  rollout:
+    folder: ../set                    # Phase 11 rollout set minus the 10 photo-test homes (make_p14b3_sets.py)
+    seed_salt: mapmad-p14b3           # kickoff §3 item 1: seeds as Phase 11 with a new salt
+
+run:
+  seed_salt: mapmad-p14b3
+  stop_at_success: true               # Phase 11 rollouts: stop at the success zone
+  rule_stop:                          # needed by the Phase 12 wiring (policies block); not used to stop
+    ahead_m: 1.0
+    half_angle_deg: 30.0
+    min_views: 2
+
+policies:                             # Phase 12 wiring (target block from the arm): = p13_claim.yaml
+  nomad: {num_samples: 8, sample_index: 0, waypoint_index: 2, context_spacing: 1}
+  mapmad_v1: {num_samples: 8, sample_index: 0, waypoint_index: 1, context_spacing: 5, step_m: 0.25}
+  frontier: {lookahead_m: 0.5, mark_radius_m: 1.0}
+
+recognisers:
+  ft: {model: yoloe_ft, threshold: 0.05, p99: 0.9706774163246155, vlm: false}   # = p14b2_recog/photo/choice.json
+
+checkpoints:
+  v2: null
+  v21b:
+    path: p13_claim/runs/v21b_s1_2026_10_30_17_02_10/ema_9.pth
+    sha256: 9ab0dbfb590b1ec481fb805e7b34f3b93cb858057bec377b1cdf6f4ddeec2c68
+    config: repo:train/config/mapmad_v21b.yaml
+
+arms:
+  v2h: null
+  r2map: {checkpoint: v21b, maps: true, target: recogniser, recogniser: ft, seeds: [0],
+          label: "DAgger round 2 driver: MapMaD v2.1b, maps shown, fine-tuned YOLOE marks"}
+
+rollouts:
+  data_folder: habitat_mapmad_v3_dagger_r2map    # below <mapmad_data> (one drive per episode id: own folder per mode)
+  splits: splits/habitat_mapmad_v3_dagger_r2map
+  recovery:                           # W1 (mapmad_sim/recovery_labels.py): W4's stuck rule + manoeuvre numbers
+    mode: reverse_turn                # fallback "W1-turn" = turn (no backward waypoints)
+    window_collisions: 20
+    min_collisions: 16
+    window_still: 40
+    min_move_m: 0.10
+    reverse_m: 0.25
+    reverse_v: 0.1
+    forward_v: 0.2
+    aim_m: 0.5
+    ray_step_deg: 10.0
+    ray_start_m: 0.3
+    ray_march_m: 0.05
+    ray_reach_m: 3.15

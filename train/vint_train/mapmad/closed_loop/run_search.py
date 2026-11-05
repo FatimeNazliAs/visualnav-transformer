@@ -105,6 +105,11 @@ class Policies:
 
                 st = self.layout.cfg["switches"]["stick"]
                 pol.picker = StickPicker(float(st["rho"]), int(st["reset_every"]), 1.0 / self.limits["rate_hz"])
+            if a.reverse == "behind":  # Phase 14b-3: v3's controller
+                from vint_train.mapmad.closed_loop.deployment import ReverseSpec
+
+                rv = self.layout.cfg["switches"]["reverse"]
+                pol.reverse = ReverseSpec(float(rv["behind_deg"]), float(rv["max_v_back"]))
             self.cache[name] = pol
         return self.cache[name]
 
