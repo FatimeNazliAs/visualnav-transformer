@@ -3,6 +3,7 @@
     python -m vint_train.mapmad.closed_loop.p14b2_tables photo --config <p14b2_recog.yaml>     # R2 choice + table
     python -m vint_train.mapmad.closed_loop.p14b2_tables r3 --config ...                        # R3 stop bench vs base
     python -m vint_train.mapmad.closed_loop.p14b2_tables r4 --config ...                        # R4 driving cells
+    python -m vint_train.mapmad.closed_loop.p14b2_tables extras --config ...                    # A-mark, oracle, categories
     python -m vint_train.mapmad.closed_loop.p14b2_tables plain --config ...                     # the first table
     python -m vint_train.mapmad.closed_loop.p14b2_tables off --config ...                       # row 7: switch off = 14a
     python -m vint_train.mapmad.closed_loop.p14b2_tables gate --config ...                      # draft G14b2
@@ -223,12 +224,18 @@ def run_row(log_file: Path, instances: Sequence[Dict[str, Any]]) -> Dict[str, An
     r = s["rule"][f"{TAU:g}"]
     res = log[-1]
     ev = res.get("amark_events") or {}
-    return {"episode_id": log[0]["episode_id"], "oracle": float(s["oracle_success"]), "spl": float(s["oracle_spl"]),
-            "success": float(r["success"]), "rule_spl": float(r["spl"]), "stopped": float(r["stopped"]),
-            "wrong": float(bool(r.get("wrong_object"))), "collisions": float(s["collisions"]),
-            "stuck": float(s["stuck_streaks"] > 0), "amark_trigger": float(ev.get("trigger", 0)),
-            "amark_confirmed": float(ev.get("confirmed", 0)), "amark_steps": float(res.get("amark_steps", 0) or 0),
-            "amark_no_path": float(ev.get("no_path", 0) + ev.get("no_free", 0))}
+    row = {"episode_id": log[0]["episode_id"], "oracle": float(s["oracle_success"]), "spl": float(s["oracle_spl"]),
+           "success": float(r["success"]), "rule_spl": float(r["spl"]), "stopped": float(r["stopped"]),
+           "wrong": float(bool(r.get("wrong_object"))), "collisions": float(s["collisions"]),
+           "stuck": float(s["stuck_streaks"] > 0), "amark_trigger": float(ev.get("trigger", 0)),
+           "amark_confirmed": float(ev.get("confirmed", 0)), "amark_steps": float(res.get("amark_steps", 0) or 0),
+           "amark_no_path": float(ev.get("no_path", 0) + ev.get("no_free", 0)),
+           "category": str(res.get("category", "")), "steps": float(res.get("steps", 0) or 0)}
+    row.update({f"ev_{k}": float(ev.get(k, 0)) for k in AMARK_EVENTS})
+    return row
+
+
+AMARK_EVENTS = ("trigger", "confirmed", "unconfirmed", "no_free", "no_path", "timeout")
 
 
 def _row_job(job) -> Tuple[str, str, Dict[str, Any]]:
@@ -348,6 +355,113 @@ def cmd_r4(args) -> None:
     write_text_atomic(out / "tables" / "r4.json", json.dumps(res, indent=1) + "\n")
     write_text_atomic(out / "tables" / "r4.md", "\n".join(lines) + "\n")
     print("\n".join(lines), flush=True)
+
+
+# --- extras (Part 3 reading aids; report only) ----------------------------------------------------------------------
+def amark_summary(rows: Sequence[Dict[str, Any]]) -> Dict[str, float]:
+    """A-mark detours of one cell x arm: per run, outcome shares of the detours, steps spent driving them.
+
+    A detour = a trigger (an accepted cluster with a free goal point); a cluster without a free point is rejected
+    before driving (no_free, not a detour). A detour still open when the run ends counts as "open at end"."""
+    n = len(rows)
+    tot = {k: sum(r[f"ev_{k}"] for r in rows) for k in AMARK_EVENTS}
+    det = tot["trigger"]
+    closed = tot["confirmed"] + tot["unconfirmed"] + tot["no_path"] + tot["timeout"]
+    steps = sum(r["amark_steps"] for r in rows)
+    share = lambda x: (x / det) if det else None  # noqa: E731
+    return {"runs": n, "detours_per_run": det / n if n else None, "no_free_per_run": tot["no_free"] / n if n else None,
+            "confirmed": share(tot["confirmed"]), "unconfirmed": share(tot["unconfirmed"]),
+            "timeout": share(tot["timeout"]), "no_path": share(tot["no_path"]), "open_at_end": share(det - closed),
+            "steps_per_run": steps / n if n else None, "steps_per_detour": steps / det if det else None,
+            "step_share": steps / max(1.0, sum(r["steps"] for r in rows)),
+            "runs_with_detour": sum(r["ev_trigger"] > 0 for r in rows) / n if n else None}
+
+
+def per_arm_oracle(data, cell: str, half_of: Dict[str, str], home_of: Dict[str, str], draws: int, seed: int,
+                   half: str) -> Dict[str, Dict[str, Any]]:
+    """Oracle success per arm in `cell` vs base_off, paired by episode with home CIs."""
+    out = {}
+    for a in NET_ARMS:
+        sel = lambda c: {e: r["oracle"] for e, r in data[c][a].items() if half == "all" or half_of[e] == half}  # noqa: E731
+        new, old = sel(cell), sel("base_off")
+        d = paired(new, old, home_of, draws, seed)
+        out[a] = {"new": float(np.mean(list(new.values()))), "old": float(np.mean(list(old.values()))),
+                  "diff": d.get("diff"), "ci": d.get("home_ci"), "n": d.get("n")}
+    return out
+
+
+def category_table(data, cells: Sequence[str]) -> Dict[str, Dict[str, Dict[str, Dict[str, float]]]]:
+    """Correct stops (rule-stop success) per category x arm for each cell, all 219 episodes: {cell: {cat: {arm: ..}}}."""
+    out: Dict[str, Dict[str, Dict[str, Dict[str, float]]]] = {}
+    for c in cells:
+        acc: Dict[str, Dict[str, List[float]]] = defaultdict(lambda: defaultdict(list))
+        for a in NET_ARMS:
+            for r in data[c][a].values():
+                acc[r["category"]][a].append(r["success"])
+        out[c] = {cat: {a: {"k": float(sum(v)), "n": float(len(v)), "rate": float(np.mean(v))} for a, v in arms.items()}
+                  for cat, arms in sorted(acc.items())}
+    return out
+
+
+def cmd_extras(args) -> None:
+    cfg, out, outputs = setup(args.config)
+    runs, _ = pb.layouts(args.config)
+    eps = pb.practice_episodes(runs)
+    half_of = pb.practice(runs)["episode_half"]
+    home_of = {e: x["home"] for e, x in eps.items()}
+    draws, seed = boot(cfg)
+    data = r4_data(cfg, out, outputs, eps, args.workers, pb.episodes_filter() or None)
+    res: Dict[str, Any] = {"amark": {}, "oracle": {}, "categories": {}, "photo_per_category": {}}
+    L = ["# Phase 14b-2 extra tables (report only; all from the R4 logs and the photo test)", "",
+         "## 1. A-mark detours (all 219 episodes per arm)", "",
+         "A detour = the robot leaves the network's path to drive to a mark. Shares are of all detours.", "",
+         "| cell | arm | detours / run | runs with >= 1 detour | confirmed | unconfirmed (rule < tau on arrival) | "
+         "timeout (> 120 steps) | no path | open at run end | rejected before driving (no free point) / run | "
+         "detour steps / run | steps / detour | share of all run steps |", "|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
+    for cell in ("base_on", "pick_on"):
+        res["amark"][cell] = {}
+        for a in NET_ARMS:
+            m = amark_summary(list(data[cell][a].values()))
+            res["amark"][cell][a] = m
+            L.append(f"| {CELL_NAME[cell]} | {a} | {fmt(m['detours_per_run'], 2)} | {fmt(m['runs_with_detour'])} | "
+                     f"{fmt(m['confirmed'])} | {fmt(m['unconfirmed'])} | {fmt(m['timeout'])} | {fmt(m['no_path'])} | "
+                     f"{fmt(m['open_at_end'])} | {fmt(m['no_free_per_run'], 2)} | {m['steps_per_run']:.1f} | "
+                     f"{m['steps_per_detour']:.1f} | {fmt(m['step_share'])} |")
+    L += ["", "## 2. Oracle success per cell and arm vs base YOLOE, A-mark off (paired by episode, home CI)", "",
+          "Oracle success = the robot came within success distance of the target at some point (stop not needed).", "",
+          "| cell | arm | half | oracle new / old | change [CI] | n |", "|---|---|---|---|---|---|"]
+    for cell in ("base_on", "pick_off", "pick_on"):
+        res["oracle"][cell] = {}
+        for half in ("all", "B"):
+            o = per_arm_oracle(data, cell, half_of, home_of, draws, seed, half)
+            res["oracle"][cell][half] = o
+            for a, x in o.items():
+                L.append(f"| {CELL_NAME[cell]} | {a} | {half} | {fmt(x['new'])} / {fmt(x['old'])} | "
+                         f"{sg(x['diff'], x['ci'])} | {x['n']} |")
+    cats = category_table(data, ("base_off", "pick_on"))
+    res["categories"] = cats
+    L += ["", "## 3. Correct stops per category and arm (all 219 episodes): both (picked detector + A-mark) vs base, "
+          "A-mark off", "", "Cells: correct stops / episodes (rate). Per-category n is small; no CIs.", "",
+          "| category | episodes | " + " | ".join(f"{a} both | {a} base" for a in NET_ARMS) + " |",
+          "|---|---|" + "---|---|" * len(NET_ARMS)]
+    for cat in cats["pick_on"]:
+        n = int(cats["pick_on"][cat]["M21b"]["n"])
+        cell = lambda c, a: (f"{int(cats[c][cat][a]['k'])}/{int(cats[c][cat][a]['n'])} "  # noqa: E731
+                             f"({cats[c][cat][a]['rate']:.2f})")
+        L.append(f"| {cat} | {n} | " + " | ".join(f"{cell('pick_on', a)} | {cell('base_off', a)}" for a in NET_ARMS) + " |")
+    rows = photo_rows(out, outputs)
+    L += ["", "## 4. Photo test half B per category (Phase 9 frame set; each model at its half-A threshold)", "",
+          "| category | model | items | counted targets | AP50 | precision | recall | false alarms / target-free item | "
+          "map F1 |", "|---|---|---|---|---|---|---|---|---|"]
+    for cat in rows["yoloe"]["per_category"]:
+        for k, r in rows.items():
+            c = r["per_category"][cat]
+            res["photo_per_category"].setdefault(cat, {})[k] = c
+            L.append(f"| {cat} | {k} | {c['items']} | {c['counted']} | {fmt(c['ap50'])} | {fmt(c['precision'])} | "
+                     f"{fmt(c['recall'])} | {fmt(c['fa_per_free'])} | {fmt(c['F1'])} |")
+    write_text_atomic(out / "tables" / "extras.json", json.dumps(res, indent=1) + "\n")
+    write_text_atomic(out / "tables" / "extras.md", "\n".join(L) + "\n")
+    print("\n".join(L), flush=True)
 
 
 # --- plain ----------------------------------------------------------------------------------------------------------
@@ -477,11 +591,12 @@ def cmd_gate(args) -> None:
 
 def main(argv: Optional[List[str]] = None) -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("cmd", choices=["photo", "r3", "r4", "plain", "off", "gate"])
+    p.add_argument("cmd", choices=["photo", "r3", "r4", "extras", "plain", "off", "gate"])
     p.add_argument("--config", type=Path, required=True)
     p.add_argument("--workers", type=int, default=8)
     args = p.parse_args(argv)
-    {"photo": cmd_photo, "r3": cmd_r3, "r4": cmd_r4, "plain": cmd_plain, "off": cmd_offcheck, "gate": cmd_gate}[args.cmd](args)
+    {"photo": cmd_photo, "r3": cmd_r3, "r4": cmd_r4, "extras": cmd_extras, "plain": cmd_plain, "off": cmd_offcheck,
+     "gate": cmd_gate}[args.cmd](args)
 
 
 if __name__ == "__main__":

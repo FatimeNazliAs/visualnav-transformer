@@ -67,6 +67,6 @@ Tools: Habitat side `mapmad/scripts/p14b2_trainset.py`, `p14b_replay.py --detect
 `p9_score.py` (with `MAPMAD_PHOTO_TEST_DIR`, `MAPMAD_RECOG_MODELS`), `p14_videos.py render --arm`; `mapmad_sim/amark.py`;
 recogniser side `mapmad_recog/finetune.py` (prep, train, models) and the fixed-vocabulary mode of `models.py`
 (`weights`, `vocab`, `sha256` in a models file; `run_p13_pairs.sh` passes `RECOG_CONFIG`); NoMaD side
-`vint_train.mapmad.closed_loop.p14b2_tables` (photo, r3, r4, plain, off, gate), `p14b_bench --det`, `p14_checks det
+`vint_train.mapmad.closed_loop.p14b2_tables` (photo, r3, r4, extras, plain, off, gate), `p14b_bench --det`, `p14_checks det
 --stage r4det`. Launch (after `nvidia-smi`): `bash train/scripts/mapmad_p14/launch_p14b2.sh`. DRY: see the header of
 `run_p14b2_chain.sh`.

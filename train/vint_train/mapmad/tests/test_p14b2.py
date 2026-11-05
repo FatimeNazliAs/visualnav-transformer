@@ -39,3 +39,16 @@ def test_cell_effect_paired_success_and_pooled_precision():
     e = t.cell_effect(data, "new", "old", half_of, home_of, 500, 1)
     assert e["success"]["diff"] == pytest.approx(2 / 6)
     assert e["precision"]["new"] == pytest.approx(0.5) and e["precision"]["old"] == pytest.approx(1 / 6)
+
+
+def test_amark_summary_shares_are_of_detours_and_open_detours_count():
+    def row(trig, conf, unc, nofree, steps, run_steps):
+        r = {f"ev_{k}": 0.0 for k in t.AMARK_EVENTS}
+        r.update(ev_trigger=trig, ev_confirmed=conf, ev_unconfirmed=unc, ev_no_free=nofree, amark_steps=steps,
+                 steps=run_steps)
+        return r
+    m = t.amark_summary([row(3, 1, 1, 2, 60, 500), row(1, 1, 0, 0, 40, 500)])
+    assert m["detours_per_run"] == 2.0 and m["no_free_per_run"] == 1.0
+    assert m["confirmed"] == pytest.approx(0.5) and m["unconfirmed"] == pytest.approx(0.25)
+    assert m["open_at_end"] == pytest.approx(0.25)  # 1 of 4 detours had no closing event
+    assert m["steps_per_detour"] == 25.0 and m["step_share"] == pytest.approx(0.1)
