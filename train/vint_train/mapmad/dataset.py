@@ -200,7 +200,8 @@ def build_mapmad_dataset(config: Dict[str, Any], dataset_name: str, split: str, 
         from vint_train.mapmad.dataset_dagger import build_dagger_set
         ds.attach_dagger(build_dagger_set(config, "train", train=True))
         if config["map"].get("dagger_hidden"):  # Phase 13: maps-hidden DAgger samples join explore (equal count)
-            ds.attach_dagger_hidden(build_dagger_set(config, "train", train=True, hidden=True))
+            ds.attach_dagger_hidden(build_dagger_set(config, "train", train=True, hidden=True),
+                                    q_cap=config["map"].get("hidden_q_cap"))  # Phase 14b-3 rules amendment v1.1
     return ds
 
 

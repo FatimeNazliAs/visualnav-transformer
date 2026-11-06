@@ -25,6 +25,9 @@ map:
     scale_m: 0.25         # metres per unit (= the action normalisation 0.05 x 5)
     drop_p: 0.3           # training: token hidden with this probability (Habitat samples)
     lambda: 0.1           # auxiliary loss weight (kickoff §3 item 5, fixed)
+  # rules amendment v1.1 (p14b3_rules_amend_v1.1.md, Naz 11-06): the equal-count q came out 1.00055 (> 1, impossible)
+  # -> capped at 1: every explore draw is a hidden-DAgger draw; hidden gets 99.94% of the map-DAgger draws
+  hidden_q_cap: 1.0
   dagger_more:            # round 2, maps shown (frontier cache built by `dataset_dagger frontier --block 0`)
     - data_folder: /mapmad_data/habitat_mapmad_v3_dagger_r2map
       train: /mapmad_data/splits/habitat_mapmad_v3_dagger_r2map/train/

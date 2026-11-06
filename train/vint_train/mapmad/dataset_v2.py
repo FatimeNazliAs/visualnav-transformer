@@ -47,17 +47,21 @@ class MapMaDV2Dataset(MapMaDDataset):
     dagger = None  # Phase 11: an attached DaggerDataset joins the search_map pool (attach_dagger)
     dagger_hidden = None  # Phase 13: an attached HiddenDaggerDataset joins the explore draws (attach_dagger_hidden)
     hidden_q = 0.0
+    hidden_q_raw = 0.0  # the rule's q before any cap (Phase 14b-3 rules amendment v1.1)
 
-    def attach_dagger_hidden(self, hidden: "MapMaDV2Dataset") -> None:
-        """Phase 13 equal-count rule (module docstring): needs the map-DAgger set attached first."""
+    def attach_dagger_hidden(self, hidden: "MapMaDV2Dataset", q_cap: Optional[float] = None) -> None:
+        """Phase 13 equal-count rule (module docstring): needs the map-DAgger set attached first.
+        q_cap (Phase 14b-3 rules amendment v1.1, `map.hidden_q_cap`): a q above the cap becomes the cap (every explore
+        draw a hidden-DAgger draw at cap 1); None = the Phase 13 rule unchanged (q > 1 is an error)."""
         if self.dagger is None:
             raise ValueError("the hidden-DAgger set needs the map-DAgger set attached first (equal-count rule)")
         p = dict(zip(M.HABITAT_MODES_V2, self.mode_p))
         n8, nd = len(self.pools["search"]), len(self.dagger.pools["search"])
-        q = p["search_map"] * nd / (n8 + nd) / p["explore"]
+        raw = p["search_map"] * nd / (n8 + nd) / p["explore"]
+        q = min(raw, float(q_cap)) if q_cap is not None else raw
         if not 0.0 < q <= 1.0 or len(hidden.pools["explore"]) == 0:
             raise ValueError(f"equal-count rule: q = {q} (needs 0 < q <= 1) and hidden samples ({len(hidden.pools['explore'])})")
-        self.dagger_hidden, self.hidden_q = hidden, float(q)
+        self.dagger_hidden, self.hidden_q, self.hidden_q_raw = hidden, float(q), float(raw)
 
     def attach_dagger(self, dagger: "MapMaDV2Dataset") -> None:
         """Phase 11 union (module docstring): search_map draws become uniform over this split's search samples and the

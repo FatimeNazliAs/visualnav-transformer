@@ -222,3 +222,26 @@ def test_to_batch_and_aux_loss_with_past_fields():
     loss = past_aux_loss(model, cond, batch)
     assert torch.isfinite(loss) and loss.requires_grad
     assert "past" not in to_batch(data[:11], lambda x: x, torch.device("cpu"))
+
+
+def test_hidden_q_cap():
+    """Rules amendment v1.1: a q above 1 is an error without a cap and becomes the cap with one."""
+    from vint_train.mapmad import modes as M
+    from vint_train.mapmad.dataset_v2 import MapMaDV2Dataset
+
+    class _Fake:
+        def __init__(self, n):
+            self.pools = {"search": np.arange(n), "explore": np.arange(n)}
+
+    ds = MapMaDV2Dataset.__new__(MapMaDV2Dataset)
+    ds.mode_p = M.habitat_mode_table({"search_map": 0.45, "explore_map": 0.20, "explore": 0.20, "photo": 0.15},
+                                     M.HABITAT_MODES_V2)
+    ds.pools = {"search": np.arange(1000)}
+    ds.dagger = _Fake(900)  # s = 0.4737 -> q = 1.066
+    with pytest.raises(ValueError):
+        ds.attach_dagger_hidden(_Fake(10))
+    ds.attach_dagger_hidden(_Fake(10), q_cap=1.0)
+    assert ds.hidden_q == 1.0 and ds.hidden_q_raw == pytest.approx(0.45 * 900 / 1900 / 0.20)
+    ds.dagger = _Fake(100)  # q below the cap: unchanged
+    ds.attach_dagger_hidden(_Fake(10), q_cap=1.0)
+    assert ds.hidden_q == ds.hidden_q_raw == pytest.approx(0.45 * 100 / 1100 / 0.20)

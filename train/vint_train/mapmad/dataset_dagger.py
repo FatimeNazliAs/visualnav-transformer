@@ -272,6 +272,7 @@ def hidden_report(main: MapMaDV2Dataset, epochs: int, samples_per_epoch: int, ha
     hab = samples_per_epoch * habitat_share
     map_draws, hid_draws = hab * p["search_map"] * nd / (n8 + nd), hab * p["explore"] * main.hidden_q
     return {"hidden_samples": int(nh), "hidden_drives": len(main.dagger_hidden.traj_names), "hidden_q": main.hidden_q,
+            "hidden_q_raw": main.hidden_q_raw, "hidden_q_capped": main.hidden_q < main.hidden_q_raw,
             "map_dagger_samples": int(nd), "map_dagger_share_of_search": nd / (n8 + nd),
             "expected_draws_per_epoch": {"map_dagger": round(map_draws), "hidden_dagger": round(hid_draws)},
             "hidden_repeat_factor": round(hid_draws * epochs / max(nh, 1), 3), "habitat_draws_per_epoch": round(hab),
