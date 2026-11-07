@@ -3,6 +3,7 @@
     python -m vint_train.mapmad.closed_loop.p14b3_tables practice --config <p14b3_v3.yaml>   # V3 practice check
     python -m vint_train.mapmad.closed_loop.p14b3_tables examb --config ...                  # V4 exam B, rows 1-4
     python -m vint_train.mapmad.closed_loop.p14b3_tables gate --config ...                   # draft G14b3
+    python -m vint_train.mapmad.closed_loop.p14b3_tables addendum --config ...               # M21bh completion
 
 Every run is scored from its log with today's rule at tau 0.45 (P*'s stop; p12_score.score_log): correct stops =
 rule-stop success; oracle success; SPL (oracle and rule); stops; wrong-object stops; collision steps; stuck runs
@@ -14,6 +15,11 @@ examb: per-episode means over the seed indices (F: its one run), paired differen
 rows 1-3 one-sided home-clustered bootstrap p (10,000 draws, seed 14301) + Holm over rows 1-3; row 3 compares with
 Phase 13's exam-B M21b logs (p13_claim/runs/examb, read only; base YOLOE, tau 0.45) on the same episodes and seeds.
 A call cut by the budget fallback is "not run": its finished runs are listed, never used in a comparison.
+addendum (after the gate; report only, not a gate row, no Holm): M21b + P* − M21bh + P* on exam B, correct stops,
+paired by episode over the seed indices complete for BOTH arms, the row-1 method (one-sided home-clustered bootstrap,
+10,000 draws, seed 14301; raw p); per arm: correct stops (SR), oracle, SPL (rule), false-stop rate (share of runs
+whose rule stop is not a correct stop), STOP precision; M21bh's reverse pattern (p14b3_reverse). Writes
+tables/addendum_m21bh.{md,json}; tables/examb.* stay as the gate made them.
 """
 
 import argparse
@@ -326,6 +332,72 @@ def cmd_examb(args) -> None:
     print("\n".join(lines[:12]), flush=True)
 
 
+# --- addendum: M21bh completion ---------------------------------------------------------------------------------------
+ADD_A, ADD_B = "M21b_w4_d_am", "M21bh_w4_d_am"
+
+
+def with_false_stops(rows: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Rows + `false_stop` = 1 if the run's rule stop is not a correct stop (a correct stop is always a stop)."""
+    return [dict(r, false_stop=float(r["stopped"] and not r["success"])) for r in rows]
+
+
+def addendum_arm(rows: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
+    """Per-arm numbers of the addendum (per-episode seed means, as every exam-B arm)."""
+    s = summary(rows)
+    if not s["runs"]:
+        return s
+    s["false_stop_rate"] = float(np.mean(list(ep_means(rows, "false_stop").values())))
+    return s
+
+
+def cmd_addendum(args) -> None:
+    from vint_train.mapmad.closed_loop.p14b3_reverse import arm_report
+
+    lay = RunLayout.load(args.config)
+    eps_list, fp = load_episodes(lay.base / lay.cfg["sets"]["examb"]["folder"] / "episodes.json")
+    eps = {e["episode_id"]: e for e in eps_list}
+    home_of = {e: x["home"] for e, x in eps.items()}
+    root = lay.base / "runs" / "examb"
+    rows = {a: with_false_stops(rs) for a, rs in load_rows({a: (root, a) for a in (ADD_A, ADD_B)}, eps, args.workers).items()}
+    calls = complete_calls(lay, rows, len(eps))
+    both = sorted(k for k in (0, 1, 2) if calls[f"{ADD_A}|{k}"]["complete"] and calls[f"{ADD_B}|{k}"]["complete"])
+    used = {a: [r for r in rs if r["seed_index"] in both] for a, rs in rows.items()}
+    c = compare(used[ADD_A], used[ADD_B], home_of, "success") if both else {}
+    arms = {a: addendum_arm(rs) for a, rs in used.items()}
+    rev_files = sorted(str(f) for f in (root / "logs" / ADD_B).glob("*.jsonl")
+                       if parse_run_id(f.name[:-len(".jsonl")])[1] in both)
+    rev = arm_report(rev_files) if rev_files else {}
+    partial = {k: v for k, v in calls.items() if k.startswith(ADD_B) and not v["complete"]}
+    res = {"fingerprint": fp, "episodes": len(eps), "seeds_both": both, "calls": {k: v for k, v in calls.items()
+           if k.split("|")[0] in (ADD_A, ADD_B)}, "comparison": {"a": ADD_A, "b": ADD_B, "metric": "success", **c},
+           "arms": arms, "reverse_m21bh": rev, "partial_m21bh_calls": partial}
+    pa, pb_ = arms.get(ADD_A, {}), arms.get(ADD_B, {})
+    lines = ["# Addendum: M21bh completion (exam B, report only — not a gate row, no Holm)", "",
+             "An arm the frozen rules (p14b3_rules.md, v1.1) fixed in advance, cut by the budget fallback, completed "
+             "afterward with no changes; third look at exam B, with no choice made or tuned from it.", "",
+             f"Fingerprint `{fp[:16]}…`; seed indices complete for both arms: {both or 'none'}"
+             + (f"; unfinished M21bh calls (not used): {sorted(partial)}" if partial else ""), "",
+             "| comparison | correct stops a / b | difference [95 % CI] | raw p (one-sided) | n eps | homes |",
+             "|---|---|---|---|---|---|",
+             f"| {NAMES[ADD_A]} − {NAMES[ADD_B]} | {fmt(pa.get('success'))} / {fmt(pb_.get('success'))} | "
+             f"{sg(c.get('diff'), c.get('home_ci'))} | {fmt(c.get('home_p_one_sided'), 4)} | {c.get('n')} | {c.get('homes')} |",
+             "", "| arm | runs | correct stops (SR) | oracle | SPL (rule) | false-stop rate | STOP precision | "
+             "reverse steps |", "|---|---|---|---|---|---|---|---|"]
+    for a, s_ in arms.items():
+        if not s_.get("runs"):
+            lines.append(f"| {NAMES[a]} | 0 | not run | | | | | |")
+            continue
+        lines.append(f"| {NAMES[a]} (`{a}`) | {s_['runs']} | {fmt(s_['success'])} | {fmt(s_['oracle'])} | "
+                     f"{fmt(s_['rule_spl'])} | {fmt(s_['false_stop_rate'])} | {fmt(s_['precision'])} | "
+                     f"{s_['reverse_steps']:.1f} |")
+    if rev:
+        lines += ["", f"M21bh reverse pattern (p14b3_reverse, {rev['runs']} runs): share by phase "
+                  f"{rev['reverse_share_by_phase']}, longest backward stretch {rev['stretch_max']} steps."]
+    write_text_atomic(lay.base / "tables" / "addendum_m21bh.json", json.dumps(res, indent=1) + "\n")
+    write_text_atomic(lay.base / "tables" / "addendum_m21bh.md", "\n".join(lines) + "\n")
+    print("\n".join(lines), flush=True)
+
+
 # --- draft gate -------------------------------------------------------------------------------------------------------
 def cmd_gate(args) -> None:
     lay = RunLayout.load(args.config)
@@ -363,11 +435,11 @@ def cmd_gate(args) -> None:
 
 def main(argv: Optional[List[str]] = None) -> None:
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    p.add_argument("cmd", choices=["practice", "examb", "gate"])
+    p.add_argument("cmd", choices=["practice", "examb", "gate", "addendum"])
     p.add_argument("--config", type=Path, required=True)
     p.add_argument("--workers", type=int, default=12)
     args = p.parse_args(argv)
-    {"practice": cmd_practice, "examb": cmd_examb, "gate": cmd_gate}[args.cmd](args)
+    {"practice": cmd_practice, "examb": cmd_examb, "gate": cmd_gate, "addendum": cmd_addendum}[args.cmd](args)
 
 
 if __name__ == "__main__":

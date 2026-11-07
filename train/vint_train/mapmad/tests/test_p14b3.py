@@ -263,3 +263,15 @@ def test_reverse_report(tmp_path):
     assert rep["reverse_share_by_phase"] == {"1-40": 0.0, "41-200": 1.0, "201-1000": None}
     assert rep["reverse_share_looks_stuck"] == 1.0 and rep["steps_looks_stuck"] == 20
     assert rep["stretch_max"] == 20
+
+
+def test_addendum_false_stops():
+    """p14b3_tables addendum: a false stop = a rule stop that is not a correct stop; per-episode seed means."""
+    from vint_train.mapmad.closed_loop.p14b3_tables import ep_means, with_false_stops
+
+    rows = with_false_stops([
+        {"episode_id": "a", "stopped": 1.0, "success": 1.0},   # correct stop
+        {"episode_id": "a", "stopped": 1.0, "success": 0.0},   # false stop
+        {"episode_id": "b", "stopped": 0.0, "success": 0.0}])  # no stop
+    assert [r["false_stop"] for r in rows] == [0.0, 1.0, 0.0]
+    assert ep_means(rows, "false_stop") == {"a": 0.5, "b": 0.0}

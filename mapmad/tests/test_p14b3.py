@@ -104,3 +104,13 @@ def test_drive_homes_from_a_split_list(tmp_path):
     f = tmp_path / "traj_names.txt"
     f.write_text("p8d-00006-HkseAnWCgqk-explore-000\np11r-00009-chair-001\n")
     assert sets.drive_homes(f) == ["00006-HkseAnWCgqk", "00009"]
+
+
+def test_addendum_stages_are_the_cut_m21bh_calls_unchanged():
+    """Addendum: `addm` = the three M21bh calls of `examb` (same labels, subdir, seeds); `addrepro` is a known stage."""
+    from mapmad_sim.run_plan_p14b3 import ADDM_ARM, EXAM_ORDER, STAGES
+
+    m21bh = [x for x in EXAM_ORDER if x[1] == (ADDM_ARM,)]
+    assert [x[0] for x in m21bh] == ["ex_m21bh_s0", "ex_m21bh_s1", "ex_m21bh_s2"]
+    assert [x[2] for x in m21bh] == [(0,), (1,), (2,)]
+    assert {"addm", "addrepro"} <= set(STAGES)

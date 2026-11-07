@@ -7,6 +7,12 @@ into <out_dir>/checks/checks.json (+ checks.md) and exits 3 on a failure (the ch
     python -m vint_train.mapmad.closed_loop.p14b3_checks contamination --config ...          # row 6 (merge)
     python -m vint_train.mapmad.closed_loop.p14b3_checks rules --config ... --tag <tag>      # row 6: exam rules sha256
     python -m vint_train.mapmad.closed_loop.p14b3_checks g10 --config ...                    # row 5 (merge)
+    python -m vint_train.mapmad.closed_loop.p14b3_checks repro --config ... --gpu <g>        # addendum, per GPU
+
+Addendum (M21bh completion, after the gate): `--key` writes fairness / contamination / rules under another key
+(addendum_fairness, ...) so the gate's own entries stay as they were; contamination `--dir` reads the addendum's
+contamination files. repro: the addrepro call of GPU g (one M21b_w4_d_am exam-B run of this phase that GPU g drove)
+byte-identical (log + dets) with runs/examb; key addendum_repro_g<g>.
 
 det: the det call's runs (checks/det_a, checks/det_b; one p13d episode, M3_P, same GPU): logs, dets and the stop
 evidence identical. off: per GPU g, checks/off13_g<g> (Phase 13's arm M21b, every new switch off, one exam-B episode
@@ -31,11 +37,13 @@ import numpy as np
 from mapmad_sim.arm_table import ArmTable
 from mapmad_sim.episodes import load_episodes
 from mapmad_sim.run_layout import RunLayout, run_id, write_text_atomic
-from mapmad_sim.run_plan_p14b3 import P13_EXAMB, REUSE_SUBDIR, P14b3Plan, run_gpus
+from mapmad_sim.run_plan_p14b3 import EXAMB_SUBDIR, P13_EXAMB, REUSE_SUBDIR, P14b3Plan, run_gpus
 from mapmad_sim.stop_evidence import load as load_evidence
 
 STOP_EXIT = 3
-SUMMARY_KEYS = ("g10_rows_1_2", "contamination", "exam_rules_sha256", "fairness", "determinism", "off13", "off14b2")
+SUMMARY_KEYS = ("g10_rows_1_2", "contamination", "exam_rules_sha256", "fairness", "determinism", "off13", "off14b2",
+                "addendum_repro_g0", "addendum_repro_g1", "addendum_contamination", "addendum_rules_before",
+                "addendum_rules_after", "addendum_fairness")
 
 
 def merge(layout: RunLayout, key: str, value: Dict[str, Any]) -> None:
@@ -160,16 +168,18 @@ def cmd_fairness(args) -> None:
             + ", ".join(f"{s} {f[:8]}…" for s, f in fps.items()) + "), checkpoint sha256 and switches matched"
             + (f"; not run (budget fallback): {not_run}" if not_run else "")
             + ("" if ok else f"; problems: {problems[:5]} (+{max(len(problems) - 5, 0)})"))
-    finish(lay, "fairness", {"planned": planned, "present": present, "problems": problems, "not_run": not_run,
+    finish(lay, args.key or "fairness", {"planned": planned, "present": present, "problems": problems, "not_run": not_run,
                              "pass": ok, "summary": summ})
 
 
 def cmd_contamination(args) -> None:
     lay = RunLayout.load(args.config)
-    docs = {f.name: json.loads(f.read_text()) for f in sorted((lay.base / "checks").glob("contamination*.json"))}
-    need = {"contamination_rollout_set.json", "contamination.json"}
+    folder = lay.base / "checks" / (args.dir or "")
+    docs = {f.name: json.loads(f.read_text()) for f in sorted(folder.glob("contamination*.json"))}
+    # the addendum re-checks the training splits and round-2 drives (contamination.json); the rollout start set is unchanged
+    need = {"contamination.json"} if args.dir else {"contamination_rollout_set.json", "contamination.json"}
     ok = need <= set(docs) and all(d.get("contamination_free") for d in docs.values())
-    finish(lay, "contamination", {"files": sorted(docs), "pass": ok,
+    finish(lay, args.key or "contamination", {"files": sorted(docs), "pass": ok,
                                   "summary": ("rollout set, round-2 drives and every training split ∩ (photo test ∪ "
                                               "HM3D val ∪ MP3D) = ∅ (full id, scene id, home prefix)") if ok else
                                   f"FAIL or missing: { {k: d.get('contamination_free') for k, d in docs.items()} }"})
@@ -181,10 +191,37 @@ def cmd_rules(args) -> None:
     now = hashlib.sha256((lay.base / "p14b3_rules.md").read_bytes()).hexdigest()
     repo = hashlib.sha256(Path(args.repo_copy).read_bytes()).hexdigest() if args.repo_copy else now
     ok = frozen == now == repo
-    finish(lay, "exam_rules_sha256", {"frozen": frozen, "now": now, "repo_copy": repo, "tag": args.tag, "pass": ok,
+    finish(lay, args.key or "exam_rules_sha256", {"frozen": frozen, "now": now, "repo_copy": repo, "tag": args.tag, "pass": ok,
                                       "summary": f"p14b3_rules.md sha256 {now[:12]}… = the value frozen before the "
                                                  f"first exam run ({args.tag})" if ok else
                                       f"CHANGED: frozen {frozen[:12]} now {now[:12]} repo {repo[:12]}"})
+
+
+def cmd_repro(args) -> None:
+    """Addendum: the addrepro call of GPU args.gpu reproduced byte-identically (log + dets) on that GPU."""
+    lay = RunLayout.load(args.config)
+    plan = P14b3Plan.from_cfg(lay)
+    c = next(x for x in plan.calls("addrepro") if x.label == f"addrepro_g{args.gpu}")
+    new_root, ref_root = lay.base / c.subdir, lay.outputs / EXAMB_SUBDIR
+    g_new, g_ref = run_gpus(new_root), run_gpus(ref_root)
+    bad, ok = [], 0
+    for arm in c.arms:
+        for e in c.episodes:
+            rid = run_id(e, 0)
+            if g_new.get((arm, rid)) != args.gpu or g_ref.get((arm, rid)) != args.gpu:
+                bad.append(f"{arm}/{rid}: driven on GPU {g_new.get((arm, rid))} (reference {g_ref.get((arm, rid))}), "
+                           f"not {args.gpu}")
+                continue
+            diff = same_files(new_root, ref_root, rid, arm)
+            if diff:
+                bad.append(f"{arm}/{rid}: {diff}")
+            else:
+                ok += 1
+    good = ok >= 1 and not bad
+    finish(lay, f"addendum_repro_g{args.gpu}", {
+        "gpu": args.gpu, "episodes": list(c.episodes), "identical": ok, "differ": bad, "pass": good,
+        "summary": (f"{ok} exam-B M21b + P* run(s) of this phase reproduced byte-identically on GPU {args.gpu} "
+                    f"(log + dets)") if good else f"GPU {args.gpu}: FAIL {bad or 'no reference run'}"})
 
 
 def cmd_g10(args) -> None:
@@ -200,15 +237,18 @@ def cmd_g10(args) -> None:
 
 def main(argv=None) -> None:
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    p.add_argument("cmd", choices=["det", "off", "fairness", "contamination", "rules", "g10"])
+    p.add_argument("cmd", choices=["det", "off", "fairness", "contamination", "rules", "g10", "repro"])
     p.add_argument("--config", type=Path, required=True)
     p.add_argument("--stages", nargs="+", default=["practice", "examb"])
     p.add_argument("--cut", type=Path, default=None, help="fairness: JSON list of call labels cut by the budget fallback")
     p.add_argument("--tag", default="")
     p.add_argument("--repo-copy", default=None)
+    p.add_argument("--key", default=None, help="addendum: write the result under this key (default: the gate's key)")
+    p.add_argument("--dir", default=None, help="contamination: subfolder of checks/ with the files (addendum)")
+    p.add_argument("--gpu", type=int, default=0, help="repro: the GPU")
     args = p.parse_args(argv)
     {"det": cmd_det, "off": cmd_off, "fairness": cmd_fairness, "contamination": cmd_contamination,
-     "rules": cmd_rules, "g10": cmd_g10}[args.cmd](args)
+     "rules": cmd_rules, "g10": cmd_g10, "repro": cmd_repro}[args.cmd](args)
 
 
 if __name__ == "__main__":

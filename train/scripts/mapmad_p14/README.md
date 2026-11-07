@@ -98,3 +98,10 @@ Tools: Habitat side `mapmad/scripts/make_p14b3_sets.py` (round-2 set, contaminat
 `vint_train/mapmad/past_moves.py` (B1), `v3_offline.py` (recovery-label loss, past-move error),
 `closed_loop/p14b3_checks.py`, `closed_loop/p14b3_tables.py`, `closed_loop/deployment.ReverseSpec`.
 Launch (after `nvidia-smi`): `bash train/scripts/mapmad_p14/launch_p14b3.sh`. DRY: see the header of `launch_p14b3.sh`.
+
+**Phase 14b-3 addendum (M21bh completion, after the gate):** `launch_p14b3_addendum.sh` starts screens `p14b3_addm` +
+`p14b3_addm_watch` (and `p14b3_gpuwatch` with the server rules if not running). `run_p14b3_addendum.sh` runs the three
+M21bh exam-B calls the budget fallback cut, unchanged (plan stage `addm`; runs already in `runs/examb` count), on GPUs that
+first reproduced one M21b + P* exam-B run byte-identically (stage `addrepro`, `p14b3_checks repro`); budget 8 GPU-h,
+hard stop 12; then `p14b3_checks fairness/contamination/rules --key addendum_*` and `p14b3_tables addendum`
+(`tables/addendum_m21bh.md`). State and logs: `p14b3_v3/addendum/` (`STATUS.md`, `driver/chain.log`).

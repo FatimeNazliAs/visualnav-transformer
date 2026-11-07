@@ -15,6 +15,10 @@ Stages:
   14b-2's logs (its practice runs are reused).
 - `examb` (V4): exam B, seeds 0-2 (F: 0), in the pre-set priority order (rows 1-3 arms first, then N seed 0, F,
   N seeds 1-2, M21bh), one call per arm group and seed so a budget cut leaves whole seeds.
+- `addm` (addendum, after the gate): the three M21bh calls of `examb`, unchanged (same labels, subdir, seeds); the
+  budget fallback had cut them. Runs already finished in runs/examb count (resume).
+- `addrepro` (addendum): per GPU g, one seed-0 exam-B run of M21b_w4_d_am (this phase's runs/examb) that was driven on
+  GPU g -> checks/addrepro_g<g>, compared byte for byte (log + dets) before GPU g drives any addendum run.
 DRY runs: P14_EPISODES (space-separated ids) keeps only those episodes. Pure Python + PyYAML.
 """
 
@@ -25,13 +29,16 @@ from typing import Dict, List, Tuple
 from mapmad_sim.run_layout import run_id
 from mapmad_sim.run_plan_p14 import PARTS, Call, P14Plan
 
-STAGES = ("practice", "det", "off", "examb")
+STAGES = ("practice", "det", "off", "examb", "addm", "addrepro")
 PRAC_ARMS = ("M3_P", "M3h_P", "M3_Pnoam")
 V21B_P = ("M21b_w4_d_am", "M21bh_w4_d_am")  # v2.1b + P* (14b-2 "both" cell; practice: reused)
 REUSE_SUBDIR = "p14b2_recog/runs/detam"  # below <outputs>
 P13_EXAMB = "p13_claim/runs/examb"  # below <outputs>
 OFF13_ARM = "M21b"  # Phase 13's arm (base YOLOE, no switch)
 OFF14B2_ARMS = ("M21b_w4_d_am", "N_w4_d_am")
+ADDM_ARM = "M21bh_w4_d_am"  # addendum: the arm the budget fallback cut
+ADD_REPRO_ARM = "M21b_w4_d_am"  # addendum: the reference arm reproduced on each GPU
+EXAMB_SUBDIR = "p14b3_v3/runs/examb"  # below <outputs>: this phase's exam-B runs
 # exam B: (label, arms, seeds) in run order (p14b3_rules.md §6: rows 1-3 arms first; then N seed 0, F, N 1-2, M21bh)
 EXAM_ORDER: Tuple[Tuple[str, Tuple[str, ...], Tuple[int, ...]], ...] = (
     ("ex_v3_s0", ("M3_P", "M3h_P"), (0,)), ("ex_m21b_s0", ("M21b_w4_d_am",), (0,)),
@@ -81,6 +88,15 @@ class P14b3Plan(P14Plan):
         if stage == "examb":
             return [Call(label, "runs/examb", "examb", "picked", seeds, arms, eps("examb"))
                     for label, arms, seeds in EXAM_ORDER]
+        if stage == "addm":
+            return [c for c in self.calls("examb") if c.arms == (ADDM_ARM,)]
+        if stage == "addrepro":
+            out = []
+            for g in (0, 1):
+                e = self.episode_on_gpu(EXAMB_SUBDIR, "examb", ADD_REPRO_ARM, g)
+                out.append(Call(f"addrepro_g{g}", f"checks/addrepro_g{g}", "examb", "picked", (0,), (ADD_REPRO_ARM,),
+                                (e,) if e else ()))
+            return out
         raise ValueError(f"unknown stage {stage}")
 
     def episode_on_gpu(self, subdir: str, set_name: str, arm: str, gpu: int) -> str:
@@ -112,4 +128,4 @@ def plan_for(config_file: Path) -> type:
 
 
 __all__ = ["P14b3Plan", "STAGES", "EXAM_ORDER", "EXAM_ARMS", "PRAC_ARMS", "V21B_P", "REUSE_SUBDIR", "P13_EXAMB",
-           "run_gpus", "plan_for"]
+           "ADDM_ARM", "ADD_REPRO_ARM", "EXAMB_SUBDIR", "run_gpus", "plan_for"]
