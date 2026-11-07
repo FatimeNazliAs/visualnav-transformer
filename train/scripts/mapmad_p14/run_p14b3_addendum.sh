@@ -169,7 +169,7 @@ main() {
     run_bg dxe "" "python -m vint_train.mapmad.closed_loop.p14b3_checks rules --config $CFG --tag after_addendum \
         --key addendum_rules_after --repo-copy /app/visualnav-transformer/mapmad/configs/p14b3_rules.md" >> "$P14/driver/checks.log" 2>&1 \
         || stop "exam rules sha256 changed during the addendum"
-    run_bg dxe "" "python -m vint_train.mapmad.closed_loop.p14b3_tables addendum --config $CFG --workers 12" \
+    run_bg dxe "" "python -m vint_train.mapmad.closed_loop.p14b3_tables addendum --config $CFG --workers ${P14B3_WORKERS:-8}" \
         >> "$P14/driver/tables.log" 2>&1 || stop "addendum table failed (addendum/driver/tables.log)"
     say "addendum table: $(grep -m1 '^| MapMaD v2.1b, maps shown + P\* −' "$MAIN/tables/addendum_m21bh.md")"
     date '+%F %T' > "$P14/driver/ADDENDUM_DONE.txt"
