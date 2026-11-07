@@ -245,3 +245,21 @@ def test_hidden_q_cap():
     ds.dagger = _Fake(100)  # q below the cap: unchanged
     ds.attach_dagger_hidden(_Fake(10), q_cap=1.0)
     assert ds.hidden_q == ds.hidden_q_raw == pytest.approx(0.45 * 100 / 1100 / 0.20)
+
+
+def test_reverse_report(tmp_path):
+    """p14b3_reverse: stretch lengths and the per-phase / looks-stuck shares on a tiny fake log."""
+    import json as _json
+    from vint_train.mapmad.closed_loop.p14b3_reverse import arm_report, stretches
+
+    assert stretches([True, True, False, True, False, False, True]) == [2, 1, 1]
+    assert stretches([]) == []
+    rows = [{"kind": "episode"}]
+    for t in range(60):  # 60 steps standing still; reverse on steps 41-60
+        rows.append({"kind": "step", "position": [0.0, 0.0, 0.0], "policy": {"reverse": t >= 40}})
+    p = tmp_path / "x__s0.jsonl"
+    p.write_text("\n".join(_json.dumps(r) for r in rows))
+    rep = arm_report([str(p)])
+    assert rep["reverse_share_by_phase"] == {"1-40": 0.0, "41-200": 1.0, "201-1000": None}
+    assert rep["reverse_share_looks_stuck"] == 1.0 and rep["steps_looks_stuck"] == 20
+    assert rep["stretch_max"] == 20
